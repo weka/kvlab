@@ -143,7 +143,10 @@ type Options struct {
 	// holder rather than spilling onto a backend with none of the prefix. 0 is
 	// off.
 	SoftNodeConcurrency int64
-	RebalanceRatio      float64
+	// TTFTHard / TTFTSoft split by per-node mean TTFT, parallel to the
+	// concurrency band. 0 is off.
+	TTFTHard, TTFTSoft time.Duration
+	RebalanceRatio     float64
 	// PrefillSplit moves heavy prefills a backend refuses (HTTP 400
 	// large_prefill_rejected) onto prefill-only nodes the router sets aside
 	// from the fleet. Off by default.
@@ -260,6 +263,8 @@ func (o Options) flowConfig() affinity.Config {
 	return affinity.Config{
 		NodeConcurrency:     o.NodeConcurrency,
 		SoftNodeConcurrency: o.SoftNodeConcurrency,
+		TTFTHard:            o.TTFTHard,
+		TTFTSoft:            o.TTFTSoft,
 		RebalanceRatio:      o.RebalanceRatio,
 		SplitGuard:          o.SplitGuard,
 		TransientFallback:   o.TransientFallback,
@@ -1171,6 +1176,9 @@ func signalSummary(c affinity.Config) string {
 		} else {
 			out += fmt.Sprintf(",concurrency=%d", c.NodeConcurrency)
 		}
+	}
+	if c.TTFTSoft > 0 || c.TTFTHard > 0 {
+		out += fmt.Sprintf(",ttft=%v..%v", c.TTFTSoft, c.TTFTHard)
 	}
 	if c.RebalanceRatio > 0 {
 		out += fmt.Sprintf(",imbalance=%.3g", c.RebalanceRatio)

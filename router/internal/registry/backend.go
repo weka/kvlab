@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/weka/wekai/router/internal/circuit"
 	"github.com/weka/wekai/router/internal/waitq"
@@ -134,6 +136,20 @@ type Backend struct {
 
 	Served, Failed atomic.Uint64
 
+	// ttftNanos is an EWMA of time-to-first-body-byte for accepted responses,
+	// 0 until the first sample. Written by the proxy, read by the routing flow's
+	// TTFT signal and soft band.
+	ttftMu    sync.Mutex
+	ttftNanos int64
+
+	// hardTTFT is the hard-TTFT limit in nanos (0 = off), set by the routing
+	// policy. hardBlocked is the 1-in-1-out gate: set when a request is admitted
+	// while TTFT() >= hardTTFT, cleared on ANY lease release. Gating on the flag
+	// rather than on TTFT alone is what prevents a deadlock: a permanently
+	// excluded node would get no samples and its EWMA would never recover.
+	hardTTFT    atomic.Int64
+	hardBlocked atomic.Bool
+
 	// waiters holds requests refused only by the concurrency signal on THIS
 	// backend, bound here rather than pool-wide so a wait preserves the
 	// prefix-cache locality the policy picked this backend for. Woken by
@@ -144,6 +160,48 @@ type Backend struct {
 	// with no constructor — the same reason CB is the only pointer field here
 	// that needs one.
 	waiters waitq.Queue
+}
+
+// ttftAlpha weights the newest sample in the TTFT EWMA.
+const ttftAlpha = 0.3
+
+// ObserveTTFT folds one time-to-first-token sample into the backend's EWMA,
+// seeding it with the first sample.
+func (b *Backend) ObserveTTFT(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	b.ttftMu.Lock()
+	if b.ttftNanos == 0 {
+		b.ttftNanos = int64(d)
+	} else {
+		b.ttftNanos = int64(ttftAlpha*float64(d) + (1-ttftAlpha)*float64(b.ttftNanos))
+	}
+	b.ttftMu.Unlock()
+}
+
+// SetHardTTFT configures the hard-TTFT limit used by NoteAdmit (0 = off).
+func (b *Backend) SetHardTTFT(d time.Duration) { b.hardTTFT.Store(int64(d)) }
+
+// HardBlocked reports whether the 1-in-1-out gate is closed.
+func (b *Backend) HardBlocked() bool { return b.hardBlocked.Load() }
+
+// NoteAdmit closes the hard-TTFT gate if the backend is over its limit.
+// Lease-only (called from Acquire).
+func (b *Backend) NoteAdmit() {
+	if h := b.hardTTFT.Load(); h > 0 && int64(b.TTFT()) >= h {
+		b.hardBlocked.Store(true)
+	}
+}
+
+// NoteRelease reopens the gate: any completion frees one slot. Lease-only.
+func (b *Backend) NoteRelease() { b.hardBlocked.Store(false) }
+
+// TTFT is the current mean time-to-first-token, 0 with no samples.
+func (b *Backend) TTFT() time.Duration {
+	b.ttftMu.Lock()
+	defer b.ttftMu.Unlock()
+	return time.Duration(b.ttftNanos)
 }
 
 func (b *Backend) Kind() Kind     { return Kind(b.kind.Load()) }

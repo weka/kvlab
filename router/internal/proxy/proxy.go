@@ -474,6 +474,14 @@ func (p *Proxy) attempt(
 	// whether the stream ended cleanly.
 	var sb *scanBody
 
+	// TTFT clock: starts at dispatch, stops at the first upstream BODY byte
+	// (first SSE token for a streaming reply), observed on the backend only for
+	// 2xx. Header time is deliberately not used: vLLM sends headers before
+	// prefill finishes. A non-streaming reply's first byte is the whole answer,
+	// so its sample is full latency.
+	//clockexempt: per-backend latency measurement feeding a signal, not a clock decision
+	dispatchAt := time.Now()
+
 	rp := *p.rp // shallow copy: per-attempt hooks, shared transport and pool
 	rp.Rewrite = func(pr *httputil.ProxyRequest) {
 		pr.Out.URL.Scheme = target.Scheme
@@ -586,6 +594,12 @@ func (p *Proxy) attempt(
 		// text/event-stream whenever the request asked to stream, so a JSON error
 		// body reached the client as a malformed SSE stream (STR-2, STR-N2).
 		sb = &scanBody{rc: resp.Body, sc: scanner, d: d, backend: b.URL}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			sb.onFirstByte = func() {
+				//clockexempt: per-backend latency measurement
+				b.ObserveTTFT(time.Since(dispatchAt))
+			}
+		}
 		if p.cfg.IdleTimeout > 0 && cancelAttempt != nil {
 			sb.idleTimeout = p.cfg.IdleTimeout
 			sb.idle = time.AfterFunc(p.cfg.IdleTimeout, func() {
@@ -727,6 +741,9 @@ type scanBody struct {
 	// silent backend holds a goroutine and a load lease for the full request budget.
 	idle        *time.Timer
 	idleTimeout time.Duration
+
+	// onFirstByte fires once, on the first non-empty body read.
+	onFirstByte func()
 }
 
 const maxSniff = 64 << 10
@@ -737,6 +754,10 @@ func (s *scanBody) Read(p []byte) (int, error) {
 		s.idle.Reset(s.idleTimeout)
 	}
 	if n > 0 {
+		if s.onFirstByte != nil {
+			s.onFirstByte()
+			s.onFirstByte = nil
+		}
 		s.sawEnd = s.sc.Feed(p[:n])
 		s.appendTail(p[:n])
 	}

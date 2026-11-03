@@ -62,6 +62,16 @@ type Config struct {
 	// Zero (the default) leaves NodeConcurrency a single hard limit.
 	SoftNodeConcurrency int64
 
+	// TTFTHard excludes any backend whose mean time-to-first-token is at or
+	// above it, like a node at the hard concurrency limit. 0 = off.
+	TTFTHard time.Duration
+
+	// TTFTSoft is the TTFT analogue of SoftNodeConcurrency: an affinity holder
+	// whose mean TTFT exceeds it is skipped in tier 1 in favour of a guarded
+	// split, stacking with the concurrency soft band. Independent of TTFTHard
+	// (no "soft requires hard" rule). 0 = off.
+	TTFTSoft time.Duration
+
 	// RebalanceRatio enables the imbalance signal: a backend is unusable while
 	// (inflight - fleetMin) / inflight exceeds this. 0.5 means "rebalance once
 	// the gap is more than half the busier side". Zero leaves it off, which is
@@ -165,6 +175,13 @@ func (c Config) withDefaults() Config {
 	if c.SoftNodeConcurrency < 0 || c.NodeConcurrency <= 0 || c.SoftNodeConcurrency >= c.NodeConcurrency {
 		c.SoftNodeConcurrency = 0
 	}
+	// TTFT thresholds are independent: negatives clamp to off, no pairing rule.
+	if c.TTFTHard < 0 {
+		c.TTFTHard = 0
+	}
+	if c.TTFTSoft < 0 {
+		c.TTFTSoft = 0
+	}
 	return c
 }
 
@@ -265,6 +282,9 @@ func New(cfg Config, fallback policy.Policy) (*Policy, error) {
 	}
 	if cfg.NodeConcurrency > 0 {
 		p.signals = append(p.signals, concurrencySignal{limit: cfg.NodeConcurrency})
+	}
+	if cfg.TTFTHard > 0 {
+		p.signals = append(p.signals, ttftSignal{limit: cfg.TTFTHard})
 	}
 	if cfg.RebalanceRatio > 0 {
 		p.signals = append(p.signals, imbalanceSignal{ratio: cfg.RebalanceRatio})
@@ -454,12 +474,31 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 	// split could land on a backend the soft limit had also passed, which is the
 	// opposite of the point.
 	var stretch []*registry.Backend
-	if p.cfg.SoftNodeConcurrency > 0 && len(pool) > 0 {
+	softConc := p.cfg.SoftNodeConcurrency > 0
+	// Soft TTFT is active for this decision only if some usable node is within
+	// soft TTFT. If every node is over soft, TTFT-driven splitting is disabled
+	// (spilling onto an equally slow node is pointless) and concurrency alone
+	// decides. While active, a node over soft is never a split/stretch target.
+	softTTFT := false
+	if p.cfg.TTFTSoft > 0 {
+		for _, c := range usable {
+			if c.TTFT() <= p.cfg.TTFTSoft {
+				softTTFT = true
+				break
+			}
+		}
+	}
+	if (softConc || softTTFT) && len(pool) > 0 {
 		under := make([]*registry.Backend, 0, len(pool))
 		for _, c := range pool {
-			if c.Inflight() < p.cfg.SoftNodeConcurrency {
-				under = append(under, c)
+			// A holder stays preferred only if it passes EVERY enabled band.
+			if softConc && c.Inflight() >= p.cfg.SoftNodeConcurrency {
+				continue
 			}
+			if softTTFT && c.TTFT() > p.cfg.TTFTSoft {
+				continue
+			}
+			under = append(under, c)
 		}
 		if len(under) == 0 {
 			p.m.SoftBlocked.Inc()
@@ -479,7 +518,7 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 			guardRef = ref
 		}
 	}
-	if len(stretch) > 0 {
+	if len(stretch) > 0 && p.cfg.SoftNodeConcurrency > 0 {
 		// A soft-triggered split is escaping the SOFT limit, not the hard one:
 		// the holders it would relieve are sitting just above soft and are not
 		// saturated at all. Measuring against the hard limit would let the copy
@@ -538,6 +577,9 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 		for i, c := range usable {
 			if a.held.Has(slots[i]) {
 				continue // already a holder, and unavailable
+			}
+			if softTTFT && c.TTFT() > p.cfg.TTFTSoft {
+				continue // never spill onto a node that is itself over soft TTFT
 			}
 			if float64(c.Inflight()) < threshold {
 				split = append(split, c)
@@ -735,6 +777,7 @@ func (p *Policy) AddBackend(b *registry.Backend) {
 	p.mu.Lock()
 	p.backends[b.URL] = b
 	p.mu.Unlock()
+	b.SetHardTTFT(p.cfg.TTFTHard)
 }
 
 // DropBackend clears a backend's marks fleet-wide and frees its slot, in that

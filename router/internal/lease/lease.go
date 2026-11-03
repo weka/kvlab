@@ -55,6 +55,7 @@ type Lease struct {
 func Acquire(b *registry.Backend) *Lease {
 	b.AddInflight(+1)
 	b.CountRequest()
+	b.NoteAdmit()
 	return &Lease{b: b}
 }
 
@@ -99,6 +100,7 @@ func (l *Lease) Release() {
 		// call site is needed to keep a queued request from waiting past the
 		// moment its slot actually freed.
 		l.b.Waiters().Wake()
+		l.b.NoteRelease()
 	})
 }
 
