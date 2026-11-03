@@ -72,6 +72,18 @@ type Config struct {
 	// (no "soft requires hard" rule). 0 = off.
 	TTFTSoft time.Duration
 
+	// RelativeTTFT splits off a holder whose rolling p90 TTFT is above the
+	// lowest p90 among the other usable backends; a target is eligible only if
+	// its p90 is below the holder's. A pure comparison: no ratio, margin or
+	// hysteresis. The cache split guard is the only flap protection.
+	RelativeTTFT bool
+
+	// RelativeDecode is the same for live decode load (estimated context tokens
+	// of streaming requests): the holder is skipped and a target eligible when
+	// target load + this request's tokens < holder load, i.e. the target stays
+	// less loaded than the holder after taking the request.
+	RelativeDecode bool
+
 	// RebalanceRatio enables the imbalance signal: a backend is unusable while
 	// (inflight - fleetMin) / inflight exceeds this. 0.5 means "rebalance once
 	// the gap is more than half the busier side". Zero leaves it off, which is
@@ -488,23 +500,54 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 			}
 		}
 	}
-	if (softConc || softTTFT) && len(pool) > 0 {
+	relTTFT := p.cfg.RelativeTTFT
+	relDec := p.cfg.RelativeDecode
+	estTok := estTokens(rr)
+	// causes: every signal that got a holder skipped. refP90/refLoad: the
+	// strictest (lowest) holder value, which a relative target must beat.
+	var causes causeSet
+	var refP90 time.Duration
+	var refLoad int64
+	if (softConc || softTTFT || relTTFT || relDec) && len(pool) > 0 {
 		under := make([]*registry.Backend, 0, len(pool))
-		for _, c := range pool {
+		for k, c := range pool {
+			var hc causeSet
 			// A holder stays preferred only if it passes EVERY enabled band.
 			if softConc && c.Inflight() >= p.cfg.SoftNodeConcurrency {
-				continue
+				hc |= causeConcurrency
 			}
 			if softTTFT && c.TTFTp90() > p.cfg.TTFTSoft {
-				continue
+				hc |= causeSoftTTFT
 			}
-			under = append(under, c)
+			if relTTFT {
+				if lo, ok := lowestOther(usable, c, func(o *registry.Backend) int64 { return int64(o.TTFTp90()) }); ok &&
+					int64(c.TTFTp90()) > lo {
+					hc |= causeRelTTFT
+				}
+			}
+			if relDec {
+				if lo, ok := lowestOther(usable, c, func(o *registry.Backend) int64 { return o.DecodeTokens() }); ok &&
+					c.DecodeTokens() > lo+estTok {
+					hc |= causeRelDecode
+				}
+			}
+			if hc == 0 {
+				under = append(under, c)
+			}
+			causes |= hc
+			if k == 0 || c.TTFTp90() < refP90 {
+				refP90 = c.TTFTp90()
+			}
+			if k == 0 || c.DecodeTokens() < refLoad {
+				refLoad = c.DecodeTokens()
+			}
 		}
 		if len(under) == 0 {
 			p.m.SoftBlocked.Inc()
 			stretch, pool = pool, nil
 		} else {
 			pool = under
+			causes = 0 // the request stays on a holder: no split, no trigger
 		}
 	}
 
@@ -535,6 +578,20 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 		// No saturated holder named a level. Either the configured limit is the
 		// only capacity model available, or there is none.
 		guardRef = p.cfg.NodeConcurrency
+	}
+	if len(stretch) > 0 && causes&(causeRelTTFT|causeRelDecode) != 0 {
+		// A relative trigger names no limit; the thing being relieved is the
+		// holder's own in-flight, so the copy must land clearly below it. The
+		// strictest (lowest) holder level wins, as with the other references.
+		h := int64(-1)
+		for _, c := range stretch {
+			if l := c.Inflight(); h < 0 || l < h {
+				h = l
+			}
+		}
+		if h > 0 && (guardRef <= 0 || h < guardRef) {
+			guardRef = h
+		}
 	}
 
 	// No reference at all means the holders are ABSENT rather than full — they
@@ -581,6 +638,15 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 			if softTTFT && c.TTFTp90() > p.cfg.TTFTSoft {
 				continue // never spill onto a node that is itself over soft TTFT
 			}
+			// A relative trigger's target must beat the holder on that same
+			// metric, and on the load AFTER taking this request (anti-flap):
+			// moving must not just invert the imbalance.
+			if causes&causeRelTTFT != 0 && !(c.TTFTp90() < refP90) {
+				continue
+			}
+			if causes&causeRelDecode != 0 && !(c.DecodeTokens()+estTok < refLoad) {
+				continue
+			}
 			if float64(c.Inflight()) < threshold {
 				split = append(split, c)
 			}
@@ -589,6 +655,7 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 			rr.PolicyState = markDecision
 			p.m.Decision("split")
 			p.m.Splits.Inc()
+			causes.count()
 			p.m.AnchorBlocks.Observe(float64(a.matched))
 			return p.fallback.Select(ctx, split, rr)
 		}

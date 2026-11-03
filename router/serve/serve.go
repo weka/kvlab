@@ -146,7 +146,10 @@ type Options struct {
 	// TTFTHard / TTFTSoft split by per-node mean TTFT, parallel to the
 	// concurrency band. 0 is off.
 	TTFTHard, TTFTSoft time.Duration
-	RebalanceRatio     float64
+	// RelativeTTFT / RelativeDecode switch on splitting a holder off by plain
+	// comparison with its peers: p90 TTFT, and live decode tokens. Off by default.
+	RelativeTTFT, RelativeDecode bool
+	RebalanceRatio               float64
 	// PrefillSplit moves heavy prefills a backend refuses (HTTP 400
 	// large_prefill_rejected) onto prefill-only nodes the router sets aside
 	// from the fleet. Off by default.
@@ -265,6 +268,8 @@ func (o Options) flowConfig() affinity.Config {
 		SoftNodeConcurrency: o.SoftNodeConcurrency,
 		TTFTHard:            o.TTFTHard,
 		TTFTSoft:            o.TTFTSoft,
+		RelativeTTFT:        o.RelativeTTFT,
+		RelativeDecode:      o.RelativeDecode,
 		RebalanceRatio:      o.RebalanceRatio,
 		SplitGuard:          o.SplitGuard,
 		TransientFallback:   o.TransientFallback,
@@ -1179,6 +1184,12 @@ func signalSummary(c affinity.Config) string {
 	}
 	if c.TTFTSoft > 0 || c.TTFTHard > 0 {
 		out += fmt.Sprintf(",ttft=%v..%v", c.TTFTSoft, c.TTFTHard)
+	}
+	if c.RelativeTTFT {
+		out += ",relative-ttft"
+	}
+	if c.RelativeDecode {
+		out += ",relative-decode"
 	}
 	if c.RebalanceRatio > 0 {
 		out += fmt.Sprintf(",imbalance=%.3g", c.RebalanceRatio)

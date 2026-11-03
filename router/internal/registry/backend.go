@@ -144,14 +144,25 @@ type Backend struct {
 	ttftNanos int64
 	// ttftWin is the rolling sample window behind TTFTp90 (oldest first).
 	ttftWin []ttftSample
+	// p90 cache: TTFTp90 is read several times per routing decision and per
+	// scrape, so the sort is redone only after a new sample or after
+	// ttftCacheTTL (eviction by age).
+	p90Val   time.Duration
+	p90At    time.Time
+	p90Valid bool
 
 	// hardTTFT is the hard-TTFT limit in nanos (0 = off), set by the routing
 	// policy. hardBlocked is the 1-in-1-out gate: set when a request is admitted
 	// while TTFTp90() >= hardTTFT, cleared on ANY lease release. Gating on the flag
 	// rather than on TTFT alone is what prevents a deadlock: a permanently
 	// excluded node would get no samples and its EWMA would never recover.
-	hardTTFT    atomic.Int64
-	hardBlocked atomic.Bool
+	hardTTFT atomic.Int64
+	// decodeTokens is the estimated context tokens of in-flight requests that
+	// have started streaming (past their first upstream body byte). Mutated
+	// only through internal/lease, which pairs every add with exactly one
+	// subtract at release.
+	decodeTokens atomic.Int64
+	hardBlocked  atomic.Bool
 
 	// waiters holds requests refused only by the concurrency signal on THIS
 	// backend, bound here rather than pool-wide so a wait preserves the
@@ -182,6 +193,8 @@ const (
 	ttftMinSamples = 8
 	// ttftWindowCap bounds memory under very high request rates.
 	ttftWindowCap = 8192
+	// ttftCacheTTL bounds how stale a cached p90 may get from age eviction.
+	ttftCacheTTL = 250 * time.Millisecond
 )
 
 // evictTTFT drops samples older than the window. Caller holds ttftMu.
@@ -202,20 +215,23 @@ func (b *Backend) TTFTp90() time.Duration {
 	//clockexempt: rolling-window measurement
 	now := time.Now()
 	b.ttftMu.Lock()
+	defer b.ttftMu.Unlock()
+	if b.p90Valid && now.Sub(b.p90At) < ttftCacheTTL {
+		return b.p90Val
+	}
 	b.evictTTFT(now)
 	n := len(b.ttftWin)
-	if n < ttftMinSamples {
-		b.ttftMu.Unlock()
-		return 0
+	var v time.Duration
+	if n >= ttftMinSamples {
+		ds := make([]time.Duration, n)
+		for i, s := range b.ttftWin {
+			ds[i] = s.d
+		}
+		sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+		v = ds[(n*9+9)/10-1] // ceil(0.9*n)-1
 	}
-	ds := make([]time.Duration, n)
-	for i, s := range b.ttftWin {
-		ds[i] = s.d
-	}
-	b.ttftMu.Unlock()
-	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
-	idx := (n*9+9)/10 - 1 // ceil(0.9*n)-1
-	return ds[idx]
+	b.p90Val, b.p90At, b.p90Valid = v, now, true
+	return v
 }
 
 // ObserveTTFT folds one time-to-first-token sample into the backend's EWMA
@@ -232,6 +248,7 @@ func (b *Backend) ObserveTTFT(d time.Duration) {
 		b.ttftWin = append(b.ttftWin[:0], b.ttftWin[1:]...)
 	}
 	b.ttftWin = append(b.ttftWin, ttftSample{at: now, d: d})
+	b.p90Valid = false
 	if b.ttftNanos == 0 {
 		b.ttftNanos = int64(d)
 	} else {
@@ -239,6 +256,12 @@ func (b *Backend) ObserveTTFT(d time.Duration) {
 	}
 	b.ttftMu.Unlock()
 }
+
+// DecodeTokens is the live decode-load gauge (see decodeTokens).
+func (b *Backend) DecodeTokens() int64 { return b.decodeTokens.Load() }
+
+// AddDecodeTokens is lease-only, like AddInflight.
+func (b *Backend) AddDecodeTokens(d int64) int64 { return b.decodeTokens.Add(d) }
 
 // SetHardTTFT configures the hard-TTFT limit used by NoteAdmit (0 = off).
 func (b *Backend) SetHardTTFT(d time.Duration) { b.hardTTFT.Store(int64(d)) }

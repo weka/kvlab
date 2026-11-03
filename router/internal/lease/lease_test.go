@@ -240,3 +240,65 @@ func TestDoubleReleaseWakesOnlyOnce(t *testing.T) {
 		t.Fatalf("tickets woken = %d, want exactly 1 (one release, one wake)", woken)
 	}
 }
+
+// The decode-load gauge must return to exactly 0 however a lease ends, and a
+// first-byte add that races or follows the release must not leak.
+func TestDecodeTokensNeverLeak(t *testing.T) {
+	_, bs := newBackends(t, 1)
+	b := bs[0]
+
+	// Streamed then released.
+	l := lease.Acquire(b)
+	l.StartDecode(100)
+	l.StartDecode(100) // second first-byte is a no-op, not a double count
+	if got := b.DecodeTokens(); got != 100 {
+		t.Fatalf("streaming = %d, want 100", got)
+	}
+	l.Release()
+	l.Release()
+	if got := b.DecodeTokens(); got != 0 {
+		t.Fatalf("after release = %d, want 0", got)
+	}
+
+	// Never streamed (error / cancel before the first byte).
+	l = lease.Acquire(b)
+	l.Release()
+	if got := b.DecodeTokens(); got != 0 {
+		t.Fatalf("never streamed = %d, want 0", got)
+	}
+
+	// First byte arriving after release must not add.
+	l = lease.Acquire(b)
+	l.Release()
+	l.StartDecode(50)
+	if got := b.DecodeTokens(); got != 0 {
+		t.Fatalf("add after release leaked: %d", got)
+	}
+
+	// Nil lease and non-positive tokens are safe no-ops.
+	var nl *lease.Lease
+	nl.StartDecode(10)
+	l = lease.Acquire(b)
+	l.StartDecode(0)
+	l.StartDecode(-5)
+	l.Release()
+	if got := b.DecodeTokens(); got != 0 {
+		t.Fatalf("no-op cases = %d, want 0", got)
+	}
+}
+
+func TestDecodeTokensConcurrentStartRelease(t *testing.T) {
+	_, bs := newBackends(t, 1)
+	b := bs[0]
+	var wg sync.WaitGroup
+	for i := 0; i < 500; i++ {
+		l := lease.Acquire(b)
+		wg.Add(2)
+		go func() { defer wg.Done(); l.StartDecode(7) }()
+		go func() { defer wg.Done(); l.Release() }()
+	}
+	wg.Wait()
+	if got := b.DecodeTokens(); got != 0 {
+		t.Fatalf("racing start/release leaked %d tokens", got)
+	}
+}

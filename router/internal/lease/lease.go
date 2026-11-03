@@ -46,6 +46,29 @@ func ResetAccountingErrors() { accountingErrors.Store(0) }
 type Lease struct {
 	b    *registry.Backend
 	once sync.Once
+
+	// mu guards decode and released so a first-byte add racing a release can
+	// neither leak (add after the release already subtracted) nor double-count.
+	mu       sync.Mutex
+	decode   int64
+	released bool
+}
+
+// StartDecode adds this request's estimated context tokens to the backend's
+// decode-load gauge. Called once, when the first upstream body byte arrives.
+// Idempotent, and a no-op after Release, so the matching subtract in Release
+// is the only way the tokens leave and the gauge cannot leak or go negative.
+func (l *Lease) StartDecode(tokens int64) {
+	if l == nil || tokens <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.released || l.decode != 0 {
+		return
+	}
+	l.decode = tokens
+	l.b.AddDecodeTokens(tokens)
 }
 
 // Acquire is the ONLY place in the program that increments in-flight load
@@ -82,6 +105,13 @@ func (l *Lease) Release() {
 		return
 	}
 	l.once.Do(func() {
+		l.mu.Lock()
+		l.released = true
+		if l.decode != 0 {
+			l.b.AddDecodeTokens(-l.decode)
+			l.decode = 0
+		}
+		l.mu.Unlock()
 		if n := l.b.AddInflight(-1); n < 0 {
 			// Never wrap. A negative count means the accounting invariant is
 			// broken somewhere; say so loudly and clamp (LB-5).

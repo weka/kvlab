@@ -27,6 +27,11 @@ type SeriesBackend interface {
 	// Queued reports how many requests are waiting in this backend's wait
 	// queue (router/internal/waitq), bound to it for prefix-cache locality.
 	Queued() int64
+	// TTFTp90 is the rolling-30s p90 time-to-first-token (0 when too few
+	// samples). DecodeTokens is the estimated context tokens of requests that
+	// have started streaming.
+	TTFTp90() time.Duration
+	DecodeTokens() int64
 	// Down reports unhealthy or being removed.
 	Down() bool
 }
@@ -55,7 +60,7 @@ type BackendSeries struct {
 	clk       clock.Clock
 	retention time.Duration
 
-	inflightDesc, requestsDesc, queuedDesc *prometheus.Desc
+	inflightDesc, requestsDesc, queuedDesc, ttftDesc, decodeDesc *prometheus.Desc
 
 	mu      sync.Mutex
 	sources []func() []SeriesBackend
@@ -99,6 +104,12 @@ func NewBackendSeries(clk clock.Clock, retention time.Duration) *BackendSeries {
 			"Requests currently waiting in this backend's wait queue for a concurrency slot to free. "+
 				"Reported as 0 while the backend is unhealthy or removed, same as router_backend_inflight.",
 			[]string{"backend"}, nil),
+		ttftDesc: prometheus.NewDesc("router_backend_ttft_p90_seconds",
+			"Rolling 30s p90 time-to-first-token per backend (dispatch to first response body byte, 2xx only); 0 with fewer than 8 samples. Computed at scrape time.",
+			[]string{"backend"}, nil),
+		decodeDesc: prometheus.NewDesc("router_backend_active_decode_tokens",
+			"Estimated context tokens of in-flight requests that have started streaming, per backend.",
+			[]string{"backend"}, nil),
 		tracked: map[trackKey]*tracked{},
 	}
 }
@@ -120,6 +131,8 @@ func (c *BackendSeries) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.inflightDesc
 	ch <- c.requestsDesc
 	ch <- c.queuedDesc
+	ch <- c.ttftDesc
+	ch <- c.decodeDesc
 }
 
 func (c *BackendSeries) Collect(ch chan<- prometheus.Metric) {
@@ -140,6 +153,8 @@ func (c *BackendSeries) Collect(ch chan<- prometheus.Metric) {
 		inflight int64
 		requests uint64
 		queued   int64
+		ttft     time.Duration
+		decode   int64
 	}
 	out := map[string]*sample{}
 	report := func(t *tracked, down bool) {
@@ -155,6 +170,10 @@ func (c *BackendSeries) Collect(ch chan<- prometheus.Metric) {
 		if !down {
 			s.inflight += t.b.Inflight()
 			s.queued += t.b.Queued()
+			s.decode += t.b.DecodeTokens()
+			if v := t.b.TTFTp90(); v > s.ttft {
+				s.ttft = v
+			}
 		}
 	}
 
@@ -194,5 +213,7 @@ func (c *BackendSeries) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.inflightDesc, prometheus.GaugeValue, float64(s.inflight), label)
 		ch <- prometheus.MustNewConstMetric(c.requestsDesc, prometheus.CounterValue, float64(s.requests), label)
 		ch <- prometheus.MustNewConstMetric(c.queuedDesc, prometheus.GaugeValue, float64(s.queued), label)
+		ch <- prometheus.MustNewConstMetric(c.ttftDesc, prometheus.GaugeValue, s.ttft.Seconds(), label)
+		ch <- prometheus.MustNewConstMetric(c.decodeDesc, prometheus.GaugeValue, float64(s.decode), label)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/weka/wekai/kvcache"
 	"github.com/weka/wekai/router/internal/clock"
 	"github.com/weka/wekai/router/internal/dialect"
 	"github.com/weka/wekai/router/internal/metrics"
@@ -206,6 +207,9 @@ func (s *Server) inferenceHandler(route dialect.Route, affine bool) http.Handler
 			DialectID:  s.dialect.ID(),
 			Model:      intro.Model,
 			Stream:     intro.Stream,
+		}
+		if len(body) > 0 {
+			rr.EstTokens = int64(kvcache.EstimateTokens(len(body)))
 		}
 
 		target, ok := s.router.Route(intro.Model)

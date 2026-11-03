@@ -57,9 +57,14 @@ type RoutingRequest struct {
 	Stream     bool
 	// Units is nil when the route has no routable prefix, in which case cache
 	// policies decline and fall back rather than failing (CU-11).
-	Units    []kvcache.Unit
-	Locality string
-	Deadline time.Time
+	Units []kvcache.Unit
+	// EstTokens is the estimated context size of the request in tokens
+	// (kvcache.EstimateTokens over the request body). It feeds the relative
+	// decode-load split; 0 means unknown and the policy falls back to the sum
+	// of Units' tokens.
+	EstTokens int64
+	Locality  string
+	Deadline  time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

@@ -79,3 +79,13 @@ func TestPDRoleFlowsInheritAndOverride(t *testing.T) {
 		t.Errorf("signalsLog = %q, want %q", got, want)
 	}
 }
+
+func TestRelativeThreadedIntoFlowConfig(t *testing.T) {
+	c := Options{RelativeTTFT: true, RelativeDecode: true}.flowConfig()
+	if !c.RelativeTTFT || !c.RelativeDecode {
+		t.Errorf("flowConfig dropped the ratios: %+v", c)
+	}
+	if s := signalSummary(c); !strings.Contains(s, "relative-ttft") || !strings.Contains(s, "relative-decode") {
+		t.Errorf("startup summary missing relative signals: %s", s)
+	}
+}

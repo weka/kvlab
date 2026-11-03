@@ -52,6 +52,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/weka/wekai/kvcache"
 	"github.com/weka/wekai/router/internal/circuit"
 	"github.com/weka/wekai/router/internal/dialect"
 	"github.com/weka/wekai/router/internal/lease"
@@ -598,6 +599,10 @@ func (p *Proxy) attempt(
 			sb.onFirstByte = func() {
 				//clockexempt: per-backend latency measurement
 				b.ObserveTTFT(time.Since(dispatchAt))
+				// The request is now decoding: count its estimated context
+				// (same estimator the policy uses for rr.EstTokens) until the
+				// lease releases.
+				lse.StartDecode(int64(kvcache.EstimateTokens(len(body))))
 			}
 		}
 		if p.cfg.IdleTimeout > 0 && cancelAttempt != nil {

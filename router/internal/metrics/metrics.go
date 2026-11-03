@@ -361,6 +361,14 @@ var (
 		Help: "Times a split signal judged a backend unable to take more work.",
 	}, []string{"pool", "signal"})
 
+	// SplitTriggers counts holder-skipping triggers that led to a split, per
+	// signal: soft_ttft, relative_ttft, relative_decode, concurrency. Tells an
+	// operator which signal is actually moving traffic off affinity holders.
+	SplitTriggers = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "router_split_trigger_total",
+		Help: "Splits off an affinity holder, by the signal that caused the holder to be skipped (a split can count under several).",
+	}, []string{"signal"})
+
 	// CacheGuardRejects counts the 429s the split guard causes: every backend
 	// holding the prefix was at its limit and no other backend was far enough
 	// below it to be worth a duplicate copy. Idle capacity existed and was
@@ -607,7 +615,7 @@ func All() []prometheus.Collector {
 		CachePredictedFraction, CacheObservedFraction, CacheEntries, CacheTokens,
 		CacheSplits, CacheOverflows, CacheSoftBlocked, CacheStretches, CacheStretchInflight,
 		CacheAvgCopies, CacheAnchorBlocks,
-		CacheShallowAnchors, CacheShallowAnchorBlocks, CacheGuardRejects, SignalFired,
+		CacheShallowAnchors, CacheShallowAnchorBlocks, CacheGuardRejects, SignalFired, SplitTriggers,
 		CachePoolSize, CacheTreeRuns, CacheTailSet, CacheBlocksExpired, VLLMMetricsEndpoints,
 		RequestsShed, SaturationRejects, BackendCapExceeded, observedShadow,
 		PrefillRejections, PrefillJobs, PrefillConversions, PrefillReleases,
@@ -784,6 +792,8 @@ type PoolMetrics struct {
 var (
 	DecisionTiers = []string{"cache", "split", "overflow", "stretch", "load"}
 	SplitSignals  = []string{"refused", "concurrency", "imbalance"}
+	// SplitTriggerSignals are the label values of router_split_trigger_total.
+	SplitTriggerSignals = []string{"soft_ttft", "relative_ttft", "relative_decode", "concurrency"}
 )
 
 // ForPool resolves every per-pool collector for name.
@@ -797,6 +807,9 @@ func ForPool(name string) *PoolMetrics {
 	lbl := prometheus.Labels{"pool": name}
 	for _, t := range DecisionTiers {
 		RouteDecisions.With(prometheus.Labels{"pool": name, "decision": t})
+	}
+	for _, s := range SplitTriggerSignals {
+		SplitTriggers.With(prometheus.Labels{"signal": s})
 	}
 	for _, s := range SplitSignals {
 		SignalFired.With(prometheus.Labels{"pool": name, "signal": s})
