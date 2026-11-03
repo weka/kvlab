@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,10 +142,12 @@ type Backend struct {
 	// TTFT signal and soft band.
 	ttftMu    sync.Mutex
 	ttftNanos int64
+	// ttftWin is the rolling sample window behind TTFTp90 (oldest first).
+	ttftWin []ttftSample
 
 	// hardTTFT is the hard-TTFT limit in nanos (0 = off), set by the routing
 	// policy. hardBlocked is the 1-in-1-out gate: set when a request is admitted
-	// while TTFT() >= hardTTFT, cleared on ANY lease release. Gating on the flag
+	// while TTFTp90() >= hardTTFT, cleared on ANY lease release. Gating on the flag
 	// rather than on TTFT alone is what prevents a deadlock: a permanently
 	// excluded node would get no samples and its EWMA would never recover.
 	hardTTFT    atomic.Int64
@@ -165,13 +168,70 @@ type Backend struct {
 // ttftAlpha weights the newest sample in the TTFT EWMA.
 const ttftAlpha = 0.3
 
-// ObserveTTFT folds one time-to-first-token sample into the backend's EWMA,
-// seeding it with the first sample.
+type ttftSample struct {
+	at time.Time // monotonic
+	d  time.Duration
+}
+
+const (
+	// ttftWindow is how far back TTFTp90 looks. Samples age out on their own,
+	// so a node with no fresh traffic drifts back to p90==0 (self-recovery).
+	ttftWindow = 30 * time.Second
+	// ttftMinSamples: below this the p90 is reported as 0 so a cold or
+	// low-traffic node is never flagged on a handful of samples.
+	ttftMinSamples = 8
+	// ttftWindowCap bounds memory under very high request rates.
+	ttftWindowCap = 8192
+)
+
+// evictTTFT drops samples older than the window. Caller holds ttftMu.
+func (b *Backend) evictTTFT(now time.Time) {
+	i := 0
+	for i < len(b.ttftWin) && now.Sub(b.ttftWin[i].at) > ttftWindow {
+		i++
+	}
+	if i > 0 {
+		b.ttftWin = append(b.ttftWin[:0], b.ttftWin[i:]...)
+	}
+}
+
+// TTFTp90 is the 90th percentile of TTFT over the last 30s, or 0 with fewer
+// than 8 samples in the window. This, not the mean, is what the router's TTFT
+// split reads: the mean badly understates tail degradation on a loaded node.
+func (b *Backend) TTFTp90() time.Duration {
+	//clockexempt: rolling-window measurement
+	now := time.Now()
+	b.ttftMu.Lock()
+	b.evictTTFT(now)
+	n := len(b.ttftWin)
+	if n < ttftMinSamples {
+		b.ttftMu.Unlock()
+		return 0
+	}
+	ds := make([]time.Duration, n)
+	for i, s := range b.ttftWin {
+		ds[i] = s.d
+	}
+	b.ttftMu.Unlock()
+	sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+	idx := (n*9+9)/10 - 1 // ceil(0.9*n)-1
+	return ds[idx]
+}
+
+// ObserveTTFT folds one time-to-first-token sample into the backend's EWMA
+// (seeding it with the first sample) and its rolling p90 window.
 func (b *Backend) ObserveTTFT(d time.Duration) {
 	if d <= 0 {
 		return
 	}
+	//clockexempt: rolling-window measurement
+	now := time.Now()
 	b.ttftMu.Lock()
+	b.evictTTFT(now)
+	if len(b.ttftWin) >= ttftWindowCap {
+		b.ttftWin = append(b.ttftWin[:0], b.ttftWin[1:]...)
+	}
+	b.ttftWin = append(b.ttftWin, ttftSample{at: now, d: d})
 	if b.ttftNanos == 0 {
 		b.ttftNanos = int64(d)
 	} else {
@@ -186,10 +246,10 @@ func (b *Backend) SetHardTTFT(d time.Duration) { b.hardTTFT.Store(int64(d)) }
 // HardBlocked reports whether the 1-in-1-out gate is closed.
 func (b *Backend) HardBlocked() bool { return b.hardBlocked.Load() }
 
-// NoteAdmit closes the hard-TTFT gate if the backend is over its limit.
+// NoteAdmit closes the hard-TTFT gate if the backend's p90 TTFT is over its limit.
 // Lease-only (called from Acquire).
 func (b *Backend) NoteAdmit() {
-	if h := b.hardTTFT.Load(); h > 0 && int64(b.TTFT()) >= h {
+	if h := b.hardTTFT.Load(); h > 0 && int64(b.TTFTp90()) >= h {
 		b.hardBlocked.Store(true)
 	}
 }

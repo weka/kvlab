@@ -62,12 +62,12 @@ type Config struct {
 	// Zero (the default) leaves NodeConcurrency a single hard limit.
 	SoftNodeConcurrency int64
 
-	// TTFTHard excludes any backend whose mean time-to-first-token is at or
+	// TTFTHard excludes any backend whose rolling-30s p90 time-to-first-token is at or
 	// above it, like a node at the hard concurrency limit. 0 = off.
 	TTFTHard time.Duration
 
 	// TTFTSoft is the TTFT analogue of SoftNodeConcurrency: an affinity holder
-	// whose mean TTFT exceeds it is skipped in tier 1 in favour of a guarded
+	// whose rolling-30s p90 TTFT exceeds it is skipped in tier 1 in favour of a guarded
 	// split, stacking with the concurrency soft band. Independent of TTFTHard
 	// (no "soft requires hard" rule). 0 = off.
 	TTFTSoft time.Duration
@@ -482,7 +482,7 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 	softTTFT := false
 	if p.cfg.TTFTSoft > 0 {
 		for _, c := range usable {
-			if c.TTFT() <= p.cfg.TTFTSoft {
+			if c.TTFTp90() <= p.cfg.TTFTSoft {
 				softTTFT = true
 				break
 			}
@@ -495,7 +495,7 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 			if softConc && c.Inflight() >= p.cfg.SoftNodeConcurrency {
 				continue
 			}
-			if softTTFT && c.TTFT() > p.cfg.TTFTSoft {
+			if softTTFT && c.TTFTp90() > p.cfg.TTFTSoft {
 				continue
 			}
 			under = append(under, c)
@@ -578,7 +578,7 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 			if a.held.Has(slots[i]) {
 				continue // already a holder, and unavailable
 			}
-			if softTTFT && c.TTFT() > p.cfg.TTFTSoft {
+			if softTTFT && c.TTFTp90() > p.cfg.TTFTSoft {
 				continue // never spill onto a node that is itself over soft TTFT
 			}
 			if float64(c.Inflight()) < threshold {

@@ -219,7 +219,7 @@ func (i imbalanceSignal) saturated(b *registry.Backend, view loadView) (bool, in
 // ---------------------------------------------------------------- ttft
 
 // ttftSignal is the hard-TTFT gate, enabled by --hard-ttft-split. A backend is
-// excluded while TTFT() >= limit AND its 1-in-1-out gate is closed
+// excluded while TTFTp90() >= limit AND its 1-in-1-out gate is closed
 // (registry.Backend.NoteAdmit/NoteRelease): over the limit it admits about one
 // new request per completion. That caps its load but keeps feeding the EWMA,
 // so it recovers on its own. A static TTFT>=limit exclusion would freeze the
@@ -232,7 +232,7 @@ type ttftSignal struct{ limit time.Duration }
 func (ttftSignal) name() string { return "ttft" }
 
 func (t ttftSignal) saturated(b *registry.Backend, _ loadView) (bool, int64) {
-	if b.HardBlocked() && b.TTFT() >= t.limit {
+	if b.HardBlocked() && b.TTFTp90() >= t.limit {
 		return true, 0
 	}
 	return false, 0

@@ -24,7 +24,52 @@ func newTTFTPolicy(t *testing.T, hard, soft time.Duration) *Policy {
 	return p
 }
 
-func setTTFT(b *registry.Backend, d time.Duration) { b.ObserveTTFT(d) }
+// setTTFT drives the rolling p90 (and the mean) by feeding 20 identical samples.
+func setTTFT(b *registry.Backend, d time.Duration) {
+	for i := 0; i < 20; i++ {
+		b.ObserveTTFT(d)
+	}
+}
+
+func TestP90FollowsTailNotMean(t *testing.T) {
+	b := fleet(t, 1)[0]
+	// 4 very slow then 16 fast (EWMA favors recent): p90 sits in the slow tail while the
+	// mean stays low-ish.
+	for i := 0; i < 4; i++ {
+		b.ObserveTTFT(13 * time.Second)
+	}
+	for i := 0; i < 16; i++ {
+		b.ObserveTTFT(time.Second)
+	}
+	if got := b.TTFTp90(); got != 13*time.Second {
+		t.Fatalf("p90 = %v, want 13s", got)
+	}
+	if mean := b.TTFT(); mean >= 8*time.Second {
+		t.Fatalf("test needs mean well under p90, mean=%v", mean)
+	}
+	// Soft 5s sits between mean and p90: the signal must follow p90.
+	p := newTTFTPolicy(t, 0, 5*time.Second)
+	f, u := softFleet(t, p, 0, 0)
+	for i := 0; i < 4; i++ {
+		f[0].ObserveTTFT(13 * time.Second)
+	}
+	for i := 0; i < 16; i++ {
+		f[0].ObserveTTFT(time.Second)
+	}
+	if got, err := p.Select(context.Background(), f, req(u)); err != nil || got == f[0] {
+		t.Fatalf("holder with p90>soft must be split off, got %v %v", got, err)
+	}
+}
+
+func TestP90NeedsMinSamples(t *testing.T) {
+	b := fleet(t, 1)[0]
+	for i := 0; i < 7; i++ {
+		b.ObserveTTFT(time.Minute)
+	}
+	if b.TTFTp90() != 0 {
+		t.Fatalf("under 8 samples must read 0, got %v", b.TTFTp90())
+	}
+}
 
 func TestTTFTEWMA(t *testing.T) {
 	b := fleet(t, 1)[0]
