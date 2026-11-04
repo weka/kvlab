@@ -84,6 +84,14 @@ type Config struct {
 	// less loaded than the holder after taking the request.
 	RelativeDecode bool
 
+	// CostRouting replaces the affinity ladder: every request goes to the usable
+	// backend with the lowest cost, where cost is the tokens of this request it
+	// would have to prefill plus the context tokens it is already serving. Both
+	// terms are tokens, so nothing needs tuning. A holder keeps the session until
+	// its extra load exceeds what moving would cost, and a move is cheap when a
+	// shared KV tier can supply the prefix.
+	CostRouting bool
+
 	// RebalanceRatio enables the imbalance signal: a backend is unusable while
 	// (inflight - fleetMin) / inflight exceeds this. 0.5 means "rebalance once
 	// the gap is more than half the busier side". Zero leaves it off, which is
@@ -448,6 +456,9 @@ func (p *Policy) Select(ctx context.Context, cands []*registry.Backend, rr *poli
 	}
 
 	pth := path{units: rr.Units, modelKey: modelKey(rr.Model)}
+	if p.cfg.CostRouting {
+		return p.selectByCost(usable, slots, pth, rr), nil
+	}
 	a := p.tree.walk(pth, candMask)
 
 	// shallow means the anchor is NOT the deepest marked run: this request's own

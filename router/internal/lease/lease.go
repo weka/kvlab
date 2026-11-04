@@ -51,7 +51,24 @@ type Lease struct {
 	// neither leak (add after the release already subtracted) nor double-count.
 	mu       sync.Mutex
 	decode   int64
+	active   int64
 	released bool
+}
+
+// StartActive adds this request's estimated context tokens to the backend's
+// active-load gauge. Called once, right after Acquire. The matching subtract in
+// Release is the only way the tokens leave.
+func (l *Lease) StartActive(tokens int64) {
+	if l == nil || tokens <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.released || l.active != 0 {
+		return
+	}
+	l.active = tokens
+	l.b.AddActiveTokens(tokens)
 }
 
 // StartDecode adds this request's estimated context tokens to the backend's
@@ -110,6 +127,10 @@ func (l *Lease) Release() {
 		if l.decode != 0 {
 			l.b.AddDecodeTokens(-l.decode)
 			l.decode = 0
+		}
+		if l.active != 0 {
+			l.b.AddActiveTokens(-l.active)
+			l.active = 0
 		}
 		l.mu.Unlock()
 		if n := l.b.AddInflight(-1); n < 0 {

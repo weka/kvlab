@@ -46,6 +46,34 @@ func lowestOther(usable []*registry.Backend, self *registry.Backend, f func(*reg
 	return lo, ok
 }
 
+// selectByCost returns the usable backend with the lowest prefill-plus-load cost
+// (see Config.CostRouting). Ties go to the fewest in-flight requests. It marks
+// the winner, so the tree records the copy a move creates.
+func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path, rr *policy.RoutingRequest) *registry.Backend {
+	var total int64
+	for i := 0; i < pth.len(); i++ {
+		total += int64(pth.tokens(i))
+	}
+	held := p.tree.heldTokens(pth, slots)
+	var deepest int64
+	best, bestHeld := 0, int64(0)
+	var bestCost int64
+	for i, c := range usable {
+		deepest = max(deepest, held[i])
+		cost := total - held[i] + c.ActiveTokens()
+		if i == 0 || cost < bestCost || (cost == bestCost && c.Inflight() < usable[best].Inflight()) {
+			best, bestCost, bestHeld = i, cost, held[i]
+		}
+	}
+	rr.PolicyState = markDecision
+	if bestHeld < deepest {
+		p.m.Decision("cost_move")
+	} else {
+		p.m.Decision("cost_stay")
+	}
+	return usable[best]
+}
+
 // estTokens is this request's estimated context size in tokens: the gateway's
 // body-based estimate when present, else the sum of its routing units.
 func estTokens(rr *policy.RoutingRequest) int64 {

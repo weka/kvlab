@@ -790,7 +790,7 @@ type PoolMetrics struct {
 // the signals that judge a backend full. Exported so a dashboard or a scrape
 // check can enumerate what it should find.
 var (
-	DecisionTiers = []string{"cache", "split", "overflow", "stretch", "load"}
+	DecisionTiers = []string{"cache", "split", "overflow", "stretch", "load", "cost_stay", "cost_move"}
 	SplitSignals  = []string{"refused", "concurrency", "imbalance"}
 	// SplitTriggerSignals are the label values of router_split_trigger_total.
 	SplitTriggerSignals = []string{"soft_ttft", "relative_ttft", "relative_decode", "concurrency"}

@@ -366,6 +366,44 @@ func (t *tree) walk(p path, cands markSet) anchors {
 	return a
 }
 
+// heldTokens returns, for each slot, how many tokens of p's prefix that backend
+// holds according to the marks. A run counts up to the matched part even when
+// only partially matched, as in walk.
+func (t *tree) heldTokens(p path, slots []int) []int64 {
+	out := make([]int64, len(slots))
+	sh := t.shardFor(p)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+
+	root := sh.roots[p.modelKey]
+	if root == nil {
+		return out
+	}
+	var cum int64
+	cur, i, n := root, 0, p.len()
+	for i < n {
+		child := cur.find(p.hash(i))
+		if child == nil {
+			break
+		}
+		m := 0
+		for m < child.blocks() && i+m < n && child.hashes[m] == p.hash(i+m) {
+			cum += int64(p.tokens(i + m))
+			m++
+		}
+		for k, s := range slots {
+			if child.marks.Has(s) {
+				out[k] = cum
+			}
+		}
+		cur, i = child, i+m
+		if m < child.blocks() {
+			break
+		}
+	}
+	return out
+}
+
 // ---------------------------------------------------------------- commit
 
 // commit inserts p and marks slot on EVERY run along the path, not only the

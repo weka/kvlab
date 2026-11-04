@@ -438,6 +438,7 @@ func (p *Proxy) attempt(
 	// body has been fully copied or the stream has aborted (LB-2, LB-4).
 	lse := lease.Acquire(b)
 	defer lse.Release()
+	lse.StartActive(int64(kvcache.EstimateTokens(len(body))))
 
 	target, err := url.Parse(b.URL)
 	if err != nil {

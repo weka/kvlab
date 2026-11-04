@@ -149,7 +149,10 @@ type Options struct {
 	// RelativeTTFT / RelativeDecode switch on splitting a holder off by plain
 	// comparison with its peers: p90 TTFT, and live decode tokens. Off by default.
 	RelativeTTFT, RelativeDecode bool
-	RebalanceRatio               float64
+	// CostRouting routes every request to the lowest prefill-plus-load cost
+	// instead of through the affinity ladder.
+	CostRouting    bool
+	RebalanceRatio float64
 	// PrefillSplit moves heavy prefills a backend refuses (HTTP 400
 	// large_prefill_rejected) onto prefill-only nodes the router sets aside
 	// from the fleet. Off by default.
@@ -270,6 +273,7 @@ func (o Options) flowConfig() affinity.Config {
 		TTFTSoft:            o.TTFTSoft,
 		RelativeTTFT:        o.RelativeTTFT,
 		RelativeDecode:      o.RelativeDecode,
+		CostRouting:         o.CostRouting,
 		RebalanceRatio:      o.RebalanceRatio,
 		SplitGuard:          o.SplitGuard,
 		TransientFallback:   o.TransientFallback,
@@ -1190,6 +1194,9 @@ func signalSummary(c affinity.Config) string {
 	}
 	if c.RelativeDecode {
 		out += ",relative-decode"
+	}
+	if c.CostRouting {
+		out += ",cost-routing"
 	}
 	if c.RebalanceRatio > 0 {
 		out += fmt.Sprintf(",imbalance=%.3g", c.RebalanceRatio)

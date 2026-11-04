@@ -162,6 +162,7 @@ type Backend struct {
 	// only through internal/lease, which pairs every add with exactly one
 	// subtract at release.
 	decodeTokens atomic.Int64
+	activeTokens atomic.Int64
 	hardBlocked  atomic.Bool
 
 	// waiters holds requests refused only by the concurrency signal on THIS
@@ -262,6 +263,15 @@ func (b *Backend) DecodeTokens() int64 { return b.decodeTokens.Load() }
 
 // AddDecodeTokens is lease-only, like AddInflight.
 func (b *Backend) AddDecodeTokens(d int64) int64 { return b.decodeTokens.Add(d) }
+
+// ActiveTokens is the estimated context tokens of every in-flight request on
+// this backend, from dispatch to release. Unlike DecodeTokens it includes
+// requests still in prefill, so a burst routed before any first byte arrives is
+// visible to the next decision.
+func (b *Backend) ActiveTokens() int64 { return b.activeTokens.Load() }
+
+// AddActiveTokens is lease-only, like AddInflight.
+func (b *Backend) AddActiveTokens(d int64) int64 { return b.activeTokens.Add(d) }
 
 // SetHardTTFT configures the hard-TTFT limit used by NoteAdmit (0 = off).
 func (b *Backend) SetHardTTFT(d time.Duration) { b.hardTTFT.Store(int64(d)) }
