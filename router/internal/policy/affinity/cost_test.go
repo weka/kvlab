@@ -126,3 +126,96 @@ func TestActiveTokensLeaveOnRelease(t *testing.T) {
 		t.Errorf("active = %d, want 0 when started after release", got)
 	}
 }
+
+// In-flight prefill load counts on top of active load, so a holder busy
+// prefilling loses a request to an idle backend sooner.
+func TestCostRoutingCountsPrefillLoad(t *testing.T) {
+	p := newCostPolicy(t)
+	f := fleet(t, 2)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3)
+	p.Commit(f[0], req(u))
+
+	f[0].AddPrefillTokens(384)
+	f[0].AddActiveTokens(384)
+	got, err := p.Select(context.Background(), f, req(u))
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got != f[0] {
+		t.Fatalf("routed to %s, want the holder while 384+384 < move cost 768", got.URL)
+	}
+	f[0].AddPrefillTokens(1)
+	got, err = p.Select(context.Background(), f, req(u))
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got != f[1] {
+		t.Errorf("routed to %s, want the idle backend once prefill pushes load past move cost", got.URL)
+	}
+}
+
+// Select records the uncached tokens on the chosen backend for the proxy.
+func TestCostRoutingRecordsPrefillEstimate(t *testing.T) {
+	p := newCostPolicy(t)
+	f := fleet(t, 2)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3)
+	p.Commit(f[0], req(u))
+	rr := req(u)
+	got, err := p.Select(context.Background(), f, rr)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got != f[0] || rr.Prefill == nil || rr.Prefill.Backend != f[0] || rr.Prefill.Tokens != 0 {
+		t.Errorf("prefill = %+v, want holder with 0 uncached tokens", rr.Prefill)
+	}
+	rr = req(units(7, 8, 9))
+	if _, err := p.Select(context.Background(), f, rr); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if rr.Prefill == nil || rr.Prefill.Tokens != 768 {
+		t.Errorf("prefill = %+v, want 768 uncached tokens", rr.Prefill)
+	}
+}
+
+func TestPrefillTokensLifecycle(t *testing.T) {
+	r := registry.New(registry.Options{})
+	b, err := r.Add(registry.Spec{URL: "http://w:8000"})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	// First byte removes the charge; Release afterwards does not subtract again.
+	l := lease.Acquire(b)
+	l.StartPrefill(300)
+	l.StartPrefill(300)
+	if got := b.PrefillTokens(); got != 300 {
+		t.Fatalf("prefill = %d, want 300", got)
+	}
+	l.EndPrefill()
+	l.EndPrefill()
+	if got := b.PrefillTokens(); got != 0 {
+		t.Fatalf("prefill = %d, want 0 after first byte", got)
+	}
+	l.Release()
+	if got := b.PrefillTokens(); got != 0 {
+		t.Errorf("prefill = %d, want 0 (no double subtract)", got)
+	}
+
+	// No first byte: Release removes it; late starts and ends are no-ops.
+	l = lease.Acquire(b)
+	l.StartPrefill(200)
+	l.Release()
+	if got := b.PrefillTokens(); got != 0 {
+		t.Errorf("prefill = %d, want 0 after Release without first byte", got)
+	}
+	l.StartPrefill(200)
+	l.EndPrefill()
+	if got := b.PrefillTokens(); got != 0 {
+		t.Errorf("prefill = %d, want 0 when started after release", got)
+	}
+}

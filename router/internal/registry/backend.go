@@ -163,7 +163,10 @@ type Backend struct {
 	// subtract at release.
 	decodeTokens atomic.Int64
 	activeTokens atomic.Int64
-	hardBlocked  atomic.Bool
+	// prefillTokens is the uncached tokens of in-flight requests that have not
+	// yet produced a first upstream body byte. Lease-only, like activeTokens.
+	prefillTokens atomic.Int64
+	hardBlocked   atomic.Bool
 
 	// waiters holds requests refused only by the concurrency signal on THIS
 	// backend, bound here rather than pool-wide so a wait preserves the
@@ -272,6 +275,12 @@ func (b *Backend) ActiveTokens() int64 { return b.activeTokens.Load() }
 
 // AddActiveTokens is lease-only, like AddInflight.
 func (b *Backend) AddActiveTokens(d int64) int64 { return b.activeTokens.Add(d) }
+
+// PrefillTokens is the live prefill-load gauge (see prefillTokens).
+func (b *Backend) PrefillTokens() int64 { return b.prefillTokens.Load() }
+
+// AddPrefillTokens is lease-only, like AddInflight.
+func (b *Backend) AddPrefillTokens(d int64) int64 { return b.prefillTokens.Add(d) }
 
 // SetHardTTFT configures the hard-TTFT limit used by NoteAdmit (0 = off).
 func (b *Backend) SetHardTTFT(d time.Duration) { b.hardTTFT.Store(int64(d)) }

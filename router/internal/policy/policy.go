@@ -44,6 +44,14 @@ var ErrNoCandidates = errors.New("policy: no candidates")
 // prefix-cache-split returns it.
 var ErrSplitGuardBlocked = errors.New("policy: split guard blocked every candidate")
 
+// PrefillEstimate is a cost-routing decision's prefill charge: Tokens are the
+// request's uncached tokens on Backend. An attempt that lands elsewhere has no
+// known cache there and charges the full request instead.
+type PrefillEstimate struct {
+	Backend *registry.Backend
+	Tokens  int64
+}
+
 // RoutingRequest is everything a policy may know about a request.
 //
 // Note what is absent: headers, body, and any dialect type. Units are
@@ -64,7 +72,11 @@ type RoutingRequest struct {
 	// of Units' tokens.
 	EstTokens int64
 	Locality  string
-	Deadline  time.Time
+	// Prefill is set by cost routing to the backend it selected and the request's
+	// uncached tokens there. The proxy charges the prefill-load gauge from it; nil
+	// means cost routing is off and nothing is charged.
+	Prefill  *PrefillEstimate
+	Deadline time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

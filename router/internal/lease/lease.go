@@ -52,6 +52,7 @@ type Lease struct {
 	mu       sync.Mutex
 	decode   int64
 	active   int64
+	prefill  int64
 	released bool
 }
 
@@ -69,6 +70,37 @@ func (l *Lease) StartActive(tokens int64) {
 	}
 	l.active = tokens
 	l.b.AddActiveTokens(tokens)
+}
+
+// StartPrefill adds this request's uncached tokens to the backend's prefill-load
+// gauge. Called once, when the attempt starts. EndPrefill (first body byte) or
+// Release removes them, whichever comes first, so they leave exactly once.
+func (l *Lease) StartPrefill(tokens int64) {
+	if l == nil || tokens <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.released || l.prefill != 0 {
+		return
+	}
+	l.prefill = tokens
+	l.b.AddPrefillTokens(tokens)
+}
+
+// EndPrefill removes this request's tokens from the prefill-load gauge: the
+// first upstream body byte means prefill is done. Idempotent, and a no-op after
+// Release or without StartPrefill.
+func (l *Lease) EndPrefill() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.prefill != 0 {
+		l.b.AddPrefillTokens(-l.prefill)
+		l.prefill = 0
+	}
 }
 
 // StartDecode adds this request's estimated context tokens to the backend's
@@ -127,6 +159,10 @@ func (l *Lease) Release() {
 		if l.decode != 0 {
 			l.b.AddDecodeTokens(-l.decode)
 			l.decode = 0
+		}
+		if l.prefill != 0 {
+			l.b.AddPrefillTokens(-l.prefill)
+			l.prefill = 0
 		}
 		if l.active != 0 {
 			l.b.AddActiveTokens(-l.active)

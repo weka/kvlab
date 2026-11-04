@@ -292,7 +292,7 @@ func (p *Proxy) Serve(
 		refusalsLeft := failovers < maxFailovers
 		canRetry := (attempt+1 < p.cfg.MaxAttempts || refusalsLeft) && len(remaining) > 1
 		out := runAttempt(b.CB, token, func() attemptOut {
-			return p.attempt(w, r, b, d, body, &committed, canRetry, accepted, outcome, auth)
+			return p.attempt(w, r, b, d, body, prefillCharge(rr, b, body), &committed, canRetry, accepted, outcome, auth)
 		})
 		if out.err != nil {
 			metrics.UpstreamErrors.WithLabelValues(b.URL, kindOf(out.err)).Inc()
@@ -363,7 +363,7 @@ func (p *Proxy) Relay(w http.ResponseWriter, r *http.Request, b *registry.Backen
 	// canRetry false is precisely what makes ModifyResponse relay a retryable
 	// status instead of discarding it: a 429 or a 503 from the provider is the
 	// answer to this request, not a signal to go looking for a better one.
-	out := p.attempt(w, r, b, d, body, &committed, false, nil, nil, auth)
+	out := p.attempt(w, r, b, d, body, 0, &committed, false, nil, nil, auth)
 	if out.err != nil {
 		metrics.UpstreamErrors.WithLabelValues(b.URL, kindOf(out.err)).Inc()
 		b.Failed.Add(1)
@@ -421,6 +421,20 @@ func runAttempt(cb *circuit.Breaker, token bool, do func() attemptOut) (out atte
 	return out
 }
 
+// prefillCharge is the uncached tokens an attempt on b adds to b's prefill
+// load: the cost-routing estimate when b is the backend it selected, else the
+// full request, since nothing is known to be cached elsewhere. Zero when cost
+// routing is off.
+func prefillCharge(rr *policy.RoutingRequest, b *registry.Backend, body []byte) int64 {
+	if rr == nil || rr.Prefill == nil {
+		return 0
+	}
+	if rr.Prefill.Backend == b {
+		return rr.Prefill.Tokens
+	}
+	return int64(kvcache.EstimateTokens(len(body)))
+}
+
 // attempt performs one upstream round trip.
 //
 // canRetry tells ModifyResponse whether a retryable status should be *rejected*
@@ -431,7 +445,7 @@ func runAttempt(cb *circuit.Breaker, token bool, do func() attemptOut) (out atte
 func (p *Proxy) attempt(
 	w http.ResponseWriter, r *http.Request,
 	b *registry.Backend, d dialect.Dialect,
-	body []byte, committed *bool, canRetry bool, accepted OnAccepted, outcome OnOutcome, auth Auth,
+	body []byte, prefillCost int64, committed *bool, canRetry bool, accepted OnAccepted, outcome OnOutcome, auth Auth,
 ) attemptOut {
 	// The lease is the only in-flight increment in the program (LB-1), and the
 	// deferred release fires after ServeHTTP returns — i.e. after the response
@@ -439,6 +453,7 @@ func (p *Proxy) attempt(
 	lse := lease.Acquire(b)
 	defer lse.Release()
 	lse.StartActive(int64(kvcache.EstimateTokens(len(body))))
+	lse.StartPrefill(prefillCost)
 
 	target, err := url.Parse(b.URL)
 	if err != nil {
@@ -603,6 +618,7 @@ func (p *Proxy) attempt(
 				// The request is now decoding: count its estimated context
 				// (same estimator the policy uses for rr.EstTokens) until the
 				// lease releases.
+				lse.EndPrefill()
 				lse.StartDecode(int64(kvcache.EstimateTokens(len(body))))
 			}
 		}

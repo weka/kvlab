@@ -60,12 +60,13 @@ func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path,
 	var bestCost int64
 	for i, c := range usable {
 		deepest = max(deepest, held[i])
-		cost := total - held[i] + c.ActiveTokens()
+		cost := (total - held[i]) + c.PrefillTokens() + c.ActiveTokens()
 		if i == 0 || cost < bestCost || (cost == bestCost && c.Inflight() < usable[best].Inflight()) {
 			best, bestCost, bestHeld = i, cost, held[i]
 		}
 	}
 	rr.PolicyState = markDecision
+	rr.Prefill = &policy.PrefillEstimate{Backend: usable[best], Tokens: total - bestHeld}
 	if bestHeld < deepest {
 		p.m.Decision("cost_move")
 	} else {
