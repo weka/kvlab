@@ -150,7 +150,8 @@ type Options struct {
 	// comparison with its peers: p90 TTFT, and live decode tokens. Off by default.
 	RelativeTTFT, RelativeDecode bool
 	// CostRouting routes every request to the lowest prefill-plus-load cost
-	// instead of through the affinity ladder.
+	// instead of through the affinity ladder. The zero value is the ladder;
+	// the CLI turns it on by default. validateRouting lists what it excludes.
 	CostRouting    bool
 	RebalanceRatio float64
 	// PrefillSplit moves heavy prefills a backend refuses (HTTP 400
@@ -331,6 +332,38 @@ func (o Options) pdPrefillFor(rt Route) []string {
 	return out
 }
 
+// DefaultSplitGuard is the --cache-split-guard default.
+const DefaultSplitGuard = affinity.DefaultSplitGuard
+
+// validateRouting rejects settings that only the affinity ladder honours when
+// cost routing is on, so they are never silently ignored. The hard filters
+// (max node concurrency and its queue, hard TTFT, rebalance ratio, retry time
+// limit, refusal and tail TTLs) apply to both modes.
+func (o Options) validateRouting() error {
+	if !o.CostRouting {
+		return nil
+	}
+	ladderOnly := [...]struct {
+		flag string
+		set  bool
+	}{
+		{"--soft-node-concurrency", o.SoftNodeConcurrency != 0},
+		{"--soft-ttft-split", o.TTFTSoft != 0},
+		{"--relative-ttft-split", o.RelativeTTFT},
+		{"--relative-decode-split", o.RelativeDecode},
+		{"--transient-fallback-threshold", o.TransientFallback != 0},
+		{"--cache-split-guard", o.SplitGuard != 0 && o.SplitGuard != DefaultSplitGuard},
+		{"--prefill-split", o.PrefillSplit},
+		{"--pd-prefill-backends", len(o.PDPrefillBackends) > 0},
+	}
+	for _, l := range ladderOnly {
+		if l.set {
+			return fmt.Errorf("router: %s only applies to the affinity ladder; add --no-cost-routing to use it", l.flag)
+		}
+	}
+	return nil
+}
+
 // validatePD rejects a P set that cannot work: combined with the prefill
 // split, naming a backend no route has, or leaving a pool without a decode
 // node.
@@ -473,6 +506,9 @@ func Handler(ctx context.Context, opts Options) (http.Handler, error) {
 		}
 	}
 
+	if err := opts.validateRouting(); err != nil {
+		return nil, err
+	}
 	if err := opts.validatePD(); err != nil {
 		return nil, err
 	}

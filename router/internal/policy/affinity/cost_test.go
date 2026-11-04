@@ -2,11 +2,13 @@ package affinity
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/weka/wekai/router/internal/clock"
 	"github.com/weka/wekai/router/internal/lease"
+	"github.com/weka/wekai/router/internal/policy"
 	"github.com/weka/wekai/router/internal/registry"
 )
 
@@ -217,5 +219,109 @@ func TestPrefillTokensLifecycle(t *testing.T) {
 	l.EndPrefill()
 	if got := b.PrefillTokens(); got != 0 {
 		t.Errorf("prefill = %d, want 0 when started after release", got)
+	}
+}
+
+func newCostSignalPolicy(t *testing.T, c Config) *Policy {
+	t.Helper()
+	c.CostRouting = true
+	c.TailTTL = testTTL
+	c.Clock = clock.NewFake(time.Time{})
+	p, err := New(c, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return p
+}
+
+// A backend at --max-node-concurrency is excluded even when it holds the whole
+// prefix and its cost would otherwise win.
+func TestCostRoutingExcludesBackendAtMaxNodeConcurrency(t *testing.T) {
+	p := newCostSignalPolicy(t, Config{NodeConcurrency: 2})
+	f := fleet(t, 2)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3)
+	p.Commit(f[0], req(u))
+	load(t, f[0], 2)
+	got, err := p.Select(context.Background(), f, req(u))
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got != f[1] {
+		t.Errorf("routed to %s, want the unsaturated backend", got.URL)
+	}
+}
+
+// With every backend at the limit, cost routing answers like the ladder: a
+// SaturatedError naming the backend to queue on (so the wait queue works), and
+// ErrAllBackendsSaturated when no backend can be waited on.
+func TestCostRoutingAllSaturatedQueuesOrRejects(t *testing.T) {
+	p := newCostSignalPolicy(t, Config{NodeConcurrency: 2})
+	f := fleet(t, 2)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3)
+	p.Commit(f[0], req(u))
+	load(t, f[0], 2)
+	load(t, f[1], 2)
+	err := selectSaturated(t, p, f, req(u))
+	var sat *policy.SaturatedError
+	if !errors.As(err, &sat) {
+		t.Fatalf("error = %v, want a *policy.SaturatedError", err)
+	}
+	if sat.Preferred != f[0] {
+		t.Errorf("Preferred = %s, want the holder %s", sat.Preferred.URL, f[0].URL)
+	}
+
+	off := newCostSignalPolicy(t, Config{})
+	for _, b := range f {
+		off.AddBackend(b)
+	}
+	off.OnRefused(f[0])
+	off.OnRefused(f[1])
+	if _, err := off.Select(context.Background(), f, req(u)); !errors.Is(err, policy.ErrAllBackendsSaturated) {
+		t.Errorf("all refused: err = %v, want ErrAllBackendsSaturated", err)
+	}
+}
+
+// --hard-ttft-split excludes a slow holder under cost routing.
+func TestCostRoutingExcludesBackendOverHardTTFT(t *testing.T) {
+	p := newCostSignalPolicy(t, Config{TTFTHard: 2 * time.Second})
+	f := fleet(t, 2)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3)
+	p.Commit(f[0], req(u))
+	setTTFT(f[0], 5*time.Second)
+	f[0].NoteAdmit() // the hard gate closes once a request was admitted over the limit
+	got, err := p.Select(context.Background(), f, req(u))
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got != f[1] {
+		t.Errorf("routed to %s, want the backend under the TTFT limit", got.URL)
+	}
+}
+
+// --rebalance-ratio excludes a backend carrying far more than the fleet minimum.
+func TestCostRoutingExcludesImbalancedBackend(t *testing.T) {
+	p := newCostSignalPolicy(t, Config{RebalanceRatio: 0.5})
+	f := fleet(t, 3)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3)
+	p.Commit(f[0], req(u))
+	load(t, f[0], 20)
+	got, err := p.Select(context.Background(), f, req(u))
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got == f[0] {
+		t.Errorf("routed to the imbalanced holder %s, want it excluded", got.URL)
 	}
 }

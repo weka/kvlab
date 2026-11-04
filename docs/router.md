@@ -94,6 +94,24 @@ health decides eligibility, so a discovered pod is not routed to until it passes
 the same checks a statically named one does, and a pod going NotReady leaves the
 pool on its own.
 
+**Routing is by cost.** By default each request goes to the usable backend with
+the lowest cost: the tokens it would have to prefill there (the part of the
+prompt that backend does not already hold) plus the context tokens it is
+already serving. There is no tunable. "Usable" is decided by the capacity
+signals below, so these still apply under cost routing:
+`--max-node-concurrency` (and its wait queue and
+`--max-node-concurrency-queue-depth`), `--hard-ttft-split`,
+`--rebalance-ratio`, `--retry-time-limit`, `--cache-refusal-ttl` and
+`--cache-tail-ttl`. `--no-cost-routing` selects the older affinity ladder
+instead, and is **required** by the settings only the ladder honours:
+`--soft-node-concurrency`, `--soft-ttft-split`, `--relative-ttft-split`,
+`--relative-decode-split`, `--transient-fallback-threshold`, a non-default
+`--cache-split-guard`, `--prefill-split` and `--pd-prefill-backends` (with its
+`--pd-*` bands). Setting one without `--no-cost-routing` stops the router at
+startup, naming the flag. `--cost-routing` is accepted and does nothing.
+Everything below about splitting, the split guard and the soft band describes
+the ladder.
+
 **Capacity is signalled, not assumed.** The backend's own `429` is the ultimate
 signal and is always on. `--max-node-concurrency` is an opt-in early warning
 that saves a round trip: set it to the backends' vLLM `--max-num-seqs` and
@@ -134,7 +152,7 @@ test rather than a production setting. It only does anything when
 `--max-node-concurrency` is also set: at `0` the signal that produces a
 queueable refusal is never raised, so this flag is inert on its own.
 
-`--soft-node-concurrency` makes that limit the **top of a band** rather than a
+`--soft-node-concurrency` (ladder only; needs `--no-cost-routing`) makes that limit the **top of a band** rather than a
 single cliff. Below the soft value a holder is an ordinary cache hit; at or
 above it the router prefers to split the request elsewhere; and if nothing
 clears `--cache-split-guard`, the request goes **back to the least-loaded
@@ -159,7 +177,7 @@ binds. `router_cache_stretch_inflight` is the check — piled against the hard
 limit means soft is set too low, and the router is paying the queueing cost
 continuously rather than as relief.
 
-**Heavy prefills move to their own nodes.** With `--prefill-split`, a backend
+**Heavy prefills move to their own nodes.** With `--prefill-split` (ladder only; needs `--no-cost-routing`), a backend
 that refuses a request because recomputing its prompt would stall the node's
 running decodes (HTTP `503` carrying `X-Weka-Prefill-Reject: <tokens>`, error type
 `large_prefill_rejected`; it is a routing signal and never counts toward the
@@ -193,7 +211,7 @@ prefill node at all the request is resent to the backend that refused it, with
 the bypass. It needs a KV tier the nodes share; without one the prefill is
 wasted work.
 
-**Prefill/decode disaggregation (vanilla vLLM NIXL).** `--pd-prefill-backends=<urls>`
+**Prefill/decode disaggregation (vanilla vLLM NIXL).** `--pd-prefill-backends=<urls>` (ladder only; needs `--no-cost-routing`)
 names a static set of prefill (P) nodes, a subset of `--backends`; the rest are
 decode (D) nodes. It replaces vLLM's round-robin toy proxy and is exclusive with
 `--prefill-split`. Every `/v1/chat/completions` and `/v1/completions` request goes

@@ -102,7 +102,14 @@ router:
   #     - /v1/            # every inference and provider path, admin still closed
   pathAllowlist: []
 
-  # Dynamic prefill split. When a backend refuses a request as a heavy prefill
+  # Routing mode. The router sends each request to the usable backend with the
+  # lowest cost (tokens it would prefill there plus the context it is already
+  # serving). Set true for the older affinity ladder (--no-cost-routing), which
+  # the options below marked "ladder only" require; with cost routing the
+  # router refuses to start if one of them is set.
+  noCostRouting: false
+
+  # Dynamic prefill split. LADDER ONLY: needs noCostRouting: true. When a backend refuses a request as a heavy prefill
   # (HTTP 503 with X-Weka-Prefill-Reject, its WEKA_PREFILL_REJECT_TOKENS), the
   # router runs that prefill on a node it sets aside — draining it of decode
   # work first — then sends the request for decode as usual. The client never
@@ -122,6 +129,7 @@ router:
     # The backends' vLLM --max-num-seqs. Predicts saturation instead of
     # discovering it one refusal at a time. 0 = off.
     maxNodeConcurrency: 0
+    # LADDER ONLY (needs noCostRouting: true).
     # Makes maxNodeConcurrency the top of a band instead of a single cliff.
     # Below this a holder is a plain cache hit; at or above it the router
     # prefers to split elsewhere; and if nothing clears splitGuard the request
@@ -147,9 +155,12 @@ router:
     # anything at all, so 1,1,1,0 would read as imbalanced as 20,20,20,0. They
     # are ratio-identical; only magnitude tells them apart.
     rebalanceRatio: 0
+    # LADDER ONLY: any value other than the default 0.20 needs
+    # noCostRouting: true.
     # A prefix is split onto a backend only while its in-flight is below
     # limit*(1-this). Lower and every backend ends up holding every prefix.
     splitGuard: 0.20
+    # LADDER ONLY (needs noCostRouting: true).
     # Serve a request the split guard refused WITHOUT recording the backend as
     # a holder, while it is below ref*(1-this). Must be BELOW splitGuard to do
     # anything — it is the looser bar. At 0.05 against a guard of 0.20: under

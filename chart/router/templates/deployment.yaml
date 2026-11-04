@@ -91,6 +91,9 @@ spec:
             {{- if .Values.router.metricsListen }}
             - "--metrics-listen={{ .Values.router.metricsListen }}"
             {{- end }}
+            {{- if .Values.router.noCostRouting }}
+            - "--no-cost-routing"
+            {{- end }}
             {{- with .Values.router.signals }}
             {{- if .maxNodeConcurrency }}
             - "--max-node-concurrency={{ .maxNodeConcurrency }}"

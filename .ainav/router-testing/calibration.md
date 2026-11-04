@@ -68,6 +68,8 @@ Two configurations, three speedups, `--total 30000`, 4 instances, client concurr
   and the default `--cache-split-guard 0.20`.
 - **bad** — `--rebalance-ratio 0.05 --cache-split-guard 0.01`: an imbalance signal that
   fires constantly, and a guard too low to stop the splits it provokes.
+  Both arms ran the affinity ladder; a launch that reproduces them today adds
+  `--no-cost-routing` (the non-default guard is ladder-only).
 
 | speedup | config | elapsed | `avg_copies` | splits | guard 429s | server cache |
 |---|---|---|---|---|---|---|

@@ -256,7 +256,15 @@ you run it:
   unset. It is both the gateway's admission cap and the limit the split guard is
   measured against, so it has to mean one thing; set it to the backends' real vLLM
   `--max-num-seqs`. Every other capacity source in the shipped config reads 1.
-- **Two extra knobs:** `--cache-split-guard` (default `0.20`) and `--cache-tail-ttl`
+- **Default routing is cost routing.** Every request goes to the usable backend with
+  the lowest prefill-plus-load cost; the split guard, soft band and relative/transient
+  signals described here belong to the affinity ladder, so an arm that sets any of
+  `--soft-node-concurrency`, `--soft-ttft-split`, `--relative-*-split`,
+  `--transient-fallback-threshold`, a non-default `--cache-split-guard`,
+  `--prefill-split` or `--pd-prefill-backends` must add `--no-cost-routing` or the
+  router refuses to start. `--max-node-concurrency`, `--hard-ttft-split`,
+  `--rebalance-ratio`, `--retry-time-limit` apply to both.
+- **Two extra knobs (ladder):** `--cache-split-guard` (default `0.20`) and `--cache-tail-ttl`
   (default `5m`).
 - **The guard is an absolute rule, and the policy DOES reject.** A split onto a
   backend whose in-flight is at or above `max-node-concurrency * (1 - guard)`

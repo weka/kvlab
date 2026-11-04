@@ -77,6 +77,7 @@ Key values (see `values.yaml` for the full list):
 | `resources.requests` | `cpu: 4`, `memory: 8Gi` | Scheduling floor — lower it for a small or test cluster |
 | `resources.limits` | `{}` (unset) | Deliberately empty; a default limit breaks requests-only overrides |
 | `service.targetPort` | `25201` | Container listen port (`--listen`) |
+| `router.noCostRouting` | `false` | Route with the affinity ladder instead of the default cost routing. Required by `router.prefillSplit.enabled`, `router.signals.softNodeConcurrency`, `router.signals.transientFallbackThreshold` and a non-default `router.signals.splitGuard`; without it the router refuses to start |
 | `router.routes` | `[]` | Repeated `--route` flags |
 | `router.default` | `""` | Catch-all `--default` flag |
 | `router.capture` | `""` | `""`, `"raw"`, or `"redacted"` |
