@@ -296,6 +296,7 @@ func (c *BenchmarkAutoCommand) Execute(args []string) error {
 		TTFTWindow:                    c.TTFTWindowDur,
 		ReplaySkipIdle:                c.ReplaySkipIdle,
 		ReplayNoStamp:                 c.ReplayNoStamp,
+		NoStream:                      c.NoStream,
 		AbortOnCollapse:               c.AbortOnCollapse,
 		ReplayStopAtLowConcurrency:    c.ReplayStopAtLowConcurrency,
 		Verify:                        c.Verify,
@@ -783,6 +784,9 @@ func (c *BenchmarkAutoCommand) applyRealtimeDefaults() {
 	}
 	if c.DecodeRateMin < 0 {
 		c.DecodeRateMin = 20
+		if c.NoStream {
+			c.DecodeRateMin = 0 // the gate needs per-chunk streamed usage
+		}
 	}
 	c.Timeline = true
 }
@@ -804,6 +808,9 @@ func (c *BenchmarkAutoCommand) validateRealtime(w io.Writer) error {
 	}
 	if c.DecodeRateMin < 0 {
 		return fmt.Errorf("--decode-rate-min must be non-negative (0 = off)")
+	}
+	if c.DecodeRateMin > 0 && c.NoStream {
+		return fmt.Errorf("--decode-rate-min needs streamed responses (per-chunk usage); drop --no-stream or pass --decode-rate-min=0")
 	}
 	if c.DecodeRateMin > 0 && !c.ReplayRealtime {
 		return fmt.Errorf("--decode-rate-min needs --replay-realtime")

@@ -1065,6 +1065,7 @@ func runRouterReplayInstance(
 	// fallback. err is still checked so a bad model spec fails the same way.
 	poster, err := newReplayPoster(cfg.Model, config.GetAPIKeys(), "", replayRunID, cfg.DryRun, cfg.DryRunColdTPS, cfg.DryRunWarmTPS, cfg.DryRunOutputTPS, st.estimator, &st.dispatched)
 	if err == nil {
+		poster.noStream = cfg.NoStream
 		poster.outputRatio = cfg.ReplayOutputRatio
 		// Mirrors the endpoint-router path in auto.go: both poster paths set
 		// the floor, exactly as they both set outputRatio.

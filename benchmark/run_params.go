@@ -50,6 +50,7 @@ type runParamsRecord struct {
 	AdmitCount           int    `json:"admit_count,omitempty"`
 	AdmitEvery           string `json:"admit_every,omitempty"`
 	ReplayRealtime       bool   `json:"replay_realtime,omitempty"`
+	NoStream             bool   `json:"no_stream,omitempty"`
 	ReplayTiming         string `json:"replay_timing,omitempty"`
 
 	// Budgets
@@ -102,6 +103,7 @@ func buildRunParams(cfg AutoBenchmarkConfig, now time.Time) runParamsRecord {
 		StartSeries:          cfg.StartSeries,
 		MaxConcurrency:       cfg.MaxConcurrency,
 		ReplayRealtime:       cfg.ReplayRealtime,
+		NoStream:             cfg.NoStream,
 		ReplayTiming:         replayTimingLabel(cfg),
 
 		TotalRequests:   cfg.Total,

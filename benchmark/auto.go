@@ -155,6 +155,9 @@ type AutoBenchmarkConfig struct {
 	TTFTLimitStat  string
 	ReplaySkipIdle bool // compress dead time when the whole run is idle
 
+	// NoStream forces every replay request non-streaming, whatever the replay
+	// file says per request. See replayPoster.noStream.
+	NoStream        bool
 	ReplayNoStamp   bool // when true, skip the per-run <ignore>RUN_GUID</ignore> prefix injection (default is to stamp so each run starts with a pristine server prefix cache while still permitting within-run cross-series cache hits)
 	AbortOnCollapse bool // when true, abort if windowed cache hit rate < 50% for 2 minutes (legacy collapse detector, off by default — fires spuriously on legitimate low-reuse workloads)
 	// ReplayStopAtLowConcurrency terminates the run when the queue is drained
@@ -2336,6 +2339,7 @@ func runSingleModelBenchmark(
 				ok = false
 				break
 			}
+			pp.noStream = cfg.NoStream
 			pp.outputRatio = cfg.ReplayOutputRatio
 			pp.minOutputTokens = cfg.ReplayMinOutputTokens
 			pp.limitContext = cfg.LimitContext

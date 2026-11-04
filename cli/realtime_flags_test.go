@@ -198,6 +198,9 @@ func TestDecodeRateFlags(t *testing.T) {
 		{[]string{"--replay-realtime", "--decode-rate-min=0"}, false},  // explicit off
 		{[]string{"--replay-realtime", "--decode-rate-min=-2"}, false}, // any negative = unset -> realtime default
 		{[]string{"--replay-realtime", "--decode-rate-min=20", "--decode-rate-window=0s"}, true},
+		{[]string{"--replay-realtime", "--no-stream"}, false},                        // unset gate resolves to off
+		{[]string{"--replay-realtime", "--no-stream", "--decode-rate-min=0"}, false}, // explicit off
+		{[]string{"--replay-realtime", "--no-stream", "--decode-rate-min=20"}, true}, // needs streamed usage
 	} {
 		var opts BenchmarkAutoOptions
 		if _, err := flags.ParseArgs(&opts, tc.args); err != nil {
@@ -207,6 +210,29 @@ func TestDecodeRateFlags(t *testing.T) {
 		c.applyRealtimeDefaults()
 		if err := c.validateRealtime(&bytes.Buffer{}); (err != nil) != tc.wantErr {
 			t.Errorf("%v: err=%v want error %v", tc.args, err, tc.wantErr)
+		}
+	}
+}
+
+// --no-stream leaves the unset decode gate off instead of the realtime 20, and
+// flag-off keeps the 20.
+func TestNoStreamDecodeGateDefault(t *testing.T) {
+	t.Setenv("BENCHMARK_ADMIT_EVERY", "0s")
+	for _, tc := range []struct {
+		args []string
+		want float64
+	}{
+		{[]string{"--replay-realtime", "--no-stream"}, 0},
+		{[]string{"--replay-realtime"}, 20},
+	} {
+		var opts BenchmarkAutoOptions
+		if _, err := flags.ParseArgs(&opts, tc.args); err != nil {
+			t.Fatal(err)
+		}
+		c := BenchmarkAutoCommand{BenchmarkAutoOptions: &opts}
+		c.applyRealtimeDefaults()
+		if opts.DecodeRateMin != tc.want {
+			t.Errorf("%v: DecodeRateMin = %v, want %v", tc.args, opts.DecodeRateMin, tc.want)
 		}
 	}
 }

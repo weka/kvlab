@@ -190,6 +190,13 @@ phase -- from the first token on, whatever their outcome -- over
 `continuous_usage_stats`). Requests are always sent when due; nothing is held.
 An empty TTFT window does not open admission while a due request has waited
 past `--ttft-limit` for its first token.
+
+`--no-stream` sends every replay request non-streaming, whatever the replay file
+records per request. Without streaming the first token is not observable, so
+TTFT equals the whole response time and the `--ttft-limit` gate measures
+end-to-end latency (size it accordingly). The decode-rate gate needs per-chunk
+streamed usage, so the unset `--decode-rate-min` resolves to off and an explicit
+value above 0 is rejected. The run's `run_params` record carries `no_stream`.
 A batch is admitted only when both gates stayed open for the whole
 `--admit-every` interval before it (sampled every 5s), not just at the tick. Once
 either gate has blocked, admission resumes only after three such open intervals

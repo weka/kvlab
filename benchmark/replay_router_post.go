@@ -33,8 +33,12 @@ import (
 
 // replayPoster owns the per-instance HTTP plumbing.
 type replayPoster struct {
-	model  string
-	apiKey string
+	// noStream (--no-stream) overrides every request's recorded Stream flag.
+	// do applies it once, before the body, headers and response consumer are
+	// chosen, so the three always agree.
+	noStream bool
+	model    string
+	apiKey   string
 	// Attempt-then-fallback endpoint resolution: the FIRST attempt honors
 	// the spec's base URL exactly (base + endpoint leaf — whatever path
 	// prefix the operator gave: /v1, /v2, a proxy prefix, anything). If it
@@ -584,6 +588,9 @@ func (p *replayPoster) do(
 	st *autoState,
 	su *sessionUUIDs,
 ) RequestMetrics {
+	if p.noStream {
+		req.Stream = false
+	}
 	startTime := time.Now()
 	// The configured limit, read from the deadline the caller set, so the error
 	// can name it rather than leaving "context deadline exceeded" to stand for
