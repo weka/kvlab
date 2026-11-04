@@ -294,12 +294,7 @@ func (p *Proxy) Serve(
 		out := runAttempt(b.CB, token, func() attemptOut {
 			return p.attempt(w, r, b, d, body, prefillCharge(rr, b, body), &committed, canRetry, accepted, outcome, auth)
 		})
-		if out.err != nil {
-			metrics.UpstreamErrors.WithLabelValues(b.URL, kindOf(out.err)).Inc()
-			b.Failed.Add(1)
-		} else {
-			b.Served.Add(1)
-		}
+		countOutcome(b, out)
 
 		res.Status, res.Err, res.Committed = out.status, out.err, committed
 		if out.rejected {
@@ -364,13 +359,22 @@ func (p *Proxy) Relay(w http.ResponseWriter, r *http.Request, b *registry.Backen
 	// status instead of discarding it: a 429 or a 503 from the provider is the
 	// answer to this request, not a signal to go looking for a better one.
 	out := p.attempt(w, r, b, d, body, 0, &committed, false, nil, nil, auth)
-	if out.err != nil {
+	countOutcome(b, out)
+	return Result{Backend: b, Status: out.status, Attempts: 1, Err: out.err, Committed: committed}
+}
+
+// countOutcome books an attempt against its backend. A client hang-up is
+// counted by kind but charged to nobody.
+func countOutcome(b *registry.Backend, out attemptOut) {
+	switch {
+	case out.clientGone:
+		metrics.UpstreamErrors.WithLabelValues(b.URL, kindOf(out.err)).Inc()
+	case out.err != nil:
 		metrics.UpstreamErrors.WithLabelValues(b.URL, kindOf(out.err)).Inc()
 		b.Failed.Add(1)
-	} else {
+	default:
 		b.Served.Add(1)
 	}
-	return Result{Backend: b, Status: out.status, Attempts: 1, Err: out.err, Committed: committed}
 }
 
 type attemptOut struct {
@@ -383,6 +387,11 @@ type attemptOut struct {
 	// ignored marks a rejection relayed to the client rather than absorbed:
 	// not a verdict on the backend either way.
 	ignored bool
+	// clientGone marks an attempt that ended because the inbound request's
+	// context was cancelled (the caller hung up) before the upstream answered.
+	// It is no verdict on the backend and is never retried: nobody is left to
+	// receive the answer.
+	clientGone bool
 }
 
 // runAttempt pairs do's outcome with Record exactly once, whether do returns
@@ -413,7 +422,7 @@ func runAttempt(cb *circuit.Breaker, token bool, do func() attemptOut) (out atte
 		}
 	}()
 	out = do()
-	if out.rejected || out.ignored {
+	if out.rejected || out.ignored || out.clientGone {
 		cb.Record(circuit.Ignored, token)
 		return out
 	}
@@ -460,6 +469,10 @@ func (p *Proxy) attempt(
 		return attemptOut{status: 0, err: err, retryable: false}
 	}
 
+	// The caller's context, before the attempt derives its own bounded one: it
+	// is what tells a client hang-up from the router's timeouts, which cancel
+	// only the derived context.
+	inbound := r.Context()
 	var cancelAttempt context.CancelFunc
 	// Bound the upstream call. Without this nothing limits a backend that
 	// completes the handshake and then goes silent: the goroutine, the connection
@@ -653,6 +666,14 @@ func (p *Proxy) attempt(
 
 	out := attemptOut{status: upstreamStatus, err: upstreamErr,
 		rejected: prefillRejected, rejectedTokens: prefillTokens, ignored: relayedRejection}
+	// The round trip failed while the caller was already gone: the transport
+	// reports a cancelled request as an ordinary error, indistinguishable from
+	// a refused connection except by this context. A stream cancelled after its
+	// headers never gets here (ReverseProxy aborts the handler instead).
+	if upstreamErr != nil && inbound.Err() != nil {
+		out.clientGone = true
+		return out
+	}
 	out.retryable = !prefillRejected && !relayedRejection && (rejectedForRetry || isRetryable(upstreamStatus, upstreamErr)) && !*committed
 	return out
 }

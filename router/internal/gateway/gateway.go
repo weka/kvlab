@@ -327,6 +327,11 @@ func (s *Server) inferenceHandler(route dialect.Route, affine bool) http.Handler
 				"request_id", obs.RequestID(ctx), "pool", target.Name,
 				"reason", "all_backends_saturated")
 			writeBusy(w, s.dialect)
+		case ctx.Err() != nil:
+			// The caller hung up before any answer existed. Nobody reads this
+			// status; it is recorded so the access log does not count a client
+			// disconnect as the router's 502. 499 is the de-facto code for it.
+			w.WriteHeader(statusClientClosedRequest)
 		default:
 			s.dialect.WriteError(w, http.StatusBadGateway,
 				"upstream_unavailable", "all upstream attempts failed")
@@ -862,3 +867,7 @@ func (s *Server) ProbeHandler() http.Handler {
 	mux.HandleFunc("GET /livez", s.handleLiveness)
 	return mux
 }
+
+// statusClientClosedRequest is the non-standard code nginx uses for a client
+// that closed the connection before the response was written.
+const statusClientClosedRequest = 499
