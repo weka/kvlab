@@ -1088,7 +1088,6 @@ func runRouterReplayInstance(
 			poster.uuidEnabled = true
 			poster.registry = cfg.uuidRegistry
 			poster.continueOnContamination = cfg.VerifyContinueOnContamination
-			poster.verifyPerChannel = cfg.VerifyPerChannel
 		}
 	}
 	if err != nil {

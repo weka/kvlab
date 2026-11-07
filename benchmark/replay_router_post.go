@@ -37,12 +37,8 @@ type replayPoster struct {
 	// do applies it once, before the body, headers and response consumer are
 	// chosen, so the three always agree.
 	noStream bool
-	// verifyPerChannel (--verify-per-channel) makes a recite UUID count as
-	// present when found in ContentOnly OR ReasoningOnly OR the merged
-	// Response. Default off: merged-only scoring, unchanged.
-	verifyPerChannel bool
-	model            string
-	apiKey           string
+	model    string
+	apiKey   string
 	// Attempt-then-fallback endpoint resolution: the FIRST attempt honors
 	// the spec's base URL exactly (base + endpoint leaf — whatever path
 	// prefix the operator gave: /v1, /v2, a proxy prefix, anything). If it
@@ -936,11 +932,13 @@ func (p *replayPoster) do(
 		m.UUIDFound = make([]bool, len(inj.ReciteUUIDs))
 		for i, u := range inj.ReciteUUIDs {
 			m.UUIDFound[i] = strings.Contains(m.Response, u)
-			if p.verifyPerChannel && !m.UUIDFound[i] &&
+			if !m.UUIDFound[i] &&
 				(strings.Contains(m.ContentOnly, u) || strings.Contains(m.ReasoningOnly, u)) {
-				// Intact in one channel but split in the merged string by an
-				// interleaved content+reasoning chunk: a scoring artifact,
-				// not a miss.
+				// Present is the union of content, reasoning and merged:
+				// m.Response appends content then reasoning per delta, so a
+				// server delta carrying both (several engine steps coalesced
+				// across </think>) splits a UUID that is intact in one
+				// channel. A scoring artifact, not a miss.
 				m.UUIDFound[i] = true
 				m.UUIDRecoveredPerChannel++
 			}

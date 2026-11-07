@@ -301,7 +301,6 @@ func (c *BenchmarkAutoCommand) Execute(args []string) error {
 		ReplayStopAtLowConcurrency:    c.ReplayStopAtLowConcurrency,
 		Verify:                        c.Verify,
 		VerifyContinueOnContamination: c.VerifyContinueOnContamination,
-		VerifyPerChannel:              c.VerifyPerChannel,
 		DumpDir:                       c.DumpDir,
 		DumpLimit:                     c.DumpLimit,
 		DumpGarbage:                   flagOn(c.DumpGarbage),
@@ -885,9 +884,6 @@ func (c *BenchmarkAutoOptions) validateDumpGarbage() error {
 // would be a no-op masquerading as a choice, since a regular run already
 // forces output volume.
 func (c *BenchmarkAutoOptions) validateVerifyForceEOS() error {
-	if c.VerifyPerChannel && !c.Verify {
-		return fmt.Errorf("--verify-per-channel only applies with --verify")
-	}
 	if c.VerifyForceEOS && !c.Verify {
 		return fmt.Errorf("--verify-force-eos only applies with --verify; a regular benchmark " +
 			"already runs with ignore_eos on")

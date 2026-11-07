@@ -241,11 +241,7 @@ type AutoBenchmarkConfig struct {
 	// DumpMissSubstitutedOnly narrows it to wrong-turn (substituted) misses.
 	DumpMissDir             string
 	DumpMissSubstitutedOnly bool
-	// VerifyPerChannel (--verify-per-channel): presence is also satisfied by
-	// the content-only or reasoning-only channel, not just the merged
-	// response. Default off.
-	VerifyPerChannel bool
-	dumper           *requestDumper
+	dumper                  *requestDumper
 
 	// RunID is populated internally by RunAutoBenchmark at the start of each
 	// run. It's the UUID injected into every conversation's system prompt
@@ -426,7 +422,8 @@ type requestDataRecord struct {
 	// Miss attribution (see classifyRecite); populated only on a miss.
 	MissSubstituted int `json:"miss_substituted,omitempty"`
 	MissAbsent      int `json:"miss_absent,omitempty"`
-	// UUIDRecoveredPerChannel: UUIDs found only through per-channel scoring.
+	// UUIDRecoveredPerChannel: UUIDs intact in one channel but split in the
+	// merged response (see replayPoster.do).
 	UUIDRecoveredPerChannel int           `json:"uuid_recovered_per_channel,omitempty"`
 	StrayMarkers            []strayMarker `json:"stray_markers,omitempty"`
 }
@@ -1322,7 +1319,7 @@ type autoState struct {
 	valBudgetShortReqs    atomic.Int64 // requests whose captured output budget could not carry one id, so presence was never asked
 	valMissSubstituted    atomic.Int64 // misses where the response carried another marker from this same prompt
 	valMissAbsent         atomic.Int64 // misses with no such evidence either way
-	valRecoveredPerChan   atomic.Int64 // UUIDs found only via --verify-per-channel
+	valRecoveredPerChan   atomic.Int64 // UUIDs intact in one channel but split in the merged response
 	valEchoedTagsReqs     atomic.Int64 // responses that repeated turn names instead of guids — an ASK defect
 	valNoIDsReqs          atomic.Int64 // responses containing no guid at all — an ASK defect
 	valGarbageReqs        atomic.Int64 // responses carrying decode-level corruption (U+FFFD, NUL, stray control chars)
@@ -1689,14 +1686,8 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 		// correctness (per-stamp presence, Contains anywhere in the response)
 		// and output conformity (first line is exactly the ordered,
 		// comma-joined UUID list — see firstLineConformity).
-		presenceLabel := "UUID correctness (presence)         "
-		if cfg.VerifyPerChannel {
-			presenceLabel = "UUID correctness (presence, per-channel)"
-		}
-		fmt.Printf("   %s : %d/%d (%s)\n", presenceLabel, res.valUUIDFound, res.valUUIDChecks, pctOf(res.valUUIDFound, res.valUUIDChecks))
-		if cfg.VerifyPerChannel {
-			fmt.Printf("   recovered by per-channel scoring     : %d\n", res.valRecoveredPerChan)
-		}
+		fmt.Printf("   UUID correctness (presence)          : %d/%d (%s)\n", res.valUUIDFound, res.valUUIDChecks, pctOf(res.valUUIDFound, res.valUUIDChecks))
+		fmt.Printf("   of which split only in merged text   : %d\n", res.valRecoveredPerChan)
 		fmt.Printf("   Output conformity (leads with list)  : %d/%d (%s)\n", res.valExactMatchReqs, res.valReqs, pctOf(res.valExactMatchReqs, res.valReqs))
 		fmt.Printf("   PRESENCE_MISS (expected UUID absent) : %d across %d requests\n", res.valPresenceMissUUIDs, res.valPresenceMissReqs)
 		// Attributed, because the raw count sums unrelated causes. A
@@ -2381,7 +2372,6 @@ func runSingleModelBenchmark(
 				pp.uuidEnabled = true
 				pp.registry = cfg.uuidRegistry
 				pp.continueOnContamination = cfg.VerifyContinueOnContamination
-				pp.verifyPerChannel = cfg.VerifyPerChannel
 			}
 			pp.dumper = cfg.dumper
 			posters[i] = pp

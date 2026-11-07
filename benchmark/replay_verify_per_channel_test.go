@@ -13,7 +13,7 @@ import (
 // interleavedStreamPoster serves a stream whose first chunk carries BOTH
 // content (the first half of the recited UUID) and reasoning, so the merged
 // Response splits the UUID while ContentOnly keeps it intact.
-func runInterleavedRecite(t *testing.T, perChannel bool) RequestMetrics {
+func runInterleavedRecite(t *testing.T) RequestMetrics {
 	t.Helper()
 	const stamp = "perchan-run"
 	su := buildSessionUUIDs(RouterReplaySession{
@@ -44,7 +44,6 @@ func runInterleavedRecite(t *testing.T, perChannel bool) RequestMetrics {
 	reg := newUUIDRegistry()
 	reg.Acquire(su.uuids, uuidHolder{Series: 1})
 	p := newContamTestPoster(t, ts.URL, reg, true)
-	p.verifyPerChannel = perChannel
 	st := &autoState{stream: newCompletionStream(200)}
 	req := RouterReplayRequest{
 		Stream: true, OutputTokens: 400,
@@ -63,22 +62,10 @@ func runInterleavedRecite(t *testing.T, perChannel bool) RequestMetrics {
 	return m
 }
 
-func TestVerifyPerChannelOffKeepsMergedScoring(t *testing.T) {
-	m := runInterleavedRecite(t, false)
-	for i, f := range m.UUIDFound {
-		if f {
-			t.Errorf("UUIDFound[%d] = true with the flag off; merged scoring must miss", i)
-		}
-	}
-	if m.UUIDRecoveredPerChannel != 0 {
-		t.Errorf("recovered = %d, want 0 with the flag off", m.UUIDRecoveredPerChannel)
-	}
-}
-
-func TestVerifyPerChannelOnRecoversInterleavedUUID(t *testing.T) {
-	m := runInterleavedRecite(t, true)
+func TestPresenceRecoversInterleavedUUID(t *testing.T) {
+	m := runInterleavedRecite(t)
 	if !m.UUIDFound[0] {
-		t.Errorf("UUIDFound[0] = false with --verify-per-channel; intact in ContentOnly")
+		t.Errorf("UUIDFound[0] = false; the UUID is intact in ContentOnly")
 	}
 	if m.UUIDRecoveredPerChannel != 1 {
 		t.Errorf("recovered = %d, want 1", m.UUIDRecoveredPerChannel)
