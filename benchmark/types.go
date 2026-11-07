@@ -122,6 +122,9 @@ type RequestMetrics struct {
 	// prompt defect can never be read as a cache result.
 	MissSubstituted int
 	MissAbsent      int
+	// UUIDRecoveredPerChannel counts UUIDs found only via --verify-per-channel
+	// (a miss under merged-Response scoring).
+	UUIDRecoveredPerChannel int
 	// MissStrays: the non-asked own-prompt markers the response carried (the
 	// evidence for MissSubstituted), with turn index and channel.
 	MissStrays       []strayMarker

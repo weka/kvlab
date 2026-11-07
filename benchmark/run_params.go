@@ -82,6 +82,7 @@ type runParamsRecord struct {
 	FIFOGateOrder             bool    `json:"fifo_gate_order,omitempty"`
 	ExhaustSessions           bool    `json:"exhaust_sessions,omitempty"`
 	DryRun                    bool    `json:"dry_run,omitempty"`
+	VerifyPerChannel          bool    `json:"verify_per_channel,omitempty"`
 }
 
 // buildRunParams snapshots cfg into a header record. Called after
@@ -127,6 +128,7 @@ func buildRunParams(cfg AutoBenchmarkConfig, now time.Time) runParamsRecord {
 		FIFOGateOrder:             cfg.FIFOGateOrder,
 		ExhaustSessions:           cfg.ExhaustSessions,
 		DryRun:                    cfg.DryRun,
+		VerifyPerChannel:          cfg.Verify && cfg.VerifyPerChannel,
 	}
 	if cfg.AdmitEvery > 0 {
 		p.AdmitEvery = cfg.AdmitEvery.String()
