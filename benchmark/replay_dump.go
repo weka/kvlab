@@ -26,10 +26,12 @@ import (
 // under one name. A disagreement between the three is then readable rather
 // than inferred.
 type requestDumper struct {
-	mode  dumpMode
-	limit int64
-	n     atomic.Int64
-	warn  sync.Once
+	mode dumpMode
+	// onlySubstituted narrows dumpMisses to MissSubstituted > 0.
+	onlySubstituted bool
+	limit           int64
+	n               atomic.Int64
+	warn            sync.Once
 
 	// dirMu guards the destination, which a default-on capture only resolves
 	// when it first has something to write. See ensureDir.
@@ -58,6 +60,9 @@ const (
 	// bytes are gone — and a corrupt response is rare enough that keeping
 	// every one of them costs nothing next to re-running the arm.
 	dumpGarbage
+	// dumpMisses (--dump-miss-dir) writes exchanges with a presence miss (or
+	// garbage), or only those with a substituted miss when onlySubstituted.
+	dumpMisses
 )
 
 // Written reports how many exchanges landed on disk, where, and whether the
@@ -84,7 +89,7 @@ func (d *requestDumper) Written() (dir string, n int64, garbageOnly bool) {
 // dumpGarbage means "make one when there is something to put in it"; under
 // dumpAll it means the flag was not given, so there is no capture at all.
 func newRequestDumper(mode dumpMode, dir string, limit int) (*requestDumper, error) {
-	if mode == dumpOff || (mode == dumpAll && dir == "") {
+	if mode == dumpOff || ((mode == dumpAll || mode == dumpMisses) && dir == "") {
 		return nil, nil
 	}
 	if dir != "" {
@@ -152,13 +157,16 @@ type dumpMeta struct {
 	// result. Without it a reader has to re-derive from the bytes what the
 	// summary already worked out — which is exactly the re-derivation this
 	// capture exists to spare them.
-	MissSubstituted  int    `json:"miss_substituted,omitempty"`
-	MissAbsent       int    `json:"miss_absent,omitempty"`
-	ReciteEchoedTags bool   `json:"recite_echoed_tags,omitempty"`
-	ReciteNoIDs      bool   `json:"recite_no_ids,omitempty"`
-	BudgetShort      bool   `json:"recite_budget_short,omitempty"`
-	Garbage          bool   `json:"response_garbage,omitempty"`
-	GarbageVerdict   string `json:"garbage_verdict,omitempty"`
+	MissSubstituted int `json:"miss_substituted,omitempty"`
+	MissAbsent      int `json:"miss_absent,omitempty"`
+	// Strays: the wrong-turn markers behind MissSubstituted (uuid, turn index,
+	// content/reasoning channel).
+	Strays           []strayMarker `json:"stray_markers,omitempty"`
+	ReciteEchoedTags bool          `json:"recite_echoed_tags,omitempty"`
+	ReciteNoIDs      bool          `json:"recite_no_ids,omitempty"`
+	BudgetShort      bool          `json:"recite_budget_short,omitempty"`
+	Garbage          bool          `json:"response_garbage,omitempty"`
+	GarbageVerdict   string        `json:"garbage_verdict,omitempty"`
 }
 
 // dump writes one exchange: the request, the raw response, the readable
@@ -174,6 +182,9 @@ func (d *requestDumper) dump(meta dumpMeta, request, response, merged []byte) {
 	// exhaust a garbage capture's budget before the first corrupt response
 	// ever arrived.
 	if d.mode == dumpGarbage && !meta.Garbage {
+		return
+	}
+	if d.mode == dumpMisses && !meta.Garbage && !d.wantMiss(meta) {
 		return
 	}
 	if d.n.Add(1) > d.limit {
@@ -205,6 +216,22 @@ func (d *requestDumper) dump(meta dumpMeta, request, response, merged []byte) {
 	if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
 		write(".meta.json", append(b, '\n'))
 	}
+}
+
+// wantMiss reports whether a dumpMisses capture keeps this exchange.
+func (d *requestDumper) wantMiss(meta dumpMeta) bool {
+	if d.onlySubstituted {
+		return meta.MissSubstituted > 0
+	}
+	if meta.MissSubstituted > 0 || meta.MissAbsent > 0 {
+		return true
+	}
+	for _, f := range meta.Found {
+		if !f {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteReport writes one derived file beside the exchanges, and reports where.

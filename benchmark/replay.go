@@ -612,6 +612,8 @@ func recordReplayRequest(
 			rec.ExpectedUUIDsRaw = metrics.ExpectedUUIDs
 			rec.FoundMask = metrics.UUIDFound
 			rec.LeakedUUIDsRaw = metrics.LeakedUUIDs
+			rec.MissSubstituted, rec.MissAbsent = metrics.MissSubstituted, metrics.MissAbsent
+			rec.StrayMarkers = metrics.MissStrays
 		}
 		if rdw != nil {
 			if writeErr := rdw.write(rec); writeErr != nil {

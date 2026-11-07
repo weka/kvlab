@@ -3,6 +3,7 @@ package benchmark
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +38,62 @@ type reciteOutcome struct {
 	EchoedTags bool
 	// NoIDs: the response contained no guid-shaped value anywhere.
 	NoIDs bool
+}
+
+// strayMarker is a marker from this request's own prompt that the response
+// carried although it was not one of the asked-for ones: the concrete evidence
+// behind a "substituted" verdict. Idx is the turn index it was stamped in
+// (0-based, as turnStamp.Idx), so a reader can see WHICH wrong turn the model
+// picked without re-deriving the prompt.
+type strayMarker struct {
+	UUID  string `json:"uuid"`
+	Idx   int    `json:"turn_idx"`
+	Label string `json:"label"`
+	// Where is "content", "reasoning", "both" or "unsplit" (the consumer did
+	// not separate the channels, so only the merged text was searched).
+	Where string `json:"where"`
+}
+
+// maxStrays bounds the per-request stray list: a model babbling recombined
+// markers could otherwise put hundreds into one JSONL row.
+const maxStrays = 8
+
+// findStrays lists the non-asked markers of this request present in the
+// response, ordered by turn index. content/reasoning are the split channels
+// (both empty when the consumer does not split them).
+func findStrays(resp, content, reasoning string, inj *uuidInjection) []strayMarker {
+	if inj == nil {
+		return nil
+	}
+	asked := make(map[string]bool, len(inj.ReciteUUIDs))
+	for _, u := range inj.ReciteUUIDs {
+		asked[u] = true
+	}
+	split := content != "" || reasoning != ""
+	var out []strayMarker
+	for _, st := range inj.StampByHash {
+		if asked[st.UUID] || !containsUUID(resp, st.UUID) {
+			continue
+		}
+		where := "unsplit"
+		if split {
+			inC, inR := containsUUID(content, st.UUID), containsUUID(reasoning, st.UUID)
+			switch {
+			case inC && inR:
+				where = "both"
+			case inC:
+				where = "content"
+			case inR:
+				where = "reasoning"
+			}
+		}
+		out = append(out, strayMarker{UUID: st.UUID, Idx: st.Idx, Label: st.Label, Where: where})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Idx < out[j].Idx })
+	if len(out) > maxStrays {
+		out = out[:maxStrays]
+	}
+	return out
 }
 
 // tagEchoRe matches a bare turn name, which is what a response looks like when

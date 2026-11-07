@@ -237,7 +237,11 @@ type AutoBenchmarkConfig struct {
 	// among them, and two captures of the same bytes help nobody.
 	DumpGarbage    bool
 	DumpGarbageDir string
-	dumper         *requestDumper
+	// DumpMissDir captures every presence-miss exchange (--verify only);
+	// DumpMissSubstitutedOnly narrows it to wrong-turn (substituted) misses.
+	DumpMissDir             string
+	DumpMissSubstitutedOnly bool
+	dumper                  *requestDumper
 
 	// RunID is populated internally by RunAutoBenchmark at the start of each
 	// run. It's the UUID injected into every conversation's system prompt
@@ -415,6 +419,10 @@ type requestDataRecord struct {
 	ExpectedUUIDsRaw []string `json:"expected_uuids_raw,omitempty"`
 	FoundMask        []bool   `json:"found_mask,omitempty"`
 	LeakedUUIDsRaw   []string `json:"leaked_uuids_raw,omitempty"`
+	// Miss attribution (see classifyRecite); populated only on a miss.
+	MissSubstituted int           `json:"miss_substituted,omitempty"`
+	MissAbsent      int           `json:"miss_absent,omitempty"`
+	StrayMarkers    []strayMarker `json:"stray_markers,omitempty"`
 }
 
 // requestDataWriter writes requestDataRecord entries as JSONL, safe for concurrent use.
@@ -3667,6 +3675,15 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 			}
 			cfg.dumper = d
 			fmt.Printf("Dumping verbatim exchanges to %s (limit %d)\n", cfg.DumpDir, cfg.DumpLimit)
+		case cfg.DumpMissDir != "":
+			d, err := newRequestDumper(dumpMisses, cfg.DumpMissDir, cfg.DumpLimit)
+			if err != nil {
+				return err
+			}
+			d.onlySubstituted = cfg.DumpMissSubstitutedOnly
+			cfg.dumper = d
+			fmt.Printf("Dumping presence-miss exchanges to %s (limit %d, substituted-only=%v; garbage exchanges included)\n",
+				cfg.DumpMissDir, cfg.DumpLimit, cfg.DumpMissSubstitutedOnly)
 		case cfg.Verify && cfg.DumpGarbage:
 			// On by default, because a corrupt response is the one verdict
 			// that cannot be reconstructed once the run is over, and it is

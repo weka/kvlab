@@ -941,6 +941,9 @@ func (p *replayPoster) do(
 		// is it known which markers this request actually sent.
 		cls := classifyRecite(m.Response, inj, m.UUIDFound)
 		m.MissSubstituted, m.MissAbsent = cls.Substituted, cls.Absent
+		if cls.Substituted > 0 {
+			m.MissStrays = findStrays(m.Response, m.ContentOnly, m.ReasoningOnly, inj)
+		}
 		m.ReciteEchoedTags, m.ReciteNoIDs = cls.EchoedTags, cls.NoIDs
 	}
 
@@ -954,7 +957,7 @@ func (p *replayPoster) do(
 			InputTok: m.UsageData.InputTokens.Count, OutputTok: m.UsageData.OutputTokens.Count,
 			Expected: m.ExpectedUUIDs, Found: m.UUIDFound, Leaked: m.LeakedUUIDs,
 			ExactMatch: m.ExactMatch, LeakChecked: m.LeakChecked,
-			MissSubstituted: m.MissSubstituted, MissAbsent: m.MissAbsent,
+			MissSubstituted: m.MissSubstituted, MissAbsent: m.MissAbsent, Strays: m.MissStrays,
 			ReciteEchoedTags: m.ReciteEchoedTags, ReciteNoIDs: m.ReciteNoIDs,
 			BudgetShort: m.ReciteBudgetShort, Garbage: m.ResponseGarbage, GarbageVerdict: m.GarbageVerdict,
 			Error: errString(m.Error),

@@ -120,8 +120,11 @@ type RequestMetrics struct {
 	// Miss attribution and ask-quality signals — see classifyRecite. A raw
 	// PRESENCE_MISS count sums unrelated causes; these separate them so a
 	// prompt defect can never be read as a cache result.
-	MissSubstituted  int
-	MissAbsent       int
+	MissSubstituted int
+	MissAbsent      int
+	// MissStrays: the non-asked own-prompt markers the response carried (the
+	// evidence for MissSubstituted), with turn index and channel.
+	MissStrays       []strayMarker
 	ReciteEchoedTags bool
 	ReciteNoIDs      bool
 	// GarbageChecked records that this response WAS scanned for corruption,

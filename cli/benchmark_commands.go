@@ -305,6 +305,8 @@ func (c *BenchmarkAutoCommand) Execute(args []string) error {
 		DumpLimit:                     c.DumpLimit,
 		DumpGarbage:                   flagOn(c.DumpGarbage),
 		DumpGarbageDir:                c.DumpGarbageDir,
+		DumpMissDir:                   c.DumpMissDir,
+		DumpMissSubstitutedOnly:       c.DumpMissSubstitutedOnly,
 		Seed:                          c.Seed,
 		RouterReplayFile:              c.RouterReplayFile,
 		RouterReplayRoles:             c.RouterReplayRoles,
@@ -868,6 +870,9 @@ func (c *BenchmarkAutoOptions) validateVerify() error {
 // Only the explicit directory is refused. --dump-garbage is ON by default, so
 // erroring on it would reject every non-verify run in the tool.
 func (c *BenchmarkAutoOptions) validateDumpGarbage() error {
+	if c.DumpMissDir != "" && !c.Verify {
+		return fmt.Errorf("--dump-miss-dir requires --verify: presence is only scored during coherency verification")
+	}
 	if c.DumpGarbageDir != "" && !c.Verify {
 		return fmt.Errorf("--dump-garbage-dir requires --verify: responses are only scanned for " +
 			"corruption during coherency verification, so nothing would ever be written there")
