@@ -176,14 +176,35 @@ probes are all in [docs/router.md](docs/router.md).
 
 `--save-request-data ./results` writes per-request JSONL under
 `./results/<run-timestamp>/` and an interactive `report.html` (TTFT, response time
-and cache hits over time) at the end of the run. Regenerate or combine runs with
-`wekai benchmark visualize <dir>` and `wekai benchmark visualize-merge`. When the
-engine reports them, each request records where its prompt tokens came from (GPU,
+and cache hits over time) at the end of the run. When the engine reports them, each request records where its prompt tokens came from (GPU,
 host, external cache, computed) and engine-side timings, and the report's
 Timeline view draws one row per session with a bar per request. `--live-port 8088`
 serves the timeline live during the run. Both vLLM and SGLang are supported for
 this and for cache-source metrics sampling. Details:
 [docs/replay.md](docs/replay.md#results-kv-details-and-the-timeline).
+
+### Regenerating and comparing reports
+
+`visualize` rebuilds the report of one run. `visualize-merge` puts several runs
+into one report, as arms of a head-to-head comparison:
+
+```
+wekai benchmark visualize ./results/<run-timestamp> --timeline
+
+wekai benchmark visualize-merge ./results/run-a ./results/run-b \
+  --labels baseline,candidate --baseline baseline --timeline -o ./results/compare
+```
+
+Each writes a new `report_vN.html` beside any existing report; `--overwrite`
+replaces `report.html` instead. `--timeline` embeds the Timeline view.
+`--max-elapsed 7h45m` drops records past that time from each run's own start, so
+arms of different lengths compare over the same window.
+
+For `visualize-merge`, `--labels` names the arms in argument order, and
+`--baseline` picks the arm the summary's % comparison is relative to (default: the
+slowest arm by completed requests). `--all <parent>` merges every subdirectory of
+a parent directory. Without `-o`, the output directory is generated next to the
+input.
 
 ## Helm quick start
 
