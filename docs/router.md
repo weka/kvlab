@@ -521,6 +521,72 @@ Covered by `TestUseCase3_SelfHostedModelsWithHostedFallback`.
 
 ---
 
+## Use case 4 — fronting a single local endpoint
+
+Front a local model server on `http://127.0.0.1:25201` with the router on
+`http://127.0.0.1:25202`, sending every model to that one upstream:
+
+```bash
+wekai router serve \
+  --listen 127.0.0.1:25202 \
+  --default 'http://127.0.0.1:25201' \
+  --strip-auth-when '*'
+```
+
+- `--default` is the catch-all rule (`* => <upstream>`): every requested model
+  name matches. The request path and query are appended to the upstream, so a
+  `POST /v1/messages` is forwarded to `http://127.0.0.1:25201/v1/messages`.
+- `--strip-auth-when '*'` drops the inbound `Authorization`/`x-api-key`
+  headers, which unauthenticated local servers (vLLM, llama.cpp, ...) otherwise
+  reject.
+- Append `as <model>` to pin the model rewrite and skip discovery:
+  `--default 'http://127.0.0.1:25201 as my-local-model'`.
+- Use repeated `--route '<substr>,<substr> => <upstream>[ as <model>]'` rules
+  (first match wins) for per-model fan-out instead of one catch-all.
+- `--capture redacted` records traffic under `~/.wekai/router/capture/redacted/`
+  (override with `--capture-dir`) for later `wekai router replay-prepare`.
+
+### Auto-model
+
+A client's model name often means nothing to the upstream: Claude Code sends
+`claude-*`, which a single-model server does not recognise (vLLM answers
+`POST /v1/messages` with a bare `404`). On startup the router asks each upstream
+that has no explicit `as <model>` what it serves (`GET <upstream>/v1/models`); if
+the answer is exactly one model, every matching request's `model` is rewritten
+to it:
+
+```
+auto-model: rewriting every matching request's model to what the pool serves pool=default model=zai-org/GLM-5.2-FP8
+  route: * => http://127.0.0.1:25201 as zai-org/GLM-5.2-FP8 (auto-discovered) (strip-auth)
+```
+
+A multi-model upstream is left alone, so this cannot silently collapse a real
+fan-out onto one model. `--auto-model` controls it: `auto` (default), `force`
+(always take the first listed model), `off` (never probe).
+
+The question is asked of the *pool*, not of one endpoint, and only once a backend
+has passed a health check — so a pool whose first endpoint is dead still resolves
+from any sibling that answers, and a backend still loading weights is waited for.
+The answer takes effect the moment it lands, including for pools whose members
+arrive later from pod discovery.
+
+### Pointing Claude Code at it
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:25202
+export ANTHROPIC_AUTH_TOKEN=dummy   # any non-empty value; stripped by --strip-auth-when '*'
+claude
+```
+
+With `--user-prefix` on the router, each client tags itself via the first path
+segment (`ANTHROPIC_BASE_URL=http://127.0.0.1:25202/alice`), and requests,
+captures and log lines carry that user. See *Per-user path prefixes* below.
+
+Add `--metrics-listen` to get the probes (`/liveness`, `/readiness`), `/metrics`
+and `/router-viz`; see *Probes are on the metrics listener* above.
+
+---
+
 ## What is published
 
 Every release publishes two images and two charts from the same commit under the
