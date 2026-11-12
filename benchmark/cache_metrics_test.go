@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -590,6 +591,67 @@ func TestBuildSampleVizSGLangFourBands(t *testing.T) {
 		bandTokens(t, mix[0], "host") != 50 || bandTokens(t, mix[0], "storage") != 2 {
 		t.Errorf("deltas = %+v, want compute=500 gpu=100 host=50 storage=2", mix[0])
 	}
+}
+
+// TestBuildSampleVizSeparatesEngineStreams: a generic spec probed for vLLM
+// plus an explicit sglang sampler write interleaved rows into one file. Each
+// engine's counters are cumulative on their own, so differencing the merged
+// stream would count sglang's whole baseline as one interval's tokens and
+// clamp the next to zero.
+func TestBuildSampleVizSeparatesEngineStreams(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	at := func(sec int) time.Time { return t0.Add(time.Duration(sec) * time.Second) }
+	vllm := func(sec int, compute, host, external int64) cacheMetricsSample {
+		return cacheMetricsSample{
+			TS: at(sec), Model: "m", Engine: "vllm",
+			Bands: map[string]int64{"compute": compute, "host": host, "external": external},
+		}
+	}
+	sgl := func(sec int, compute, gpu int64) cacheMetricsSample {
+		return cacheMetricsSample{
+			TS: at(sec), Model: "m", Engine: "sglang",
+			Bands: map[string]int64{"compute": compute, "gpu": gpu},
+		}
+	}
+	// Deltas are split pro rata across intervals, so totals carry float noise.
+	sum := func(mix []vizSampleSegment, band string) (total float64) {
+		for _, seg := range mix {
+			total += bandTokens(t, seg, band)
+		}
+		return math.Round(total*1e6) / 1e6
+	}
+
+	t.Run("silent vllm stream adds nothing", func(t *testing.T) {
+		mix, _ := buildSampleViz([]cacheMetricsSample{
+			vllm(0, 0, 0, 0), sgl(1, 1000, 200),
+			vllm(60, 0, 0, 0), sgl(61, 1500, 300),
+		})
+		if got := sum(mix, "compute"); got != 500 {
+			t.Errorf("compute total = %v, want 500 (sglang delta only)", got)
+		}
+		if got := sum(mix, "gpu"); got != 100 {
+			t.Errorf("gpu total = %v, want 100", got)
+		}
+		if got := sum(mix, "host") + sum(mix, "external"); got != 0 {
+			t.Errorf("vllm bands = %v, want 0", got)
+		}
+	})
+
+	t.Run("both engines sum", func(t *testing.T) {
+		mix, _ := buildSampleViz([]cacheMetricsSample{
+			vllm(0, 100, 10, 0), sgl(1, 1000, 200),
+			vllm(60, 400, 40, 8), sgl(61, 1500, 300),
+		})
+		if got := sum(mix, "compute"); got != 800 {
+			t.Errorf("compute total = %v, want 800 (vllm 300 + sglang 500)", got)
+		}
+		if got := sum(mix, "host"); got != 30 {
+			t.Errorf("host total = %v, want 30", got)
+		}
+		if got := sum(mix, "external"); got != 8 {
+			t.Errorf("external total = %v, want 8", got)
+		}
+	})
 }
 
 func TestBuildSampleVizEmpty(t *testing.T) {
