@@ -336,6 +336,55 @@ func TestSamplerOneEndpointFailingCostsOnlyItsOwnDelta(t *testing.T) {
 	}
 }
 
+// A round where only some endpoints answer still proves the endpoints serve
+// the counter family: a speculative sampler must retire its budget on it, so a
+// later total outage is a blip to ride out rather than a failed guess.
+func TestSamplerPartialRoundCountsAsSuccess(t *testing.T) {
+	for _, fx := range engineFixtures {
+		t.Run(fx.engine.Name, func(t *testing.T) {
+			a, b := newFakeEngineServer(t, fx.render), newFakeEngineServer(t, fx.render)
+			var cap metricsCapture
+			s := newTestMetricsSampler(t, fx.engine, []string{a.url(), b.url()}, &cap)
+			s.explicit = false
+			var logs []string
+			s.logf = func(f string, args ...any) { logs = append(logs, fmt.Sprintf(f, args...)) }
+			ctx := context.Background()
+
+			b.setFail(true)
+			for i := 0; i < metricsSpeculativeBudget; i++ {
+				if !s.sampleOnce(ctx) {
+					t.Fatalf("round %d: stopped polling while an endpoint was answering", i+1)
+				}
+			}
+			if !s.everSucceeded {
+				t.Error("partial rounds never counted as a success")
+			}
+			if s.consecFails != 0 {
+				t.Errorf("consecFails = %d after rounds that were answered, want 0", s.consecFails)
+			}
+			a.setFail(true)
+			if !s.sampleOnce(ctx) {
+				t.Error("a total outage after proven service must not exhaust the speculative budget")
+			}
+			if got := cap.all()[0].EndpointsOK; got != 1 {
+				t.Errorf("EndpointsOK = %d, want 1: the partial coverage is still recorded", got)
+			}
+			var serves, partial int
+			for _, l := range logs {
+				switch {
+				case strings.Contains(l, " serves "):
+					serves++
+				case strings.Contains(l, "endpoints answered"):
+					partial++
+				}
+			}
+			if serves != 1 || partial != 1 {
+				t.Errorf("logged serves=%d partial=%d, want one of each: %v", serves, partial, logs)
+			}
+		})
+	}
+}
+
 func TestSamplerEndpointThatNeverReturnsKeepsItsContribution(t *testing.T) {
 	for _, fx := range engineFixtures {
 		t.Run(fx.engine.Name, func(t *testing.T) {
