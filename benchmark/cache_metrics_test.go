@@ -654,6 +654,58 @@ func TestBuildSampleVizSeparatesEngineStreams(t *testing.T) {
 	})
 }
 
+// The host band is vLLM's local GPU prefix-cache hits but sglang's DRAM tier;
+// the 3D fill tells them apart through seriesData.HostEngine.
+func TestHostBandEngine(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	smp := func(sec int, engine string, host int64) cacheMetricsSample {
+		return cacheMetricsSample{
+			TS: t0.Add(time.Duration(sec) * time.Second), Model: "m", Engine: engine,
+			Bands: map[string]int64{"host": host},
+		}
+	}
+	cases := []struct {
+		name    string
+		samples []cacheMetricsSample
+		want    string
+	}{
+		{"vllm only", []cacheMetricsSample{smp(0, "vllm", 0), smp(10, "vllm", 50)}, "vllm"},
+		{"sglang only", []cacheMetricsSample{smp(0, "sglang", 0), smp(10, "sglang", 50)}, "sglang"},
+		{"no host traffic", []cacheMetricsSample{smp(0, "vllm", 5), smp(10, "vllm", 5)}, ""},
+		{"larger host delta wins", []cacheMetricsSample{
+			smp(0, "vllm", 1000), smp(1, "sglang", 0),
+			smp(10, "vllm", 1010), smp(11, "sglang", 90),
+		}, "sglang"},
+		{"tie falls back to dram", []cacheMetricsSample{
+			smp(0, "vllm", 0), smp(1, "sglang", 0),
+			smp(10, "vllm", 40), smp(11, "sglang", 40),
+		}, ""},
+	}
+	for _, c := range cases {
+		if got := hostBandEngine(c.samples); got != c.want {
+			t.Errorf("%s: hostBandEngine = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestVizMixCatSplitsHostByEngine(t *testing.T) {
+	src := vizTemplate.Tree.Root.String()
+	start := strings.Index(src, "function mixCat(")
+	if start < 0 {
+		t.Fatal("mixCat not found in the report template")
+	}
+	end := strings.Index(src[start:], "\n  }\n")
+	if end < 0 {
+		t.Fatal("end of mixCat not found")
+	}
+	if body := src[start : start+end]; !strings.Contains(body, `case "host": return hostEngine === "vllm" ? "hbm" : "dram";`) {
+		t.Errorf("mixCat must send host to hbm for vllm and to dram otherwise:\n%s", body)
+	}
+	if !strings.Contains(src, "mixCat(bd.n, armClass, s.hostEngine)") {
+		t.Error("the 3D fill must pass the arm's hostEngine to mixCat")
+	}
+}
+
 func TestBuildSampleVizEmpty(t *testing.T) {
 	mix, adt := buildSampleViz(nil)
 	if mix != nil || adt != nil {

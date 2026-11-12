@@ -257,6 +257,13 @@ func TestGenerateVisualizationMixedVLLMAndSGLang(t *testing.T) {
 	if !strings.Contains(html, `"bandOrder":["compute","gpu","host","storage"]`) {
 		t.Errorf("missing sglang arm's band order")
 	}
+	// The 3D fill reads each arm's hostEngine to place the host band.
+	if !strings.Contains(html, `"hostEngine":"vllm"`) {
+		t.Errorf("missing vLLM arm's hostEngine")
+	}
+	if !strings.Contains(html, `"hostEngine":"sglang"`) {
+		t.Errorf("missing sglang arm's hostEngine")
+	}
 }
 
 func TestGenerateVisualizationWithoutSamplesUnchanged(t *testing.T) {
