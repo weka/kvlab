@@ -258,6 +258,7 @@ type metricsSampler struct {
 	// Outcome bookkeeping. Touched only by the run goroutine, so no locking.
 	consecFails   int
 	everSucceeded bool
+	partial       bool // the previous round answered from only some endpoints
 
 	// The delta accumulator. prev is the last raw counter seen per endpoint
 	// per label (in the engine's own vocabulary); totals is the running sum
@@ -406,15 +407,19 @@ func (s *metricsSampler) sampleOnce(ctx context.Context) (keepPolling bool) {
 		s.write(0)
 		return s.noteFailure(lastBadURL, lastErr)
 	}
+	// Any answer proves the endpoints serve the counter family, so a partial
+	// round counts as a success; only a round where nothing answered counts
+	// toward giving up.
+	s.noteSuccess()
 	if ok < len(s.urls) {
-		if s.consecFails == 0 {
+		if !s.partial {
 			s.log("%d of %d endpoints answered (%v: %v) — their deltas are missing from this "+
 				"interval; totals stay correct because they are sums of deltas",
 				ok, len(s.urls), lastBadURL, lastErr)
 		}
-		s.consecFails++
+		s.partial = true
 	} else {
-		s.noteSuccess()
+		s.partial = false
 	}
 	s.write(ok)
 	return true
