@@ -710,3 +710,24 @@ func TestMixBandStyleExternalStorageColorsDiffer(t *testing.T) {
 		t.Error("external band style does not reference MIX_EXTERNAL_COLOR")
 	}
 }
+
+// TestVizMixCatKnowsCanonicalBands guards the 3D cache-mix fill against band
+// names it does not map: an unmapped name falls through to "compute", which
+// would draw GPU radix hits and KV-connector hits as recomputation.
+func TestVizMixCatKnowsCanonicalBands(t *testing.T) {
+	src := vizTemplate.Tree.Root.String()
+	start := strings.Index(src, "function mixCat(")
+	if start < 0 {
+		t.Fatal("mixCat not found in the report template")
+	}
+	end := strings.Index(src[start:], "\n  }\n")
+	if end < 0 {
+		t.Fatal("end of mixCat not found")
+	}
+	body := src[start : start+end]
+	for _, band := range canonicalBandOrder {
+		if !strings.Contains(body, `"`+band+`"`) {
+			t.Errorf("mixCat has no case for canonical band %q", band)
+		}
+	}
+}

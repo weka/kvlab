@@ -4543,10 +4543,10 @@ const V3 = (() => {
   const MIX_CAT_LABEL = { compute: "compute", hbm: "GPU cache (hbm)", dram: "DRAM", weka: "weka" };
   function mixCat(band, armClass) {
     switch (band) {
-      case "local_compute": case "compute": return "compute";
-      case "local_cache_hit": case "device": return "hbm";
+      case "compute": return "compute";
+      case "gpu": return "hbm";
       case "host": return "dram";
-      case "external_kv_transfer": case "storage": return armClass === "dram" ? "dram" : "weka";
+      case "external": case "storage": return armClass === "dram" ? "dram" : "weka";
     }
     return "compute";
   }
