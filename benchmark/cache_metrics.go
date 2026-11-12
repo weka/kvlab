@@ -747,50 +747,100 @@ func sampleBandNames(samples []cacheMetricsSample) []string {
 
 // buildSampleViz converts raw cumulative cache-metrics samples into
 // per-interval band deltas (mix) and active-dataset points (adt) for the
-// embedded report JS. Replaces the former buildSampleVizVLLM/
-// buildSampleVizSGLang: driven entirely by each sample's Bands map and
+// embedded report JS. Driven entirely by each sample's Bands map and
 // canonicalBandOrder, so it needs no engine-specific knowledge.
+//
+// Each (model, engine) pair is its own cumulative counter, so it is
+// differenced against its own previous sample only: a file can interleave
+// engines (a generic spec probed for vLLM while sglang is named explicitly),
+// and diffing the merged stream would read every engine switch as a counter
+// jump or reset. A stream's delta is spread across the report intervals its
+// own samples span, in proportion to duration, and the streams' deltas are
+// then summed per band, so a stream that reports nothing contributes nothing
+// and a fleet that really mixes engines adds up.
 func buildSampleViz(samples []cacheMetricsSample) (mix []vizSampleSegment, adt []vizAdtPoint) {
 	if len(samples) == 0 {
 		return nil, nil
 	}
 	sorted := make([]cacheMetricsSample, len(samples))
 	copy(sorted, samples)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
 
 	bandNames := sampleBandNames(sorted)
 
-	// Totals are sums of per-endpoint deltas and so never decrease. The clamp
-	// stays as a floor against a malformed or hand-edited JSONL rather than
-	// as the thing that makes restarts survivable — that is the
-	// accumulator's job, upstream, where the endpoint identity is still
-	// known.
-	clamp := func(cur, prev int64) float64 {
-		d := cur - prev
-		if d < 0 {
-			return 0
-		}
-		return float64(d)
-	}
-	for i, smp := range sorted {
+	// Interval boundaries are the distinct sample times, with the endpoint
+	// coverage of every sample taken at that instant summed.
+	var bounds []time.Time
+	var okAt, totalAt []int
+	for _, smp := range sorted {
 		adt = append(adt, vizAdtPoint{
 			T:      float64(smp.TS.UnixMilli()),
 			Tokens: float64(smp.ActiveDatasetTokens),
 			Series: smp.ActiveSeries,
 		})
-		if i == 0 {
+		if n := len(bounds); n == 0 || !bounds[n-1].Equal(smp.TS) {
+			bounds = append(bounds, smp.TS)
+			okAt = append(okAt, 0)
+			totalAt = append(totalAt, 0)
+		}
+		okAt[len(okAt)-1] += smp.EndpointsOK
+		totalAt[len(totalAt)-1] += smp.EndpointsTotal
+	}
+	if len(bounds) < 2 {
+		return nil, adt
+	}
+	boundIdx := func(ts time.Time) int {
+		return sort.Search(len(bounds), func(i int) bool { return !bounds[i].Before(ts) })
+	}
+
+	acc := make([][]float64, len(bounds)-1)
+	for k := range acc {
+		acc[k] = make([]float64, len(bandNames))
+	}
+	// Totals are sums of per-endpoint deltas and so never decrease. The clamp
+	// stays as a floor against a malformed or hand-edited JSONL rather than
+	// as the thing that makes restarts survivable — that is the
+	// accumulator's job, upstream, where the endpoint identity is still
+	// known.
+	type streamKey struct{ model, engine string }
+	last := map[streamKey]cacheMetricsSample{}
+	for _, smp := range sorted {
+		key := streamKey{smp.Model, smp.Engine}
+		prev, seen := last[key]
+		if !seen {
+			last[key] = smp
 			continue
 		}
-		prev := sorted[i-1]
+		span := smp.TS.Sub(prev.TS)
+		if span <= 0 {
+			// Same instant as the stream's previous sample: no interval to
+			// put a delta in, so leave the baseline and let the next sample
+			// carry the difference.
+			continue
+		}
+		last[key] = smp
+		i0, i1 := boundIdx(prev.TS), boundIdx(smp.TS)
+		for bi, name := range bandNames {
+			d := smp.Bands[name] - prev.Bands[name]
+			if d <= 0 {
+				continue
+			}
+			for k := i0; k < i1; k++ {
+				acc[k][bi] += float64(d) * float64(bounds[k+1].Sub(bounds[k])) / float64(span)
+			}
+		}
+	}
+
+	for k := range acc {
 		bands := make([]vizBand, 0, len(bandNames))
-		for _, name := range bandNames {
-			bands = append(bands, vizBand{Name: name, Tokens: clamp(smp.Bands[name], prev.Bands[name])})
+		for bi, name := range bandNames {
+			bands = append(bands, vizBand{Name: name, Tokens: acc[k][bi]})
 		}
 		mix = append(mix, vizSampleSegment{
-			T0:             float64(prev.TS.UnixMilli()),
-			T1:             float64(smp.TS.UnixMilli()),
-			EndpointsOK:    smp.EndpointsOK,
-			EndpointsTotal: smp.EndpointsTotal,
+			T0:             float64(bounds[k].UnixMilli()),
+			T1:             float64(bounds[k+1].UnixMilli()),
+			EndpointsOK:    okAt[k+1],
+			EndpointsTotal: totalAt[k+1],
 			Bands:          bands,
 		})
 	}

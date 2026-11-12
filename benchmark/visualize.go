@@ -393,13 +393,11 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 				LeakedUUIDsRaw:       r.LeakedUUIDsRaw,
 			})
 		}
-		// Every series now carries one unified cacheMetricsSample list
-		// regardless of which engine produced it (vLLM and sglang eligibility
-		// are mutually exclusive per model spec type=, so in practice a file
-		// has samples from at most one engine) — buildSampleViz/
-		// sampleBandNames read the band set directly off the samples' own
-		// Bands maps, so there is no engine to pick between and nothing is
-		// ever silently dropped.
+		// Every series carries one unified cacheMetricsSample list regardless
+		// of which engine produced it. A file can hold more than one engine's
+		// rows (a generic spec probed for vLLM plus an explicit sglang URL);
+		// buildSampleViz differences each engine's counters separately and
+		// sampleBandNames reads the band set off the samples' own Bands maps.
 		var mix []vizSampleSegment
 		var adt []vizAdtPoint
 		var bandOrder []string
