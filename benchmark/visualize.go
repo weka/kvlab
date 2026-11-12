@@ -203,6 +203,10 @@ type seriesData struct {
 	// legend to render for this series without guessing from Mix's shape.
 	// Omitted when Mix is empty.
 	BandOrder []string `json:"bandOrder,omitempty"`
+	// HostEngine is the engine that dominates Mix's host band (see
+	// hostBandEngine); the 3D fill reads it to tell vLLM's local GPU
+	// prefix-cache hits from sglang's DRAM tier. Omitted when no engine does.
+	HostEngine string `json:"hostEngine,omitempty"`
 	// Conc is the request concurrency this arm ran at, taken from its
 	// run_params header. 0 for a file written before run_params existed (or a
 	// hill-climber run that never pinned one), in which case the report falls
@@ -401,11 +405,13 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 		var mix []vizSampleSegment
 		var adt []vizAdtPoint
 		var bandOrder []string
+		var hostEngine string
 		if len(samples) > 0 {
 			mix, adt = buildSampleViz(samples)
 			bandOrder = sampleBandNames(samples)
+			hostEngine = hostBandEngine(samples)
 		}
-		sd := seriesData{Name: name, T0: t0, Records: vr, Mix: mix, Adt: adt, BandOrder: bandOrder, GuidTable: guidTable}
+		sd := seriesData{Name: name, T0: t0, Records: vr, Mix: mix, Adt: adt, BandOrder: bandOrder, HostEngine: hostEngine, GuidTable: guidTable}
 		if hasParams {
 			sd.Conc = params.effectiveConcurrency()
 			sd.Params = buildVizRunParams(params)
@@ -4539,11 +4545,12 @@ const V3 = (() => {
   const MIX_CATS = ["compute", "hbm", "dram", "weka"];
   const MIX_CAT_COLOR = { compute: MIX_COMPUTE_COLOR, hbm: GPU_VARIANTS[0], dram: DRAM_VARIANTS[0], weka: WEKA_VARIANTS[0] };
   const MIX_CAT_LABEL = { compute: "compute", hbm: "GPU cache (hbm)", dram: "DRAM", weka: "weka" };
-  function mixCat(band, armClass) {
+  // The host band is sglang's DRAM tier but vLLM's local GPU prefix-cache hits.
+  function mixCat(band, armClass, hostEngine) {
     switch (band) {
       case "compute": return "compute";
       case "gpu": return "hbm";
-      case "host": return "dram";
+      case "host": return hostEngine === "vllm" ? "hbm" : "dram";
       case "external": case "storage": return armClass === "dram" ? "dram" : "weka";
     }
     return "compute";
@@ -4649,7 +4656,7 @@ const V3 = (() => {
         const a = Math.max(m.t0, t0 + b * bw), c2 = Math.min(m.t1, t0 + (b + 1) * bw);
         if (c2 <= a) continue;
         const f = (c2 - a) / span;
-        (m.bands || []).forEach(bd => { mixTok[mixCat(bd.n, armClass)][b] += (bd.v || 0) * f; });
+        (m.bands || []).forEach(bd => { mixTok[mixCat(bd.n, armClass, s.hostEngine)][b] += (bd.v || 0) * f; });
       }
     }
     MIX_CATS.forEach(c => smooth(mixTok[c]));

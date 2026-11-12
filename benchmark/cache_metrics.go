@@ -745,6 +745,41 @@ func sampleBandNames(samples []cacheMetricsSample) []string {
 	return out
 }
 
+// hostBandEngine names the engine whose samples contributed the most "host"
+// tokens: the host band is vLLM's local GPU prefix-cache hits but sglang's
+// HiCache L2 (CPU DRAM), and buildSampleViz sums the engines' bands, so a
+// series that mixes engines gets the one whose host traffic dominates. Ties
+// and a series with no host traffic return "" (the DRAM reading).
+func hostBandEngine(samples []cacheMetricsSample) string {
+	sorted := make([]cacheMetricsSample, len(samples))
+	copy(sorted, samples)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
+	type streamKey struct{ model, engine string }
+	last := map[streamKey]int64{}
+	tokens := map[string]int64{}
+	for _, smp := range sorted {
+		key := streamKey{smp.Model, smp.Engine}
+		v := smp.Bands["host"]
+		if prev, seen := last[key]; seen && v > prev {
+			tokens[smp.Engine] += v - prev
+		}
+		last[key] = v
+	}
+	best, bestTok, tie := "", int64(0), false
+	for eng, tok := range tokens {
+		switch {
+		case tok > bestTok:
+			best, bestTok, tie = eng, tok, false
+		case tok == bestTok:
+			tie = true
+		}
+	}
+	if tie {
+		return ""
+	}
+	return best
+}
+
 // buildSampleViz converts raw cumulative cache-metrics samples into
 // per-interval band deltas (mix) and active-dataset points (adt) for the
 // embedded report JS. Driven entirely by each sample's Bands map and
