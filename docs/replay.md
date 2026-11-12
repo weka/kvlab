@@ -187,17 +187,18 @@ report's prompt tokens into compute vs local cache vs external cache.
 **vLLM.** One series is read, `vllm:prompt_tokens_by_source_total`, keeping the
 `source` values `local_compute`, `local_cache_hit` and `external_kv_transfer`,
 summed over every other label. Each sample is a row with
-`record_type: "vllm_metrics_sample"`, fields `ts`, `model`,
-`sources.compute` / `sources.local_cache` / `sources.external_cache`, plus the
-locally computed `active_dataset_tokens` and `active_series`. Point the sampler
+`record_type: "cache_metrics_sample"`, fields `ts`, `model`, `engine`, `bands`
+(`compute` / `host` / `external`; `local_cache_hit` is reported as `host`), plus
+the locally computed `active_dataset_tokens` and `active_series`. Older
+`vllm_metrics_sample` / `sglang_metrics_sample` rows are still read. Point the sampler
 elsewhere with `--vllm-metrics-url` (repeatable; e.g. the router's metrics
 listener or every backend; totals are summed as per-endpoint deltas). Helm:
 `replay.vllmMetricsUrls`.
 
 **SGLang** (`type=openai_sglang`). The sampler reads `sglang:cached_tokens_total`
 (`cache_source` = `device` / `host` / `storage`, plus an untiered `total`
-fallback) and `sglang:prompt_tokens_total` and writes `sglang_metrics_sample`
-rows with `sources.{device,host,storage,compute}`, where
+fallback) and `sglang:prompt_tokens_total` and writes `cache_metrics_sample`
+rows with `bands.{compute,gpu,host,storage}` (`device` is reported as `gpu`), where
 `compute = max(0, prompt - (device + host + storage + total))`.
 `--sglang-metrics-url` is the counterpart of `--vllm-metrics-url`. SGLang requests
 also carry `return_cached_tokens_details`; the per-request tier split is stored as
