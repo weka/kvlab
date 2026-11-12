@@ -72,7 +72,7 @@ func GetChatGetter(model string, params *ChatParams) *ChatGetter {
 		params.MaxTokens = staticConfig.MaxTokens
 	}
 
-	// Named models are resolved via the ResolveModel hook — wekai-core ships
+	// Named models are resolved via the ResolveModel hook — kvlab-core ships
 	// no static registry of its own. See hooks.go.
 	if ResolveModel == nil {
 		panic("no model registry configured: " + staticConfig.BaseModel)

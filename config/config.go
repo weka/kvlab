@@ -1,37 +1,37 @@
 // Package config provides the minimal global configuration and
-// environment-based API key loading needed by wekai-core's benchmark,
+// environment-based API key loading needed by kvlab-core's benchmark,
 // router, and eval commands. It intentionally carries none of the
 // bot/agent/datastore configuration surface (sandbox mode, job depth,
-// datastore URI, etc.) — those concepts don't exist in wekai-core.
+// datastore URI, etc.) — those concepts don't exist in kvlab-core.
 package config
 
 import (
 	"os"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // ConfigStruct holds the subset of global configuration read by moved
-// benchmark/router/eval commands. Applications embedding wekai-core (e.g.
-// wekai itself) should populate the equivalent fields on their own config
-// struct AND sync them here — see the wekai-side migration notes.
+// benchmark/router/eval commands. Applications embedding kvlab-core (e.g.
+// kvlab itself) should populate the equivalent fields on their own config
+// struct AND sync them here — see the kvlab-side migration notes.
 type ConfigStruct struct {
 	TmpDir              string
 	JSONOutput          bool
-	LogFormat           string // "text" or "json" — reserved, not currently branched on (matches upstream wekai behavior)
+	LogFormat           string // "text" or "json" — reserved, not currently branched on (matches upstream kvlab behavior)
 	StderrLogs          bool
 	LogHTTPRequests     bool
 	GlobalModelOverride string
 	APIKeys             llm.APIKeys
 }
 
-// Config is the single global configuration instance, mirroring wekai's own
+// Config is the single global configuration instance, mirroring kvlab's own
 // package-level `config.Config` pattern so CLI command Execute() methods can
 // assign fields directly (`config.Config.TmpDir = ...`).
 var Config ConfigStruct
 
 // LoadAPIKeys reads all provider API keys from environment variables. This
-// is the only place wekai-core reads API keys from the environment; the
+// is the only place kvlab-core reads API keys from the environment; the
 // embedding application may instead inject keys it already loaded itself
 // via Config.APIKeys directly.
 func LoadAPIKeys() llm.APIKeys {
@@ -45,7 +45,7 @@ func LoadAPIKeys() llm.APIKeys {
 	}
 }
 
-// GetChatGetter is the core equivalent of wekai's app.App.GetChatGetter: it
+// GetChatGetter is the core equivalent of kvlab's app.App.GetChatGetter: it
 // applies GlobalModelOverride and fills in any unset ChatParams.APIKeys
 // fields from Config.APIKeys before delegating to llm.GetChatGetter. Moved
 // benchmark/cli code calls this instead of threading an *app.App through

@@ -194,7 +194,7 @@ func HashContent(tag string, content []byte) uint64 {
 
 // HashLabel folds an opaque precomputed hash label into a trie key.
 //
-// It exists for callers that already carry hashes as strings — wekai's redacted
+// It exists for callers that already carry hashes as strings — kvlab's redacted
 // captures store them as "sha256:<16 hex chars>", which is exactly 64 bits, so
 // that form is parsed losslessly. Anything else is hashed.
 func HashLabel(s string) uint64 {
@@ -829,7 +829,7 @@ func UnitsFromLabels(hashes []string, tokens []int) []Unit {
 	return out
 }
 
-// HexHash renders a key for logging or for comparison with wekai's string form.
+// HexHash renders a key for logging or for comparison with kvlab's string form.
 func HexHash(h uint64) string {
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], h)

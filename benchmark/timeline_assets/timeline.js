@@ -1,6 +1,6 @@
 // Request timeline renderer: one thin bar per request on a shared time axis.
 // Used verbatim by the benchmark report's Timeline view, the standalone
-// `wekai benchmark timeline` page and the live view served during a run.
+// `kvlab benchmark timeline` page and the live view served during a run.
 //
 // Only the visible rows are painted (virtual vertical scrolling over a single
 // canvas), so tens of thousands of requests cost the same as a screenful.
@@ -15,7 +15,7 @@
 //            x flag bits, src [gpu,host,ext,computed], rc [recompute], tm [timings ms],
 //            g [kind, ms, kind, ms ...] }
 //   kind = { id, key, label, color }
-var WekaiTimeline = (function () {
+var KVLabTimeline = (function () {
   "use strict";
 
   var FLAG_ERR = 1, FLAG_COLD = 2, FLAG_EMPTY = 4, FLAG_TIMINGS = 8, FLAG_SRC = 16, FLAG_INFL = 32, FLAG_TRUNC = 64, FLAG_SESSION = 128, FLAG_HOT = 256, FLAG_WAITING = 512;

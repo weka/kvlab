@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/lease"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/lease"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // loadKnob drives a backend's in-flight count to an exact value, up OR down.

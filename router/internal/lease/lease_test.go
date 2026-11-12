@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/lease"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/lease"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 func newBackends(t *testing.T, n int) (*registry.Registry, []*registry.Backend) {

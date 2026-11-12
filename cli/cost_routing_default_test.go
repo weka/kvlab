@@ -6,7 +6,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
 func parseRouter(t *testing.T, args ...string) RouterServeCommand {

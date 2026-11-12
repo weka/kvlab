@@ -31,7 +31,7 @@
   var sub = document.getElementById("sub");
   if (!CFG.live) {
     var P = {{.Data}};
-    var tl = WekaiTimeline.createSplit(host, { kinds: P.kinds, handleEsc: true });
+    var tl = KVLabTimeline.createSplit(host, { kinds: P.kinds, handleEsc: true });
     var t0 = performance.now();
     tl.setArms(P.arms);
     var initialRender = +(performance.now() - t0).toFixed(1);
@@ -42,7 +42,7 @@
     return;
   }
   // Live mode: poll the incremental endpoint for the selected arm.
-  var tl = WekaiTimeline.create(host, {
+  var tl = KVLabTimeline.create(host, {
     kinds: CFG.kinds, live: true, handleEsc: true, maxRequests: CFG.maxRequests,
     onArm: function (i) { seqs[i] = seqs[i] || 0; poll(); pollSeries(); },
   });

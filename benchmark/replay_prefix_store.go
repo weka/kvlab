@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // PrefixStore holds just what the offline cache simulations read from a

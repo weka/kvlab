@@ -4,7 +4,7 @@
 // pool's interchangeable endpoints — is the affinity flow; this decides which
 // pool the question is even asked of.
 //
-// The two used to be different programs. `wekai router serve` matched models to
+// The two used to be different programs. `kvlab router serve` matched models to
 // single upstreams and had no notion of a fleet; `wllm-router` fronted one fleet
 // and had no notion of a model. A Table is both: rules select a pool, the pool
 // selects an endpoint.
@@ -15,9 +15,9 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/weka/wekai/router/internal/gateway"
-	"github.com/weka/wekai/router/internal/pool"
-	"github.com/weka/wekai/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/gateway"
+	"github.com/weka/kvlab/router/internal/pool"
+	"github.com/weka/kvlab/router/internal/proxy"
 )
 
 // Rule is one routing rule: which model names it claims, and where they go.

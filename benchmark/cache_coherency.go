@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/weka/wekai/config"
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/config"
+	"github.com/weka/kvlab/llm"
 )
 
 // CacheCoherencyResult holds the results of a cache coherency evaluation

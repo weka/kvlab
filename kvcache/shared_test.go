@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // The engine serves two consumers with different needs. These tests pin the
@@ -89,7 +89,7 @@ func TestSharedPrefixYieldsSharedUnits(t *testing.T) {
 	}
 }
 
-// HashLabel must parse wekai's capture format losslessly: those hashes come from
+// HashLabel must parse kvlab's capture format losslessly: those hashes come from
 // redacted captures and are the only link between an offline analysis and the
 // live prediction.
 func TestHashLabelParsesCaptureFormatLosslessly(t *testing.T) {

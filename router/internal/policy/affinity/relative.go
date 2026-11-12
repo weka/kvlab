@@ -1,9 +1,9 @@
 package affinity
 
 import (
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // causeSet records which band signals got an affinity holder skipped in one

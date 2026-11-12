@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/mockvllm"
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // The three deployments the router is documented to support (docs/router.md),

@@ -4,9 +4,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/registry"
-	"github.com/weka/wekai/router/internal/viz"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/viz"
 )
 
 // Snapshot implements viz.DataSource for the live KV map at /router-viz.

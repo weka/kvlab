@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kvlab
+description: Runs an embedded LLM traffic replay (kvlab benchmark auto --router-replay-file) against a target model endpoint
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

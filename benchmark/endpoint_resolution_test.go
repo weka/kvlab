@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // A bare endpoint is resolved by probing: <base>+leaf first, /v1 inserted on a

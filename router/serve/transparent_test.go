@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // hostedUpstream stands in for a provider: it answers whatever it is told to and

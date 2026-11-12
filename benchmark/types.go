@@ -3,8 +3,8 @@ package benchmark
 import (
 	"time"
 
-	"github.com/weka/wekai/llm"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/llm"
+	"github.com/weka/kvlab/tools"
 )
 
 // RequestMetrics captures metrics for a single LLM request
@@ -36,7 +36,7 @@ type RequestMetrics struct {
 	UsageData         tools.ExecutionUsageData
 	// UsageObserved is true when the response actually carried a usage
 	// object (set by consumeOpenAISSE/consumeOpenAIPlain when present).
-	// wekai tolerates a response that omits usage entirely — UsageData then
+	// kvlab tolerates a response that omits usage entirely — UsageData then
 	// stays all-zero rather than erroring — which is exactly what silently
 	// renders a flat/zero "Totals (ingest)" chart for an SGLang run missing
 	// stream_options.include_usage support or a required server flag. This

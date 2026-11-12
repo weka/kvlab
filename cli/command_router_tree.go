@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // RouterTreeCommand reads redacted (or raw — auto-redacts in memory) capture
@@ -249,7 +249,7 @@ func (c *RouterTreeCommand) parseLine(line []byte, out *[]treeRecord, rawCount, 
 			sid = v
 		}
 	}
-	// model_out wins when the router rewrote the model (e.g., when a wekai
+	// model_out wins when the router rewrote the model (e.g., when a kvlab
 	// alias was the target); else model_in is the actual billed model.
 	model := rec.ModelOut
 	if model == "" {

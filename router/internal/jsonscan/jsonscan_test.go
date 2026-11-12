@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/weka/wekai/router/internal/jsonscan"
+	"github.com/weka/kvlab/router/internal/jsonscan"
 )
 
 func fieldMap(t *testing.T, body string) map[string]string {

@@ -1,13 +1,13 @@
 # Deploying the router
 
-The router is `wekai router serve` — one subcommand of the `wekai` binary, not a
+The router is `kvlab router serve` — one subcommand of the `kvlab` binary, not a
 separate program. It ships as its own container image and Helm chart, published
 from the same commit and under the same semver as the benchmark pair on every
 release.
 
 ## Image
 
-`Dockerfile.router` builds the same `wekai` binary as the benchmark image, minus
+`Dockerfile.router` builds the same `kvlab` binary as the benchmark image, minus
 the embedded replay artifact. That artifact is several GB and exists so a
 benchmark pod can replay captured traffic without a volume; a router never opens
 it, so shipping it would make every replica pay pull time and node disk for
@@ -33,7 +33,7 @@ creates discovery RBAC only when discovery is enabled — a namespace-scoped Rol
 never a ClusterRole, with pod read granted only in pod mode.
 
 ```bash
-helm upgrade --install my-router oci://quay.io/weka.io/helm/wekai-router \
+helm upgrade --install my-router oci://quay.io/weka.io/helm/kvlab-router \
   --version <release> \
   --set 'router.routes[0]=* => http://vllm-a:8000|http://vllm-b:8000'
 ```

@@ -343,7 +343,7 @@ func ValidateModel(model string) error {
 	}
 
 	if ResolveModel == nil {
-		return fmt.Errorf("no model registry configured: %s\n\nUse a dynamic (dynamic/...) or openrouter/... model spec, or embed wekai-core with a ResolveModel hook", staticConfig.BaseModel)
+		return fmt.Errorf("no model registry configured: %s\n\nUse a dynamic (dynamic/...) or openrouter/... model spec, or embed kvlab-core with a ResolveModel hook", staticConfig.BaseModel)
 	}
 	if _, ok := ResolveModel(staticConfig.BaseModel); !ok {
 		return fmt.Errorf("unsupported model: %s", staticConfig.BaseModel)

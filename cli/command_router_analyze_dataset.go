@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // RouterAnalyzeDatasetCommand models the real-time replay's active dataset
@@ -153,7 +153,7 @@ func loadDatasetSessions(path string, respScale, tokenScale float64) ([]benchmar
 		return nil, bad
 	}
 	if thinks == 0 {
-		return nil, fmt.Errorf("%s has no think_ms: real-time think pacing cannot be modelled (regenerate it with 'wekai router replay-prepare')", path)
+		return nil, fmt.Errorf("%s has no think_ms: real-time think pacing cannot be modelled (regenerate it with 'kvlab router replay-prepare')", path)
 	}
 	sessions := make([]benchmark.DatasetSession, idx)
 	for i := range idx {

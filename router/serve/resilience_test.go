@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/mockvllm"
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // killable wraps a mock vLLM so a test can take it down and bring it back,

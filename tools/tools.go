@@ -27,7 +27,7 @@ type TokenUsage struct {
 // cycle: llm.Chat references tools.ToolSet, so llm already imports tools —
 // tools cannot import llm back. ToolResult.UsageData needs this exact type,
 // so it's defined where it's consumed. Embedding applications that persist
-// this data (e.g. wekai's FSDB-backed datastore) should type-alias their
+// this data (e.g. kvlab's FSDB-backed datastore) should type-alias their
 // storage struct to this type to keep identical field/JSON shape.
 type ExecutionUsageData struct {
 	RequestCount int `json:"request_count"`

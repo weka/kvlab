@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // newTestAutoState mirrors the fields runAutoBenchmark builds that the replay

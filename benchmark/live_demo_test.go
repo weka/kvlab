@@ -2,7 +2,7 @@ package benchmark
 
 import (
 	"fmt"
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 	"math/rand"
 	"os"
 	"testing"

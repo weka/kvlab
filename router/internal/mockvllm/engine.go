@@ -9,7 +9,7 @@
 // actually been sent, the same way a real vLLM worker's KV cache would. The
 // two serve different purposes and are kept separate on purpose.
 //
-// The cache model is github.com/weka/wekai/kvcache — the same trie the
+// The cache model is github.com/weka/kvlab/kvcache — the same trie the
 // router's prefix-cache-aware policy (router/internal/policy/cache) uses to
 // PREDICT residency. Using it here too, as the thing being predicted, means a
 // run against this fleet produces a real, comparable
@@ -37,7 +37,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // Config parameterizes one Engine instance.

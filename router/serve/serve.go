@@ -2,14 +2,14 @@
 // visible outside it.
 //
 // It exists because of Go's internal rule: everything under router/internal is
-// importable only from router/, so `wekai router serve` — which lives in cli/ —
+// importable only from router/, so `kvlab router serve` — which lives in cli/ —
 // cannot wire the gateway, pools and proxy itself. Rather than promote those
 // packages to public module API, which is a one-way door and would freeze
 // internals that are still moving, this package is the seam. cli/ describes
 // what it wants; serve builds it.
 //
 // The alternative shape, a standalone router binary, is what this replaces.
-// There is no reason for two programs: the router IS `wekai router serve`.
+// There is no reason for two programs: the router IS `kvlab router serve`.
 package serve
 
 import (
@@ -29,22 +29,22 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/dialect"
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	k8sdisc "github.com/weka/wekai/router/internal/discovery/k8s"
-	"github.com/weka/wekai/router/internal/gateway"
-	"github.com/weka/wekai/router/internal/health"
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/pd"
-	"github.com/weka/wekai/router/internal/policy/affinity"
-	"github.com/weka/wekai/router/internal/pool"
-	"github.com/weka/wekai/router/internal/prefill"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
-	"github.com/weka/wekai/router/internal/routing"
-	"github.com/weka/wekai/router/internal/viz"
-	"github.com/weka/wekai/router/internal/vllmmetrics"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/dialect"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	k8sdisc "github.com/weka/kvlab/router/internal/discovery/k8s"
+	"github.com/weka/kvlab/router/internal/gateway"
+	"github.com/weka/kvlab/router/internal/health"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/pd"
+	"github.com/weka/kvlab/router/internal/policy/affinity"
+	"github.com/weka/kvlab/router/internal/pool"
+	"github.com/weka/kvlab/router/internal/prefill"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/routing"
+	"github.com/weka/kvlab/router/internal/viz"
+	"github.com/weka/kvlab/router/internal/vllmmetrics"
 )
 
 // registerDialectOnce guards the process-global dialect registry; see Handler.
@@ -114,7 +114,7 @@ type Route struct {
 	Passive bool
 }
 
-// Options is everything `wekai router serve` needs.
+// Options is everything `kvlab router serve` needs.
 type Options struct {
 	Listen        string
 	MetricsListen string

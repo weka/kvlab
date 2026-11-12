@@ -2,8 +2,8 @@
 #
 # It previously excluded main.go, cli/, benchmark/, llm/, config/, chart/ and
 # tools/, which was right when the router was its own small binary under
-# router/cmd/ needing only router/ and kvcache/. The router is now `wekai router
-# serve` — the whole wekai binary, built from the ROOT package — so excluding
+# router/cmd/ needing only router/ and kvcache/. The router is now `kvlab router
+# serve` — the whole kvlab binary, built from the ROOT package — so excluding
 # those left the build with no Go files in the context at all.
 #
 # vendor/ stays out on size grounds: 80+ MB, and both images build against the
@@ -20,8 +20,8 @@ docs
 
 # Build outputs, which would otherwise be copied in over a fresh build.
 dist
-/wekai
-/wekai-core
+/kvlab
+/kvlab-core
 /bin
 results
 *.log

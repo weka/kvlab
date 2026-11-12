@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 func decodeBackend(t *testing.T, url string) *registry.Backend {

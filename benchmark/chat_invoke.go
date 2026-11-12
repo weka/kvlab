@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/llm"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/llm"
+	"github.com/weka/kvlab/tools"
 )
 
 // ChatInvokeResult is the outcome of InvokeChat: the final assistant text

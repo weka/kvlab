@@ -18,10 +18,10 @@ PUBLISH_PLATFORMS = [
     dagger.Platform("linux/arm64"),
 ]
 
-# Mirrors wekai's own .gitignore so a publish digest isn't polluted by
+# Mirrors kvlab's own .gitignore so a publish digest isn't polluted by
 # local build artifacts, IDE state, or the dagger module's own generated
-# sdk/. Leading "/" anchors to the repo root — an unanchored "wekai"
-# would also match chart/wekai (see .gitignore history).
+# sdk/. Leading "/" anchors to the repo root — an unanchored "kvlab"
+# would also match chart/kvlab (see .gitignore history).
 SOURCE_IGNORE = [
     "*/.git",
     "*/.DS_Store",
@@ -31,18 +31,18 @@ SOURCE_IGNORE = [
     ".temp",
     "/bin",
     "/dist",
-    "/wekai",
-    "/wekai-core",
+    "/kvlab",
+    "/kvlab-core",
     "*.log",
     "*.out",
     "/results",
 ]
 
-CHART_DIR = "chart/wekai"
-CHART_NAME = "wekai"
+CHART_DIR = "chart/kvlab"
+CHART_NAME = "kvlab"
 
 # The router ships as a SECOND image and chart from the same commit. It is the
-# same wekai binary; what differs is that the router image carries no embedded
+# same kvlab binary; what differs is that the router image carries no embedded
 # replay artifact. That artifact is multi-GB and exists so a benchmark pod can
 # replay captured traffic without a volume — a router never opens it, and making
 # every router replica pull it would be pure cost. Two Dockerfiles rather than a
@@ -50,11 +50,11 @@ CHART_NAME = "wekai"
 # rather than merely unlikely.
 ROUTER_DOCKERFILE = "Dockerfile.router"
 ROUTER_CHART_DIR = "chart/router"
-ROUTER_CHART_NAME = "wekai-router"
+ROUTER_CHART_NAME = "kvlab-router"
 
 
 async def _calc_version(src: dagger.Directory) -> str:
-    """Ported verbatim from wekai's .dagger/src/wekai_flows/main.py."""
+    """Content-hash dev version (v999.0.0-<sha12>) of the source tree."""
     digest = await src.digest()
     sha = digest.split(":")[-1]
     version = f"v999.0.0-{sha[:12]}"
@@ -67,7 +67,7 @@ async def _publish_image(
     replay_image: str,
     version: str = "",
 ) -> tuple[str, str]:
-    """Builds and publishes the wekai image from this repo's own
+    """Builds and publishes the kvlab image from this repo's own
     Dockerfile. Shared by `publish` and `push_helm` so there is exactly one
     build/tag/publish code path — `push_helm` awaits this to completion
     before touching the chart, which is what makes "image pushed before
@@ -171,23 +171,23 @@ async def _package_and_push_chart(
 
 
 @object_type
-class WekaiCoreFlows:
+class KvlabCoreFlows:
     @function
     async def push_replay(
         self,
         replay: dagger.File,
-        registry: str = "quay.io/weka.io/wekai",
+        registry: str = "quay.io/weka.io/kvlab",
         label: str = "",
     ) -> str:
         """Publishes a router replay file as a minimal scratch image.
 
-        Ported from wekai's .dagger push_replay: identical tag scheme
+        Ported from kvlab's .dagger push_replay: identical tag scheme
         (replay-<sha12 of content>). Replay artifacts live in the same
-        wekai quay repo as the app image, distinguished by the replay-
+        kvlab quay repo as the app image, distinguished by the replay-
         tag prefix.
         The image carries the replay JSONL at /replay.jsonl, so this repo's
         own Dockerfile embeds it via:
-        COPY --link --from=<registry>:replay-<sha12> /replay.jsonl /wekai/replay.jsonl
+        COPY --link --from=<registry>:replay-<sha12> /replay.jsonl /kvlab/replay.jsonl
 
         Args:
             replay: The local replay JSONL file to publish (mandatory).
@@ -225,16 +225,16 @@ class WekaiCoreFlows:
     async def publish(
         self,
         source: Annotated[dagger.Directory, Ignore(SOURCE_IGNORE)],
-        registry: str = "quay.io/weka.io/wekai",
-        replay_image: str = "quay.io/weka.io/wekai:replay-40d-oct14-337a03810637",
+        registry: str = "quay.io/weka.io/kvlab",
+        replay_image: str = "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637",
         version: str = "",
     ) -> str:
-        """Builds and publishes the wekai image from this repo's own Dockerfile.
+        """Builds and publishes the kvlab image from this repo's own Dockerfile.
 
         Uses Directory.docker_build() against the existing Dockerfile at the
         repo root — the Dockerfile is the single source of truth for the
         build; this function does not reimplement its steps. Tagged with
-        the same version stamp scheme wekai uses (_calc_version:
+        the same version stamp scheme kvlab uses (_calc_version:
         v999.0.0-<sha12> of the source directory's digest) unless an
         explicit version is given.
 
@@ -247,7 +247,7 @@ class WekaiCoreFlows:
                 release workflow). Empty = content-hash scheme.
         """
         image_name, _version = await _publish_image(source, registry, replay_image, version)
-        return f"Published wekai image: {image_name}"
+        return f"Published kvlab image: {image_name}"
 
     @function
     async def push_helm(
@@ -255,13 +255,13 @@ class WekaiCoreFlows:
         source: Annotated[dagger.Directory, Ignore(SOURCE_IGNORE)],
         helm_username: dagger.Secret,
         helm_password: dagger.Secret,
-        registry: str = "quay.io/weka.io/wekai",
+        registry: str = "quay.io/weka.io/kvlab",
         helm_registry: str = "quay.io/weka.io/helm",
-        replay_image: str = "quay.io/weka.io/wekai:replay-40d-oct14-337a03810637",
+        replay_image: str = "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637",
         version: str = "",
     ) -> str:
-        """Publishes the wekai image, then packages and pushes
-        chart/wekai to an OCI Helm registry with the chart's image
+        """Publishes the kvlab image, then packages and pushes
+        chart/kvlab to an OCI Helm registry with the chart's image
         reference pinned to that exact just-published image — a
         `helm install` of the pushed chart with zero further --set flags
         deploys exactly the image it was packaged with.
@@ -277,7 +277,7 @@ class WekaiCoreFlows:
             registry: Image registry:repo the chart gets pinned to (same
                 target `publish` would use).
             helm_registry: OCI Helm registry base, e.g. quay.io/weka.io/helm
-                (matches wekai's retired chart-push flow's default).
+                (matches kvlab's retired chart-push flow's default).
             replay_image: Passed through to the Dockerfile's REPLAY_IMAGE
                 build-arg.
             version: Explicit version stamp for BOTH the image tag and the
@@ -292,7 +292,7 @@ class WekaiCoreFlows:
         )
 
         return (
-            f"Published wekai image: {image_name}\n"
+            f"Published kvlab image: {image_name}\n"
             f"Published Helm chart: {chart_ref} (pinned to image {image_name})"
         )
 
@@ -300,7 +300,7 @@ class WekaiCoreFlows:
     async def build_router(
         self,
         source: Annotated[dagger.Directory, Ignore(SOURCE_IGNORE)],
-        registry: str = "quay.io/weka.io/wekai-router",
+        registry: str = "quay.io/weka.io/kvlab-router",
         version: str = "",
     ) -> dagger.Directory:
         """Builds the router image and packages chart/router WITHOUT pushing,
@@ -338,7 +338,7 @@ class WekaiCoreFlows:
         source: Annotated[dagger.Directory, Ignore(SOURCE_IGNORE)],
         helm_username: dagger.Secret,
         helm_password: dagger.Secret,
-        registry: str = "quay.io/weka.io/wekai-router",
+        registry: str = "quay.io/weka.io/kvlab-router",
         helm_registry: str = "quay.io/weka.io/helm",
         version: str = "",
     ) -> str:

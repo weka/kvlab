@@ -34,7 +34,7 @@ func resolveReplayTiming(mode string, hdr RouterReplayHeader) (bool, error) {
 		return false, nil
 	case "think":
 		if !has {
-			return false, fmt.Errorf("--replay-timing=think needs a replay-v4 file with think_ms; this file (%s) has none -- use --replay-timing=absolute or regenerate it with 'wekai router replay-prepare'", hdr.Schema)
+			return false, fmt.Errorf("--replay-timing=think needs a replay-v4 file with think_ms; this file (%s) has none -- use --replay-timing=absolute or regenerate it with 'kvlab router replay-prepare'", hdr.Schema)
 		}
 		return true, nil
 	}

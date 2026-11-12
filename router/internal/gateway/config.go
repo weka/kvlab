@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/pd"
-	"github.com/weka/wekai/router/internal/prefill"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/pd"
+	"github.com/weka/kvlab/router/internal/prefill"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Config is what the HTTP surface itself needs — nothing about routing, which

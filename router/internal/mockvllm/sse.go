@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // This file implements minimal OpenAI-compatible SSE streaming: a role-only

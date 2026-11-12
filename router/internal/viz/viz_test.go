@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/viz"
+	"github.com/weka/kvlab/router/internal/viz"
 )
 
 // fakeSource is a minimal, in-package-independent viz.DataSource for

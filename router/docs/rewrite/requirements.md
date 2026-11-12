@@ -49,11 +49,11 @@ Three problems drive the rewrite:
 
 1. **Over-complication.** The Rust codebase is large, generic, and abstracted for use cases the team does not have (PD disaggregation, Python embedding, multi-tokenizer support). Nobody on the team can confidently change routing behavior.
 2. **The load-balancing policies do not work.** This is not a tuning problem; the load signal itself is corrupt (see §1.3). Every load-sensitive policy — `power_of_two`, `cache_aware`'s balance check, `get_loads` — is making decisions on noise.
-3. **Ownership.** Rust + PyO3 + a vendored upstream lineage means changes are risky and slow. Go is the team's primary language (`wekai` is Go 1.25), and the cache-usefulness engine we want to reuse is already Go.
+3. **Ownership.** Rust + PyO3 + a vendored upstream lineage means changes are risky and slow. Go is the team's primary language (`kvlab` is Go 1.25), and the cache-usefulness engine we want to reuse is already Go.
 
 ### 1.2 Why Go
 
-- Team fluency; `wekai` (module `github.com/weka/wekai`, Go 1.25.7) is the source of the cache-prediction engine we intend to reuse.
+- Team fluency; `kvlab` (module `github.com/weka/kvlab`, Go 1.25.7) is the source of the cache-prediction engine we intend to reuse.
 - `net/http` + `httputil.ReverseProxy` gives a correct, streaming, backpressured HTTP proxy out of the box; the Rust implementation hand-rolled this and got backpressure, Content-Type, and SSE framing wrong.
 - Performance is adequate: the router is I/O-bound (proxying tokens), not CPU-bound. GC pressure is the only real risk and is addressed by NFR-3/NFR-4.
 
@@ -74,7 +74,7 @@ The v2 design treats load accounting as a **single, symmetric, RAII-style lifecy
 - G1: A single Go binary and container image that is wire-compatible with the current router for both clients and vLLM workers.
 - G2: Correct, testable load balancing with a default policy (`least-outstanding`) that is right by construction.
 - G3: A rebuilt prefix-cache-aware policy with token-based (not character-based) accounting and bounded memory.
-- G4: A new cache-usefulness policy derived from `wekai`'s prediction engine.
+- G4: A new cache-usefulness policy derived from `kvlab`'s prediction engine.
 - G5: Kubernetes service discovery that supports Services/EndpointSlices, not just pod IPs.
 - G6: Code small enough that any team member can read the routing path end-to-end in an afternoon. Target: **under 8,000 LOC excluding tests and vendored deps.**
 
@@ -277,7 +277,7 @@ This is the **rebuilt** prefix policy. It is not a port of `src/tree.rs` (2,320 
 | **CACHE-3** | MUST | An imbalance guard MUST override cache affinity: if the selected worker's in-flight exceeds `min(in-flight over candidates) + abs_threshold` **and** `> min × rel_threshold`, fall back to `least-outstanding`. The guard MUST be computed **over `candidates` only** (LB-9), never over unhealthy workers. |
 | **CACHE-4** | MUST | "Routing text" MUST be derived from a documented, versioned extraction rule (see CACHE-11), computed once per request and reused by all policies and by observability. |
 | **CACHE-5** | MUST | Eviction MUST be bounded by **estimated tokens**, not characters, with a default budget of `max_tokens_per_worker` (default 2,000,000 est. tokens ≈ 8 MB of prompt text). Configurable. |
-| **CACHE-6** | MUST | Token estimation MUST be `len(bytes)/4`, clamped to ≥1 for non-empty content — the same heuristic as `wekai`'s `estimateTokens`. The router does not tokenize (NG-3). The estimate's crudeness MUST be documented at every point where it influences a decision. |
+| **CACHE-6** | MUST | Token estimation MUST be `len(bytes)/4`, clamped to ≥1 for non-empty content — the same heuristic as `kvlab`'s `estimateTokens`. The router does not tokenize (NG-3). The estimate's crudeness MUST be documented at every point where it influences a decision. |
 | **CACHE-7** | MUST | Eviction MUST be LRU, MUST be incremental (amortized per-insert or a bounded work budget per tick), and MUST hold the same lock discipline as insertion so that no reader can observe a partially-unlinked subtree. |
 | **CACHE-8** | MUST | All background work MUST run on a goroutine owned by a `context.Context` that is cancelled on policy shutdown. No unkillable threads. Leak-checked with `go.uber.org/goleak` in tests. |
 | **CACHE-9** | MUST | The structure MUST be split into a **read-only `Query`** used during selection and a **`Commit`** applied only after a worker is actually selected and the request dispatched. A request that is rejected, rate-limited, or fails candidate filtering MUST NOT mutate cache state. |
@@ -297,15 +297,15 @@ This is the **rebuilt** prefix policy. It is not a port of `src/tree.rs` (2,320 
 
 ---
 
-## 11. The `cache-usefulness` Policy (wekai-derived)
+## 11. The `cache-usefulness` Policy (kvlab-derived)
 
 ### 11.1 Naming correction
 
-The user referred to this as `wekai benchmark analyze`. The actual command is **`wekai router analyze`**, implemented in `cli/command_router_analyze.go` (736 LOC). The reusable engine is `benchmark/cache_sim.go` (281 LOC).
+The user referred to this as `kvlab benchmark analyze`. The actual command is **`kvlab router analyze`**, implemented in `cli/command_router_analyze.go` (736 LOC). The reusable engine is `benchmark/cache_sim.go` (281 LOC).
 
-### 11.2 What wekai actually gives us (verified)
+### 11.2 What kvlab actually gives us (verified)
 
-`benchmark/cache_sim.go` depends only on `crypto/sha256`, `encoding/hex`, `sync`, `sync/atomic` — no wekai-internal packages. It contains:
+`benchmark/cache_sim.go` depends only on `crypto/sha256`, `encoding/hex`, `sync`, `sync/atomic` — no kvlab-internal packages. It contains:
 
 - `prefixTrie` / `trieNode` — a mutex-guarded trie of prefix-unit hashes; each node stores the estimated token delta of the unit that created it.
 - `prefixTrie.RecordAndCount(hashes []string, tokens []int) (cached, total int)` — walks the longest matching prefix crediting `child.tokens` per matched node, then inserts the novel tail. O(prefix length). Online-capable.
@@ -324,13 +324,13 @@ saved_seconds ≈ predicted_warm_tokens × (1/coldTPS − 1/warmTPS)
 
 ### 11.3 Gaps — what must be built new
 
-Be explicit with reviewers: wekai gives us a **validated single-cache simulator**, not a router. The following are new work:
+Be explicit with reviewers: kvlab gives us a **validated single-cache simulator**, not a router. The following are new work:
 
 1. **Singleton → per-node.** The trie is one global instance. The router needs one per worker, plus lifecycle tied to worker add/remove.
 2. **Walk-and-mutate → query/commit split.** `Observe()` walks *and* inserts under one lock. The router must query all N workers read-only, then commit to exactly one.
 3. **No eviction.** The trie models an **infinite** cache. Real vLLM nodes evict under LRU / KV-memory pressure. Unbounded, the prediction drifts optimistic and memory grows without limit.
-4. **Unit granularity mismatch.** wekai's units are whole messages (thousands of tokens) or 1024-byte windows; vLLM hashes **fixed 16-token blocks**. Nothing in wekai models vLLM's block size. Prediction resolution is therefore coarse by a factor of ~16–100.
-5. **No per-node ground truth.** wekai has no per-node cache-content tracking. `llm/endpoint_router.go` gets locality only via sticky series assignment. `benchmark/vllm_metrics.go` polls `vllm:prompt_tokens_by_source` every 60 s but **sums across all endpoints**, discarding per-node attribution. Per-node validation must be built.
+4. **Unit granularity mismatch.** kvlab's units are whole messages (thousands of tokens) or 1024-byte windows; vLLM hashes **fixed 16-token blocks**. Nothing in kvlab models vLLM's block size. Prediction resolution is therefore coarse by a factor of ~16–100.
+5. **No per-node ground truth.** kvlab has no per-node cache-content tracking. `llm/endpoint_router.go` gets locality only via sticky series assignment. `benchmark/vllm_metrics.go` polls `vllm:prompt_tokens_by_source` every 60 s but **sums across all endpoints**, discarding per-node attribution. Per-node validation must be built.
 6. **Unexported and in package `benchmark`.** `prefixTrie`, `trieNode`, `cacheEstimator` are all lowercase inside a package that pulls in the whole benchmark harness.
 
 ### 11.4 Requirements
@@ -338,7 +338,7 @@ Be explicit with reviewers: wekai gives us a **validated single-cache simulator*
 | ID | Level | Requirement |
 |---|---|---|
 | **CU-1** | MUST | The engine MUST be extracted into a standalone, dependency-free package (proposal: `github.com/weka/wllm-router/internal/cachepredict`) that imports only the standard library. |
-| **CU-2** | MUST | The extraction MUST be a **shared-source or vendored-copy with a documented provenance header** naming `wekai@<commit> benchmark/cache_sim.go`, and a CI check that flags upstream drift. Cross-repo import of `benchmark` MUST NOT be used (it would drag the benchmark harness into the router binary). |
+| **CU-2** | MUST | The extraction MUST be a **shared-source or vendored-copy with a documented provenance header** naming `kvlab@<commit> benchmark/cache_sim.go`, and a CI check that flags upstream drift. Cross-repo import of `benchmark` MUST NOT be used (it would drag the benchmark harness into the router binary). |
 | **CU-3** | MUST | `BuildReplayRequestPrefix`'s ordering (system → tools → messages) and its **`i == 0 && Bytes < 200` skip rule** MUST be preserved in the router's prefix-unit builder, with the rationale documented in a comment and asserted by a unit test named after the behavior. |
 | **CU-4** | MUST | Maintain one predictor instance **per worker**, created on worker registration and destroyed on removal. Memory is per-worker-bounded (CU-8). |
 | **CU-5** | MUST | The API MUST be `Query(units []Unit) (predictedCachedTokens, totalTokens int)` — pure, read-only, safe for concurrent use across all workers — and `Commit(units []Unit)` — mutating, called on exactly one worker after selection succeeds. |
@@ -349,7 +349,7 @@ Be explicit with reviewers: wekai gives us a **validated single-cache simulator*
 | **CU-10** | MUST | Prefix units MUST be built at a configurable granularity, default 1024 bytes (`promptChunkBytes`), with the vLLM 16-token-block mismatch documented (see OQ-2). |
 | **CU-11** | MUST | Degradation: if routing text cannot be extracted, if all predictors return `total == 0`, or if the best score is within `epsilon` of the worst, the policy MUST fall back to `least-outstanding` and increment `router_cache_usefulness_fallback_total{reason=…}`. The policy MUST NEVER fail a request. |
 | **CU-12** | MUST | On worker removal, that worker's predictor MUST be dropped. Its prefixes MUST NOT be reassigned. |
-| **CU-13** | SHOULD | The router SHOULD record, per request, `predicted_cached_fraction` alongside the worker's **reported** `prompt_tokens_details.cached_tokens` (when vLLM returns it in `usage`) and emit both, so prediction accuracy is measurable in production. This is the per-node ground truth wekai lacks. |
+| **CU-13** | SHOULD | The router SHOULD record, per request, `predicted_cached_fraction` alongside the worker's **reported** `prompt_tokens_details.cached_tokens` (when vLLM returns it in `usage`) and emit both, so prediction accuracy is measurable in production. This is the per-node ground truth kvlab lacks. |
 | **CU-14** | MAY | The router MAY expose a `shadow` mode where `cache-usefulness` computes its choice and emits metrics but the actual routing decision is taken by the configured production policy — for safe accuracy validation before cutover. |
 | **CU-15** | MUST | Prediction MUST NOT be on the critical path for more than the NFR-2 budget. `Query` across N workers is O(N × prefix_units); with N ≤ 64 and units ≤ 64 this is bounded, but MUST be benchmarked and MUST short-circuit (fall back) if it exceeds a hard deadline (default 2 ms). |
 
@@ -358,8 +358,8 @@ Be explicit with reviewers: wekai gives us a **validated single-cache simulator*
 - **CU-N1:** A global singleton trie shared across workers, which predicts the cluster's aggregate cache, not any node's.
 - **CU-N2:** A combined walk-and-insert call, which pollutes every worker's model with every request regardless of where it was actually sent — making the prediction converge to uniform and useless.
 - **CU-N3:** An unevicting trie that models an infinite cache and grows without bound.
-- **CU-N4:** Summing cache metrics across endpoints and discarding per-node attribution (wekai's current `vllm_metrics.go` behavior), which is exactly the signal this policy needs.
-- **CU-N5:** Importing `github.com/weka/wekai/benchmark` into the router, pulling a benchmark harness and its transitive dependencies into a production proxy.
+- **CU-N4:** Summing cache metrics across endpoints and discarding per-node attribution (kvlab's current `vllm_metrics.go` behavior), which is exactly the signal this policy needs.
+- **CU-N5:** Importing `github.com/weka/kvlab/benchmark` into the router, pulling a benchmark harness and its transitive dependencies into a production proxy.
 
 ---
 
@@ -511,7 +511,7 @@ Be explicit with reviewers: wekai gives us a **validated single-cache simulator*
 ## 19. Open Questions / Deferred to Design
 
 - **OQ-1: Keep the transparent catch-all proxy at all?** It exists in v1 to forward unknown vLLM endpoints. Keeping it means every future vLLM endpoint works for free; dropping it means a strictly enumerated surface, which is easier to secure and reason about. **Recommendation:** keep it, but behind an explicit `--enable-passthrough` flag defaulting to **off**, and fully inside the middleware chain (GW-9).
-- **OQ-2: Prefix-unit granularity.** vLLM hashes fixed **16-token** blocks; wekai uses 1024-byte (~256-token) windows or whole messages. Finer units = better prediction resolution, ~16× more trie nodes and hashing cost. Needs an offline accuracy/cost sweep against `wekai router analyze` traces before fixing the default (CU-10, CACHE-12).
+- **OQ-2: Prefix-unit granularity.** vLLM hashes fixed **16-token** blocks; kvlab uses 1024-byte (~256-token) windows or whole messages. Finer units = better prediction resolution, ~16× more trie nodes and hashing cost. Needs an offline accuracy/cost sweep against `kvlab router analyze` traces before fixing the default (CU-10, CACHE-12).
 - **OQ-3: Do `prefix-cache-aware` and `cache-usefulness` merge?** They share a trie, a routing-text extractor, and an eviction model; they differ in scoring (longest-match owner vs. expected-saved-time). Shipping both may be redundant. **Recommendation:** implement one engine with two scoring functions; decide before GA whether to expose both names.
 - **OQ-4: Multi-model routing.** If one router fronts workers serving different models, candidate filtering must be model-aware. Currently out of scope (NG-6); confirm no deployment needs it.
 - **OQ-5: Responses-API affinity durability.** The `{id}` → worker map is in-memory (GW-3/GW-4). Multi-replica routers or restarts break `GET /v1/responses/{id}`. Options: sticky-hash on the id (works only if worker set is stable), shared store (adds a dependency), or accept the limitation. **Recommendation:** accept and document for v2.0; revisit if the Responses API is actually used.
@@ -542,7 +542,7 @@ Each area is signed off only when all listed checks pass in CI.
 | **Health & CB** | Unit: hysteresis, sliding-window open trigger with a fake clock (**HLT-N2**), half-open concurrency cap under 100 concurrent probes (**HLT-N3**), `429` classified as failure (**HLT-N4**). Integration: 200 workers with 5 s-timeout checks complete a round in < 6 s (**HLT-N1**). Grep/CI: no write to in-flight counters outside the lease package (**HLT-N5**, LB-6). |
 | **Load balancing** | Property (LB-7): random interleaving of 10k lifecycles — cancel/retry/timeout/upstream-error/stream-abort — leaves every in-flight counter at exactly 0 (**LB-N1**). Unit: `round-robin` over N stable workers gives each exactly `10` of `10N` requests (**LB-N3**). Unit: tie-break uniformity, chi-square over 100k draws with N identical candidates (**LB-N4**). Unit: `least-outstanding` picks correctly for N=1,2,64. Config test: an unconsumed knob fails startup (**LB-N5**). Config test: exactly one default set, default is `least-outstanding` (**LB-N6**). Unit: imbalance guard sees only healthy candidates (**LB-N7**). |
 | **Cache-aware** | Unit: eviction is token-budgeted and the tree survives 1M inserts within the memory bound (**CACHE-N1**). Race: 8 concurrent inserters + 1 evictor under `-race` for 60 s, with an invariant checker asserting no reader observes an unlinked live subtree (**CACHE-N2**). `goleak`: policy shutdown leaves zero goroutines (**CACHE-N3**). Unit: rejected request performs no commit (**CACHE-N6**). Integration: 1,000-request session trace shows ≥ 80% affinity to the same worker under a stable worker set. |
-| **Cache-usefulness** | Unit: golden test that `Query` reproduces `wekai` `cacheEstimator.Observe` outputs on a fixed corpus (proves faithful extraction). Unit: the `Bytes < 200` system-block-0 skip is asserted by name (**CU-3**). Unit: `Query` is pure — 1,000 `Query` calls leave state byte-identical (**CU-N2**). Unit: per-worker isolation — committing to worker A does not change worker B's prediction (**CU-N1**). Unit: eviction bounds node count and tokens (**CU-N3**). Bench: `Query` across 64 workers with a 32 KiB prompt meets NFR-2. Integration: `predicted_cached_fraction` vs. mock-reported `cached_tokens` correlate ≥ 0.7 on a replayed `wekai router analyze` trace. Degradation: with routing text unavailable, all requests still succeed via fallback with the fallback counter incremented (**CU-11**). |
+| **Cache-usefulness** | Unit: golden test that `Query` reproduces `kvlab` `cacheEstimator.Observe` outputs on a fixed corpus (proves faithful extraction). Unit: the `Bytes < 200` system-block-0 skip is asserted by name (**CU-3**). Unit: `Query` is pure — 1,000 `Query` calls leave state byte-identical (**CU-N2**). Unit: per-worker isolation — committing to worker A does not change worker B's prediction (**CU-N1**). Unit: eviction bounds node count and tokens (**CU-N3**). Bench: `Query` across 64 workers with a 32 KiB prompt meets NFR-2. Integration: `predicted_cached_fraction` vs. mock-reported `cached_tokens` correlate ≥ 0.7 on a replayed `kvlab router analyze` trace. Degradation: with routing text unavailable, all requests still succeed via fallback with the fallback counter incremented (**CU-11**). |
 | **Service discovery** | Integration against `envtest` or a fake clientset: EndpointSlice add/update/delete converges (SD-7 — apply the same set twice, assert identical registry state, **SD-N2**). Assert a newly discovered endpoint is not routable until its first health check passes (**SD-N3**). Watch-expiry re-list with backoff. IPv6 URL bracketing. |
 | **Streaming** | Integration: slow client (1 byte/s reader) against a fast worker — assert router RSS stays within `64 KiB × streams` (**STR-N1**). Integration: worker returns `400 application/json` on a `stream:true` request — assert `Content-Type` is passed through unchanged (**STR-N2**). Unit: `data: [DONE]` split across every possible byte offset (parameterized over all split points) is detected (**STR-N3**). Integration: client disconnect cancels upstream within 100 ms. |
 | **Reliability** | Integration: worker returns `503` → retried on a different worker; `500` → not retried; retry after first byte → not retried (REL-3). Chaos: **kill a worker mid-stream** — assert client sees a clean termination, `router_stream_aborted_total` increments, the lease releases exactly once, the circuit opens, and subsequent requests route away within one health interval. Chaos: kill a worker between selection and dispatch. Chaos: `SIGTERM` with 100 open streams — assert readiness flips immediately, all streams complete, exit code 0 within the drain deadline. |

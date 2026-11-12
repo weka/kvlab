@@ -11,8 +11,8 @@
 # image is testable before it is pushed anywhere.
 set -euo pipefail
 
-CLUSTER=${CLUSTER:-wekai-e2e}
-NS=${NS:-wekai-e2e}
+CLUSTER=${CLUSTER:-kvlab-e2e}
+NS=${NS:-kvlab-e2e}
 TAG=e2e   # NOT :latest — that would default imagePullPolicy to Always and fail.
 KEEP=${KEEP:-0}
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -26,7 +26,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # real cluster's, sometimes a production one, with no recovery path from here.
 #
 # A scratch file costs nothing and removes the possibility entirely.
-KUBECONFIG="$(mktemp -t wekai-kubeconfig)"
+KUBECONFIG="$(mktemp -t kvlab-kubeconfig)"
 export KUBECONFIG
 
 
@@ -46,7 +46,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> building images"
-docker build -q -f "$ROOT/Dockerfile.router"    -t "wekai-router:$TAG" "$ROOT" >/dev/null
+docker build -q -f "$ROOT/Dockerfile.router"    -t "kvlab-router:$TAG" "$ROOT" >/dev/null
 docker build -q -f "$ROOT/Dockerfile.mock-vllm" -t "mock-vllm:$TAG"    "$ROOT" >/dev/null
 
 echo "==> creating cluster"
@@ -54,7 +54,7 @@ k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 k3d cluster create "$CLUSTER" --wait --timeout 120s >/dev/null
 
 echo "==> importing images (no registry involved)"
-k3d image import "wekai-router:$TAG" "mock-vllm:$TAG" -c "$CLUSTER" >/dev/null
+k3d image import "kvlab-router:$TAG" "mock-vllm:$TAG" -c "$CLUSTER" >/dev/null
 
 kubectl create namespace "$NS" >/dev/null
 kubectl config set-context --current --namespace="$NS" >/dev/null
@@ -75,7 +75,7 @@ kubectl rollout status statefulset/mock-vllm --timeout=120s 2>/dev/null
 
 echo "==> helm install the router chart"
 helm install router "$ROOT/chart/router" "${SMALL[@]}" \
-  --set imageRepository=wekai-router \
+  --set imageRepository=kvlab-router \
   --set imageTag="$TAG" \
   --set 'router.backends[0]=http://mock-vllm-0.mock-vllm:8000' \
   --set 'router.backends[1]=http://mock-vllm-1.mock-vllm:8000' \
@@ -118,7 +118,7 @@ grep -q 'router_route_decisions_total' /tmp/e2e-metrics || {
 # and it exercises the discovery RBAC, which only a real cluster can check.
 echo "==> helm install a second router using pod discovery"
 helm install router-disc "$ROOT/chart/router" "${SMALL[@]}" \
-  --set imageRepository=wekai-router \
+  --set imageRepository=kvlab-router \
   --set imageTag="$TAG" \
   --set-string 'router.backends[0].pods.app=mock-vllm' \
   --set-string 'router.backends[0].port=http' \
@@ -159,14 +159,14 @@ INNER_KEY=inner-secret-$RANDOM
 kubectl create secret generic router-inner-key --from-literal=inner-key="$INNER_KEY" >/dev/null
 
 helm install inner "$ROOT/chart/router" "${SMALL[@]}" \
-  --set imageRepository=wekai-router --set imageTag="$TAG" \
+  --set imageRepository=kvlab-router --set imageTag="$TAG" \
   --set 'router.backends[0]=http://mock-vllm-0.mock-vllm:8000' \
   --set 'router.backends[1]=http://mock-vllm-1.mock-vllm:8000' \
   --set router.apiKey="$INNER_KEY" \
   --set service.port=8080 --set service.targetPort=8080 --set replicaCount=1 >/dev/null
 
 helm install outer "$ROOT/chart/router" "${SMALL[@]}" \
-  --set imageRepository=wekai-router --set imageTag="$TAG" \
+  --set imageRepository=kvlab-router --set imageTag="$TAG" \
   --set-string 'router.routes[0].patterns[0]=*' \
   --set-string 'router.routes[0].endpoints[0]=http://inner:8080' \
   --set-string 'router.routes[0].using=/etc/router/inner-key' \

@@ -86,7 +86,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(wekai_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range]) + increase(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range]) + increase(wekai_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range])) / clamp_min(sum(increase(wekai_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range])), 1)",
+          "expr": "sum(increase(kvlab_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range]) + increase(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range]) + increase(kvlab_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range])) / clamp_min(sum(increase(kvlab_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}[$__range])), 1)",
           "legendFormat": "in:out",
           "refId": "A"
         }
@@ -138,7 +138,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "count(count by (user) (increase(wekai_router_requests_total{user!=\"unknown\"}[$__range]) > 0))",
+          "expr": "count(count by (user) (increase(kvlab_router_requests_total{user!=\"unknown\"}[$__range]) > 0))",
           "instant": true,
           "legendFormat": "users",
           "refId": "A"
@@ -190,7 +190,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "count(count by (session_id) (increase(wekai_router_requests_total{session_id!=\"unknown\"}[$__range]) > 0))",
+          "expr": "count(count by (session_id) (increase(kvlab_router_requests_total{session_id!=\"unknown\"}[$__range]) > 0))",
           "instant": true,
           "legendFormat": "sessions",
           "refId": "A"
@@ -243,7 +243,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_requests_total[5m]))",
+          "expr": "sum(rate(kvlab_router_requests_total[5m]))",
           "legendFormat": "req/s",
           "refId": "A"
         }
@@ -303,7 +303,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_cost_usd_total[5m])) * 3600",
+          "expr": "sum(rate(kvlab_router_cost_usd_total[5m])) * 3600",
           "legendFormat": "$/h",
           "refId": "A"
         }
@@ -355,7 +355,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(increase(wekai_router_cost_usd_total[$__range]))",
+          "expr": "sum(increase(kvlab_router_cost_usd_total[$__range]))",
           "legendFormat": "total $",
           "refId": "A"
         }
@@ -415,7 +415,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_requests_total{status!~\"2..\"}[5m])) / clamp_min(sum(rate(wekai_router_requests_total[5m])), 1)",
+          "expr": "sum(rate(kvlab_router_requests_total{status!~\"2..\"}[5m])) / clamp_min(sum(rate(kvlab_router_requests_total[5m])), 1)",
           "legendFormat": "errors",
           "refId": "A"
         }
@@ -464,7 +464,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (status) (rate(wekai_router_requests_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum by (status) (rate(kvlab_router_requests_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -515,7 +515,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user) (wekai_router_cost_usd_total{user=~\"$user\", model=~\"$model\"}) - (sum by (user) (wekai_router_cost_usd_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum by (user) (wekai_router_cost_usd_total{user=~\"$user\", model=~\"$model\"}) * 0)",
+          "expr": "sum by (user) (kvlab_router_cost_usd_total{user=~\"$user\", model=~\"$model\"}) - (sum by (user) (kvlab_router_cost_usd_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum by (user) (kvlab_router_cost_usd_total{user=~\"$user\", model=~\"$model\"}) * 0)",
           "legendFormat": "{{user}}",
           "refId": "A"
         }
@@ -564,7 +564,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum(rate(kvlab_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "input (uncached)",
           "refId": "A"
         },
@@ -573,7 +573,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum(rate(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "cache read",
           "refId": "B"
         },
@@ -582,7 +582,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum(rate(kvlab_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "cache write",
           "refId": "C"
         },
@@ -591,7 +591,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
+          "expr": "sum(rate(kvlab_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "output",
           "refId": "D"
         }
@@ -640,7 +640,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(wekai_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(wekai_router_input_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(wekai_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
+          "expr": "sum(kvlab_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(kvlab_router_input_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(kvlab_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
           "legendFormat": "input (uncached)",
           "refId": "A"
         },
@@ -649,7 +649,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
+          "expr": "sum(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
           "legendFormat": "cache read",
           "refId": "B"
         },
@@ -658,7 +658,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(wekai_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(wekai_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(wekai_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
+          "expr": "sum(kvlab_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(kvlab_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(kvlab_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
           "legendFormat": "cache write",
           "refId": "C"
         },
@@ -667,7 +667,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(wekai_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(wekai_router_output_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(wekai_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
+          "expr": "sum(kvlab_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}) - (sum(kvlab_router_output_tokens_total{user=~\"$user\", model=~\"$model\"} @ start()) or sum(kvlab_router_output_tokens_total{user=~\"$user\", model=~\"$model\"}) * 0)",
           "legendFormat": "output",
           "refId": "D"
         }
@@ -757,7 +757,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user) (increase(wekai_router_cost_usd_total[$__range]))",
+          "expr": "sum by (user) (increase(kvlab_router_cost_usd_total[$__range]))",
           "format": "table",
           "instant": true,
           "refId": "cost"
@@ -767,7 +767,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user) (increase(wekai_router_requests_total[$__range]))",
+          "expr": "sum by (user) (increase(kvlab_router_requests_total[$__range]))",
           "format": "table",
           "instant": true,
           "refId": "requests"
@@ -777,7 +777,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user) (increase(wekai_router_input_tokens_total[$__range]) + increase(wekai_router_cache_read_tokens_total[$__range]) + increase(wekai_router_cache_creation_tokens_total[$__range]))",
+          "expr": "sum by (user) (increase(kvlab_router_input_tokens_total[$__range]) + increase(kvlab_router_cache_read_tokens_total[$__range]) + increase(kvlab_router_cache_creation_tokens_total[$__range]))",
           "format": "table",
           "instant": true,
           "refId": "input"
@@ -787,7 +787,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user) (increase(wekai_router_output_tokens_total[$__range]))",
+          "expr": "sum by (user) (increase(kvlab_router_output_tokens_total[$__range]))",
           "format": "table",
           "instant": true,
           "refId": "output"
@@ -797,7 +797,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (user) (increase(wekai_router_cache_read_tokens_total[$__range])) / clamp_min(sum by (user) (increase(wekai_router_input_tokens_total[$__range]) + increase(wekai_router_cache_read_tokens_total[$__range]) + increase(wekai_router_cache_creation_tokens_total[$__range])), 1)",
+          "expr": "sum by (user) (increase(kvlab_router_cache_read_tokens_total[$__range])) / clamp_min(sum by (user) (increase(kvlab_router_input_tokens_total[$__range]) + increase(kvlab_router_cache_read_tokens_total[$__range]) + increase(kvlab_router_cache_creation_tokens_total[$__range])), 1)",
           "format": "table",
           "instant": true,
           "refId": "cache_pct"
@@ -891,7 +891,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "topk(20, sum by (session_id, user) (increase(wekai_router_cost_usd_total{session_id!=\"unknown\"}[$__range])))",
+          "expr": "topk(20, sum by (session_id, user) (increase(kvlab_router_cost_usd_total{session_id!=\"unknown\"}[$__range])))",
           "format": "table",
           "instant": true,
           "refId": "cost"
@@ -901,7 +901,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (session_id) (increase(wekai_router_requests_total{session_id!=\"unknown\"}[$__range]))",
+          "expr": "sum by (session_id) (increase(kvlab_router_requests_total{session_id!=\"unknown\"}[$__range]))",
           "format": "table",
           "instant": true,
           "refId": "requests"
@@ -975,7 +975,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (model) (rate(wekai_router_cost_usd_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) * 3600",
+          "expr": "sum by (model) (rate(kvlab_router_cost_usd_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) * 3600",
           "legendFormat": "{{model}}",
           "refId": "A"
         }
@@ -1018,7 +1018,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (model) (increase(wekai_router_unknown_model_total[$__range]))",
+          "expr": "sum by (model) (increase(kvlab_router_unknown_model_total[$__range]))",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -1080,7 +1080,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(rate(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) / clamp_min(sum(rate(wekai_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) + sum(rate(wekai_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) + sum(rate(wekai_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])), 1)",
+          "expr": "sum(rate(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) / clamp_min(sum(rate(kvlab_router_input_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) + sum(rate(kvlab_router_cache_read_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])) + sum(rate(kvlab_router_cache_creation_tokens_total{user=~\"$user\", model=~\"$model\"}[$__rate_interval])), 1)",
           "legendFormat": "cache hit %",
           "refId": "A"
         }
@@ -1980,7 +1980,7 @@
   ],
   "schemaVersion": 39,
   "tags": [
-    "wekai",
+    "kvlab",
     "router",
     "llm"
   ],
@@ -2006,7 +2006,7 @@
         },
         "query": {
           "qryType": 1,
-          "query": "label_values(wekai_router_requests_total, user)",
+          "query": "label_values(kvlab_router_requests_total, user)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "multi": true,
@@ -2030,7 +2030,7 @@
         },
         "query": {
           "qryType": 1,
-          "query": "label_values(wekai_router_requests_total, model)",
+          "query": "label_values(kvlab_router_requests_total, model)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "multi": true,
@@ -2076,8 +2076,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "wekai router",
-  "uid": "wekai-router",
+  "title": "kvlab router",
+  "uid": "kvlab-router",
   "version": 22,
   "weekStart": ""
 }

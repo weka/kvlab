@@ -1,5 +1,5 @@
 {
-  "name": "wekai-core-flows",
+  "name": "kvlab-core-flows",
   "engineVersion": "v0.21.7",
   "sdk": {
     "source": "python"

@@ -12,7 +12,7 @@ import (
 // .dockerignore once excluded main.go, cli/, benchmark/, llm/, config/, chart/
 // and tools/. That was correct while the router was a separate small binary
 // under router/cmd/ needing only router/ and kvcache/. Once the router became
-// `wekai router serve` — the whole binary, built from the ROOT package — the
+// `kvlab router serve` — the whole binary, built from the ROOT package — the
 // same file left the build context with no Go files at all, and BOTH images
 // failed with "no Go files in /src".
 //
@@ -42,7 +42,7 @@ func TestDockerignoreKeepsWhatTheImagesBuild(t *testing.T) {
 			if p == need {
 				t.Errorf(".dockerignore excludes %q, which `go build .` needs — the image "+
 					"build will fail with \"no Go files in /src\" or a missing import. "+
-					"The router is the whole wekai binary now, not a package under router/.", need)
+					"The router is the whole kvlab binary now, not a package under router/.", need)
 			}
 		}
 	}

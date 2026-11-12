@@ -27,7 +27,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // verboseOutputInstruction is appended as a system block/message in every

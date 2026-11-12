@@ -4,7 +4,7 @@ package llm
 //
 // vLLM (--enable-request-kv-details) and SGLang (return_cached_tokens_details)
 // both report where a request's prompt tokens came from, in different wire
-// shapes. TokenSources is the one representation the rest of wekai consumes;
+// shapes. TokenSources is the one representation the rest of kvlab consumes;
 // the wire types below exist only to decode each engine's JSON into it.
 
 // TokenSources splits a request's prompt tokens by where they came from.

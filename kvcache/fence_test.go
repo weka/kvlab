@@ -10,7 +10,7 @@ import (
 // leaf: no wire formats, no router internals, nothing but the standard library.
 // A dependency creeping in here would couple the benchmark CLI to the router.
 func TestKvcacheDependsOnlyOnStdlib(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/weka/wekai/kvcache").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/weka/kvlab/kvcache").Output()
 	if err != nil {
 		t.Fatalf("go list -deps: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestKvcacheDependsOnlyOnStdlib(t *testing.T) {
 		if first, _, _ := strings.Cut(dep, "/"); !strings.Contains(first, ".") {
 			continue
 		}
-		if strings.HasPrefix(dep, "github.com/weka/wekai/kvcache") {
+		if strings.HasPrefix(dep, "github.com/weka/kvlab/kvcache") {
 			continue
 		}
 		t.Errorf("kvcache depends on %s; it must remain a stdlib-only leaf so both "+

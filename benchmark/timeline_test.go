@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 func near(a, b float64) bool { return math.Abs(a-b) < 0.01 }
@@ -240,7 +240,7 @@ func TestGenerateTimelineStandalone(t *testing.T) {
 	}
 	b, _ := os.ReadFile(out)
 	html := string(b)
-	for _, want := range []string{"var WekaiTimeline = (function", `"name":"armA"`, "prefill (unknown source)", "<title>Request timeline</title>"} {
+	for _, want := range []string{"var KVLabTimeline = (function", `"name":"armA"`, "prefill (unknown source)", "<title>Request timeline</title>"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("page lacks %q", want)
 		}

@@ -11,14 +11,14 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	"github.com/weka/wekai/router/internal/gateway"
-	"github.com/weka/wekai/router/internal/mockvllm"
-	"github.com/weka/wekai/router/internal/pd"
-	"github.com/weka/wekai/router/internal/pool"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
-	"github.com/weka/wekai/router/internal/routing"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	"github.com/weka/kvlab/router/internal/gateway"
+	"github.com/weka/kvlab/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/internal/pd"
+	"github.com/weka/kvlab/router/internal/pool"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/routing"
 )
 
 // These run the real mock engine behind the real gateway with prefill/decode

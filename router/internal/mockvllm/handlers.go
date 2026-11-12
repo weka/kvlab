@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -145,7 +145,7 @@ func TestReadJSONLCompatibility(t *testing.T) {
 		}
 	})
 
-	t.Run("file from a newer wekai", func(t *testing.T) {
+	t.Run("file from a newer kvlab", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "future.jsonl")
 		f, err := os.Create(path)

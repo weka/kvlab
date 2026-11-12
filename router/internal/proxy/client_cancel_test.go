@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/circuit"
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/circuit"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // firstSelector picks the first candidate, so a retry lands on the next one.

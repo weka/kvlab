@@ -1,11 +1,11 @@
 # The router
 
-`wekai router serve` is a model-aware LLM router. It matches each request's
+`kvlab router serve` is a model-aware LLM router. It matches each request's
 model to a **pool** of interchangeable endpoints, then chooses among them by
 prefix-cache affinity — so a conversation keeps landing on the backend that
 already holds its KV cache instead of being spread by a load balancer.
 
-It is one subcommand of the `wekai` binary. There is no separate router program.
+It is one subcommand of the `kvlab` binary. There is no separate router program.
 
 ## Concepts, briefly
 
@@ -17,7 +17,7 @@ rules come first and a catch-all last:
 ```
 
 Patterns are comma-separated case-insensitive substrings of the model name, or
-`*` for the catch-all. Endpoints are pipe-separated — the same syntax the wekai
+`*` for the catch-all. Endpoints are pipe-separated — the same syntax the kvlab
 client already accepts for a multi-endpoint model, meaning the same thing on
 both sides.
 
@@ -271,7 +271,7 @@ each conversation on the backend holding its prefix.
 ### CLI
 
 ```bash
-wekai router serve \
+kvlab router serve \
   --listen :8080 --metrics-listen 0.0.0.0:29000 \
   --backends 'http://vllm-a:8000|http://vllm-b:8000|http://vllm-c:8000'
 ```
@@ -281,14 +281,14 @@ rules, every request to one pool. It takes pod selectors too, which is the
 tidiest form there is:
 
 ```bash
-wekai router serve --listen :8080 --backends pods:app=vllm:http
+kvlab router serve --listen :8080 --backends pods:app=vllm:http
 ```
 
 Set `--max-node-concurrency` to the backends' vLLM `--max-num-seqs` to predict
 saturation rather than discovering it one refusal at a time:
 
 ```bash
-wekai router serve \
+kvlab router serve \
   --backends 'http://vllm-a:8000|http://vllm-b:8000' \
   --max-node-concurrency 32
 ```
@@ -308,7 +308,7 @@ router:
 
 ```bash
 helm upgrade --install my-router \
-  oci://quay.io/weka.io/helm/wekai-router --version v1.2.3 \
+  oci://quay.io/weka.io/helm/kvlab-router --version v1.2.3 \
   -f values.yaml
 ```
 
@@ -317,7 +317,7 @@ needed:
 
 ```bash
 helm upgrade --install my-router \
-  oci://quay.io/weka.io/helm/wekai-router --version v1.2.3 \
+  oci://quay.io/weka.io/helm/kvlab-router --version v1.2.3 \
   --set router.backends[0]=http://vllm-a:8000 \
   --set router.backends[1]=http://vllm-b:8000 \
   --set router.signals.maxNodeConcurrency=32
@@ -368,7 +368,7 @@ the OpenAI API and clients using the Anthropic API hit the same rules.
 ### CLI
 
 ```bash
-wekai router serve \
+kvlab router serve \
   --listen :8080 --metrics-listen 0.0.0.0:29000 \
   --route 'fast,small => http://vllm-small-a:8000|http://vllm-small-b:8000' \
   --route 'big,70b    => http://vllm-large-a:8000|http://vllm-large-b:8000'
@@ -433,7 +433,7 @@ a client can point at one base URL for both.
 ### CLI
 
 ```bash
-wekai router serve \
+kvlab router serve \
   --listen :8080 --metrics-listen 0.0.0.0:29000 \
   --route 'llama,mistral => http://vllm-a:8000|http://vllm-b:8000' \
   --default 'https://api.anthropic.com using client' \
@@ -456,7 +456,7 @@ ports, a model-name rewrite, and Anthropic as the fallback paid for with the
 caller's own key.
 
 ```bash
-wekai router serve \
+kvlab router serve \
   --listen :8080 --metrics-listen 0.0.0.0:29000 \
   --route 'fast,small => pods:app=vllm,size=7b:http' \
   --route 'sonnet     => pods:app=vllm,size=70b:http as Qwen/Qwen3-32B' \
@@ -527,7 +527,7 @@ Front a local model server on `http://127.0.0.1:25201` with the router on
 `http://127.0.0.1:25202`, sending every model to that one upstream:
 
 ```bash
-wekai router serve \
+kvlab router serve \
   --listen 127.0.0.1:25202 \
   --default 'http://127.0.0.1:25201' \
   --strip-auth-when '*'
@@ -543,8 +543,8 @@ wekai router serve \
   `--default 'http://127.0.0.1:25201 as my-local-model'`.
 - Use repeated `--route '<substr>,<substr> => <upstream>[ as <model>]'` rules
   (first match wins) for per-model fan-out instead of one catch-all.
-- `--capture redacted` records traffic under `~/.wekai/router/capture/redacted/`
-  (override with `--capture-dir`) for later `wekai router replay-prepare`.
+- `--capture redacted` records traffic under `~/.kvlab/router/capture/redacted/`
+  (override with `--capture-dir`) for later `kvlab router replay-prepare`.
 
 ### Auto-model
 
@@ -594,10 +594,10 @@ same semver, so a benchmark and a router from one release are known to agree.
 
 | | image | chart |
 |---|---|---|
-| router | `quay.io/weka.io/wekai-router:<version>` | `oci://quay.io/weka.io/helm/wekai-router:<version>` |
-| benchmark | `quay.io/weka.io/wekai:<version>` | `oci://quay.io/weka.io/helm/wekai:<version>` |
+| router | `quay.io/weka.io/kvlab-router:<version>` | `oci://quay.io/weka.io/helm/kvlab-router:<version>` |
+| benchmark | `quay.io/weka.io/kvlab:<version>` | `oci://quay.io/weka.io/helm/kvlab:<version>` |
 
-The two images are the same `wekai` binary. The benchmark one additionally
+The two images are the same `kvlab` binary. The benchmark one additionally
 embeds a multi-GB replay artifact so a benchmark pod can replay captured traffic
 with no volume; the router never reads it, so the router image does not carry it.
 
@@ -605,6 +605,15 @@ The chart pins its image purely by propagation — `Chart.yaml` `appVersion` fee
 the deployment's `imageTag | default .Chart.AppVersion` — so a `helm install` of
 a published chart with no further flags deploys exactly the image it was
 packaged with.
+
+### Upgrading from the pre-KVLab names
+
+The project was renamed from `wekai` to `KVLab` with no compatibility shims.
+Metrics are now `kvlab_router_*`, the pool label key is `kvlab.io/pool`, env
+vars are `KVLAB_*`, and the config directory is `~/.kvlab`. Pod selectors are
+immutable, so reinstall router releases (`helm uninstall` then `helm install`)
+rather than `helm upgrade`, and update dashboards and alerts to the new metric
+names.
 
 ## Building and publishing locally
 
@@ -693,8 +702,8 @@ the passthrough tier is what lets one router front both a local fleet and a
 hosted API on paths this dialect never claims.
 
 ```bash
-wekai router serve \
-  --api-key-file /etc/wekai/key \
+kvlab router serve \
+  --api-key-file /etc/kvlab/key \
   --path-allowlist /v1/chat/completions \
   --path-allowlist /v1/messages \
   --path-allowlist /v1/models \
@@ -763,12 +772,12 @@ everything else to Anthropic with the user's own credential.
 
 ```bash
 # inner — internal only, authenticated
-wekai router serve --listen :8080 \
+kvlab router serve --listen :8080 \
   --api-key-file /etc/router/inbound-key \
   --backends 'http://vllm-a:8000|http://vllm-b:8000'
 
 # outer — public, no inbound key
-wekai router serve --listen :8080 \
+kvlab router serve --listen :8080 \
   --route 'llama,mistral => http://inner-router:8080 using /etc/router/inner-key' \
   --default 'https://api.anthropic.com using client'
 ```
@@ -955,7 +964,7 @@ benchmarking are collected.
   designed.
 
 Both carry `Retry-After: 1`. **Clients must retry.** A client treating 429 as
-fatal will see throughput collapse under load; the wekai replay client backs off
+fatal will see throughput collapse under load; the kvlab replay client backs off
 10ms doubling to a 3s cap with a 30s budget.
 
 ## Testing without hardware

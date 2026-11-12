@@ -1,7 +1,7 @@
 package benchmark
 
 // Offline estimate for dynamic prefill/decode segregation (see
-// router/internal/policy/affinity and `wekai router serve --prefill-split`):
+// router/internal/policy/affinity and `kvlab router serve --prefill-split`):
 // of a replayed workload, what share of requests and prompt tokens would be
 // diverted to a dedicated prefill instance?
 //
@@ -64,7 +64,7 @@ import (
 	"container/list"
 	"strconv"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // PrefillBlockStat is one request's outcome from the router-block-level
@@ -315,7 +315,7 @@ func (r PrefillSplitReport) MissingTokenShare() float64 {
 
 // AggregatePrefillSplit classifies each stat against minMissingBlocks
 // (strictly above routes to prefill, matching --prefill-min-missing-blocks
-// on `wekai router serve`) and totals requests/tokens. Pure and cheap, so a
+// on `kvlab router serve`) and totals requests/tokens. Pure and cheap, so a
 // caller can sweep many thresholds over one SimulatePrefillBlocks pass
 // without re-simulating: the trie's residency predictions don't depend on
 // the threshold, only this post-hoc classification does.

@@ -12,12 +12,12 @@ import (
 
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/lease"
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/lease"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // This file is the fleet-level check: an offline replay of agentic traffic

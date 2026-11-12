@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // The soft limit turns --max-node-concurrency into a band. Below soft a holder

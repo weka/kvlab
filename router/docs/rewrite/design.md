@@ -50,7 +50,7 @@ internal/
   gateway/        mux, middleware chain, handlers, error envelopes GW-*, AUTH-*
   hier/           hop headers, node_state, forward semantics      HIER-1..HIER-19
   respmap/        bounded {id}→backend map                        GW-3, GW-4
-hack/             CI checks: metric liveness, import fence, wekai drift
+hack/             CI checks: metric liveness, import fence, kvlab drift
 ```
 
 The import fence (`API-1`) is mechanical: `registry`, `lease`, `policy`, `policy/cache`, `cachetrie`, `proxy`, `circuit`, `health` must not transitively depend on `internal/dialect/...`. Only `gateway` and `cmd` may. Enforced by `hack/import_fence_test.go` (§G.3).
@@ -584,7 +584,7 @@ Config maps names to presets:
 package cachetrie
 
 type Unit struct {
-    Hash   uint64 // sha256(role \0 content)[:8], big-endian — wekai-identical
+    Hash   uint64 // sha256(role \0 content)[:8], big-endian — kvlab-identical
     Tokens int32  // len(bytes)/4, min 1  (CACHE-6)
 }
 
@@ -602,7 +602,7 @@ type child struct{ key uint64; n *node }
 
 **Bytes per node.** `key` 8 + `tokens` 4 + `nkids` 4 + `kids` slice header 24 + `parent` 8 + `lru` 16 + `lastUsed` 4 (+4 pad) = **72 B**, plus the backing array for `kids`: 16 B/child, and Go's size class rounds the node to 80 B. A single-child node therefore costs ~**96 B**.
 
-I deliberately reject `map[uint64]*node` children (wekai's shape). An allocated Go map with one entry costs ~48 B of `hmap` plus a ~200 B bucket, i.e. ~250 B per node against 96 B — a 2.6× memory penalty on a structure where the overwhelming majority of nodes have exactly one child. The sorted-slice + binary search is also faster below ~16 children.
+I deliberately reject `map[uint64]*node` children (kvlab's shape). An allocated Go map with one entry costs ~48 B of `hmap` plus a ~200 B bucket, i.e. ~250 B per node against 96 B — a 2.6× memory penalty on a structure where the overwhelming majority of nodes have exactly one child. The sorted-slice + binary search is also faster below ~16 children.
 
 **This changes a default.** `CU-8` proposes 500k nodes/worker; at 96 B that is 48 MiB/worker, and 64 workers is 3.0 GiB — a direct `NFR-5` violation. Recommended amendment: **default `max_nodes_per_worker = 100_000` (~10 MiB/worker, 640 MiB at N=64)**. In practice the node cap is not the binding constraint anyway: at the default 1024-byte unit granularity, the 2M-est-token budget is reached at ≈ 2,000,000 / 256 ≈ **7,800 nodes**. The token budget binds first by more than an order of magnitude. The node cap exists purely as a hard backstop for pathological fine granularity.
 
@@ -610,7 +610,7 @@ I deliberately reject `map[uint64]*node` children (wekai's shape). An allocated 
 
 Justification against the alternatives, measured against `NFR-2` (p99 ≤ 1 ms Select, 64 backends, 32 KiB prompt = 32 units):
 
-- *Single `sync.Mutex` (wekai's choice).* wekai has one trie; we have 64, and Query runs against all 64 on the request path. Per-trie contention is already only 1/64 of write traffic, so a Mutex would probably be adequate — but Query is also concurrent *with itself* across in-flight requests against the same trie, and at 20k req/s (`NFR-1`) that is 20k lock acquisitions per second per trie serialized behind a ~1.5 µs walk. `RWMutex` makes the read side parallel for the cost of one extra word. Cheap insurance.
+- *Single `sync.Mutex` (kvlab's choice).* kvlab has one trie; we have 64, and Query runs against all 64 on the request path. Per-trie contention is already only 1/64 of write traffic, so a Mutex would probably be adequate — but Query is also concurrent *with itself* across in-flight requests against the same trie, and at 20k req/s (`NFR-1`) that is 20k lock acquisitions per second per trie serialized behind a ~1.5 µs walk. `RWMutex` makes the read side parallel for the cost of one extra word. Cheap insurance.
 - *Sharded trie.* Rejected: a prefix walk is inherently sequential from the root, so there is no shard key. You would have to shard by *root child*, which buys nothing because the root's fan-out is dominated by a handful of system prompts.
 - *Copy-on-write.* Rejected: a Commit rewrites the path to the root, so every request allocates `depth` nodes (32 × 96 B = 3 KiB/request, 60 MB/s of garbage at NFR-1 load) — a direct `NFR-3`/`NFR-4` GC-pressure problem. Eviction under COW is worse still.
 
@@ -726,7 +726,7 @@ The builder is structured with **Anthropic as the reference model and OpenAI as 
 
 ```go
 // unitbuild.Canonical is the reference ordering, taken verbatim from
-// wekai BuildReplayRequestPrefix (replay_router.go:731):
+// kvlab BuildReplayRequestPrefix (replay_router.go:731):
 //   system blocks → tools → messages.
 //
 // skipTinyLeadingSystemBlock: Anthropic emits a per-request billing header
@@ -749,9 +749,9 @@ func Build(p Parts, skipTinyLeadingSystemBlock bool, dst []Unit) []Unit {
 - `dialect/anthropic` (future) calls `Build(parts, true, dst)`; its `req-v1` golden test proves byte-identical reproduction (`API-12`).
 - `dialect/openai` calls `Build(parts, false, dst)` — `Parts.System` holds the leading `role:"system"` messages, `Tools` the `tools`/`functions` array bytes, `Messages` the remainder in order. Unit test named `TestSkipTinyLeadingSystemBlock_NotAppliedToOpenAI` (`CU-3` asserts the behaviour *by name*, in both directions).
 
-Hashing stays `sha256(role || 0x00 || content)[:8]` interpreted big-endian — bit-identical to wekai's `hashMessage` so the golden corpus test is meaningful, and collision-resistant, which matters: a non-cryptographic hash would let a client craft a prompt that collides with another tenant's prefix and steal its affinity. 32 KiB of SHA-256 with SHA-NI is ~16 µs, once per request during extraction, and therefore **outside** the `OBS-8`/`NFR-2` Select budget.
+Hashing stays `sha256(role || 0x00 || content)[:8]` interpreted big-endian — bit-identical to kvlab's `hashMessage` so the golden corpus test is meaningful, and collision-resistant, which matters: a non-cryptographic hash would let a client craft a prompt that collides with another tenant's prefix and steal its affinity. 32 KiB of SHA-256 with SHA-NI is ~16 µs, once per request during extraction, and therefore **outside** the `OBS-8`/`NFR-2` Select budget.
 
-Units above the sub-1024-byte-message case: OpenAI messages larger than `cache_unit_bytes` are additionally split into fixed windows via wekai's `chunkPromptPrefixN` logic, so long single-message prompts still get sub-message resolution.
+Units above the sub-1024-byte-message case: OpenAI messages larger than `cache_unit_bytes` are additionally split into fixed windows via kvlab's `chunkPromptPrefixN` logic, so long single-message prompts still get sub-message resolution.
 
 ### D.6 Scoring as a sum of named terms (`API-17`, `CU-6`, `CU-7`)
 
@@ -842,7 +842,7 @@ A wins. The crossover is `8000 × 3.5e-4 > inflight × 2.0` ⟹ `inflight < 1.4`
 
 ### D.7 OQ-2 — prefix-unit granularity: **1024 bytes, configurable**
 
-vLLM hashes fixed 16-token blocks (~64 bytes); wekai uses 1024-byte windows (~256 est. tokens). **Decision: ship 1024 B as the default (`cache_unit_bytes`), expose 64 B as the fine setting, and resolve empirically with an offline sweep against `wekai router analyze` traces before GA.**
+vLLM hashes fixed 16-token blocks (~64 bytes); kvlab uses 1024-byte windows (~256 est. tokens). **Decision: ship 1024 B as the default (`cache_unit_bytes`), expose 64 B as the fine setting, and resolve empirically with an offline sweep against `kvlab router analyze` traces before GA.**
 
 The rationale is a bounded-error argument, and it is why 1024 is defensible today. The engine's job is to *rank* backends, not to predict token counts. A 1024-byte unit rounds the true shared prefix down to the nearest unit boundary, so the per-request under-estimate is uniform on [0, 1024) bytes ≈ [0, 256) tokens, mean 128 tokens. Against a typical 8k-token prompt that is a **1.6% mean error, applied roughly equally to every candidate** — it shifts all scores by a similar amount and therefore almost never changes the arg-max. At 3.5e-4 s/token, 128 tokens is 45 ms of modelled saving against a `queueing_penalty` quantum of 2.0 s: the granularity error is 2% of one queue slot.
 
@@ -852,28 +852,28 @@ Cost of going to 64 B: 16× the nodes (2M-token budget → ~125k nodes ≈ 12 Mi
 
 ```
 internal/cachetrie/
-  wekai_provenance.go   // constants only, no logic
+  kvlab_provenance.go   // constants only, no logic
   trie.go               // our implementation; header cites the origin
   golden_test.go        // reproduces cacheEstimator.Observe on a fixed corpus
-  testdata/wekai_cache_sim.go.golden   // byte copy of the upstream file
+  testdata/kvlab_cache_sim.go.golden   // byte copy of the upstream file
 ```
 
-`wekai_provenance.go`:
+`kvlab_provenance.go`:
 ```go
-// Package cachetrie is derived from github.com/weka/wekai
+// Package cachetrie is derived from github.com/weka/kvlab
 //   benchmark/cache_sim.go @ <commit-sha>
 // and                       benchmark/replay_router.go:731 (BuildReplayRequestPrefix).
 // Cross-repo import of package benchmark is forbidden (CU-N5): it would pull
 // the entire benchmark harness and its transitive deps into a production proxy.
 const (
-    WekaiRepo      = "github.com/weka/wekai"
-    WekaiCommit    = "<sha>"
-    WekaiCacheSim  = "benchmark/cache_sim.go"
-    WekaiCacheSimSHA256 = "<sha256 of the upstream file at that commit>"
+    KVLabRepo      = "github.com/weka/kvlab"
+    KVLabCommit    = "<sha>"
+    KVLabCacheSim  = "benchmark/cache_sim.go"
+    KVLabCacheSimSHA256 = "<sha256 of the upstream file at that commit>"
 )
 ```
 
-CI (`hack/check-wekai-drift.sh`, non-blocking-on-network, blocking-on-mismatch) fetches `benchmark/cache_sim.go` from wekai `main`, hashes it, and compares against `WekaiCacheSimSHA256`. On mismatch it fails with a diff against `testdata/wekai_cache_sim.go.golden` and instructions: review the upstream change, decide whether it affects prediction semantics, update the pin and the golden file in the same PR. The **behavioural** guarantee is separately held by `golden_test.go`, which asserts our `Query`/`Commit` reproduce `cacheEstimator.Observe`'s ratios on a fixed corpus — so a cosmetic upstream refactor fails the hash check (a review prompt) while a semantic one also fails the golden test (a real regression).
+CI (`hack/check-kvlab-drift.sh`, non-blocking-on-network, blocking-on-mismatch) fetches `benchmark/cache_sim.go` from kvlab `main`, hashes it, and compares against `KVLabCacheSimSHA256`. On mismatch it fails with a diff against `testdata/kvlab_cache_sim.go.golden` and instructions: review the upstream change, decide whether it affects prediction semantics, update the pin and the golden file in the same PR. The **behavioural** guarantee is separately held by `golden_test.go`, which asserts our `Query`/`Commit` reproduce `cacheEstimator.Observe`'s ratios on a fixed corpus — so a cosmetic upstream refactor fails the hash check (a review prompt) while a semantic one also fails the golden test (a real regression).
 
 ### D.9 Opaque-mode hierarchy (`HIER-12a`, `HIER-N4`)
 
@@ -1164,7 +1164,7 @@ func TestCorePackagesDoNotImportDialects(t *testing.T) {
 | `circuit` | `TestSlidingWindowOpenTriggerUsesWindowDuration` (`HLT-N2`), `TestHalfOpenAdmitsExactlyMaxUnder100Probes` (`HLT-N3`), `TestClassify429IsFailure` (`HLT-N4`) |
 | `health` | `Test200WorkersRoundCompletesUnder6s` (`HLT-N1`), `TestPassiveBackendIsNeverProbed` (`API-16`), `TestCheckerNeverWritesInflight` (`HLT-N5`) |
 | `policy` | `TestRoundRobinExactlyTenEachOverTenN` (`LB-N3`), `TestRoundRobinShrinkThenGrowVisitsEveryMember` (`LB-14`), `TestTieBreakChiSquare100k` (`LB-N4`), `TestLeastOutstandingCapacityNormalized` (`HIER-N1`), `TestZeroOneTwoCandidates` (`LB-12`) |
-| `cachetrie` | `TestGoldenReproducesWekaiObserve` (`CU-2`), `TestQueryIsPure1000Calls` (`CU-N2`), `TestPerWorkerIsolation` (`CU-N1`), `TestEvictionBoundsNodesAndTokens` (`CU-N3`), **`TestLRUTailIsAlwaysALeaf`** (the D.4 invariant), **`TestConcurrentInsertersAndEvictor`** — see below (`CACHE-N2`), `TestSkipTinyLeadingSystemBlock_AnthropicOnly` (`CU-3`, `API-11`), `BenchmarkQuery64Backends32KiBPrompt` (`NFR-2`, 0 allocs) |
+| `cachetrie` | `TestGoldenReproducesKVLabObserve` (`CU-2`), `TestQueryIsPure1000Calls` (`CU-N2`), `TestPerWorkerIsolation` (`CU-N1`), `TestEvictionBoundsNodesAndTokens` (`CU-N3`), **`TestLRUTailIsAlwaysALeaf`** (the D.4 invariant), **`TestConcurrentInsertersAndEvictor`** — see below (`CACHE-N2`), `TestSkipTinyLeadingSystemBlock_AnthropicOnly` (`CU-3`, `API-11`), `BenchmarkQuery64Backends32KiBPrompt` (`NFR-2`, 0 allocs) |
 | `proxy` | **`TestTerminalMarkerSplitAtEveryByteOffset`** — see below (`STR-N3`, `API-8`), `TestNon2xxOnStreamPassesContentTypeThrough` (`STR-N2`), `TestSlowClientBoundsRSS` (`STR-N1`), `TestNoRetryAfterFirstByte` (`REL-3`), `TestClientDisconnectCancelsUpstreamWithin100ms` (`GW-15`) |
 | `discovery/k8s` | `TestApplySameEndpointSliceTwiceIsIdentical` (`SD-N2`), `TestNewEndpointNotRoutableUntilFirstHealthPass` (`SD-N3`), `TestIPv6URLBracketing` (`SD-9`) |
 | `hier` (integration) | `TestThreeTierRequestIDConstantAcrossHops`, `TestConfiguredCycleReturns508` (`HIER-2`), **`TestRetryAmplificationBounded`** — see below (`HIER-N2`), `TestTrafficSpreadsProportionalToSubtreeCapacity` (chi-square), `TestKillMidTierRouterMidStream` |
@@ -1211,11 +1211,11 @@ Plus a three-way-split variant and a `\r\n` variant.
 
 ## I. Migration and rollout
 
-**Phase 1 — offline replay.** Point `wekai router analyze` traces at an in-process harness that drives v2's policy layer with no network. Compare `predicted_cached_fraction` against the traces' `cache_read_tokens` ground truth. This is where `OQ-2` (unit granularity) and the `subtree_affinity` default are actually settled, and where `coldTPS`/`warmTPS` defaults for `OQ-6` are measured. Gate: correlation ≥ 0.7 (`AC` for cache-usefulness).
+**Phase 1 — offline replay.** Point `kvlab router analyze` traces at an in-process harness that drives v2's policy layer with no network. Compare `predicted_cached_fraction` against the traces' `cache_read_tokens` ground truth. This is where `OQ-2` (unit granularity) and the `subtree_affinity` default are actually settled, and where `coldTPS`/`warmTPS` defaults for `OQ-6` are measured. Gate: correlation ≥ 0.7 (`AC` for cache-usefulness).
 
 **Phase 2 — shadow (`CU-14`).** Deploy v2 alongside the Rust router with `--policy=least-outstanding --shadow-policy=cache-usefulness`. `cache-usefulness` computes its choice and emits `router_shadow_agreement_total{agreed}` and its own predicted-fraction histogram, but routing is `least-outstanding`. Zero risk, real traffic, and it validates the `CU-13` instrument that `OQ-12` depends on.
 
-**Phase 3 — traffic replay.** Use wekai's replay tooling (`wekai router analyze` capture → `replay_router` post) against v2 with mock leaves at measured latencies, asserting `NFR-1`, `NFR-3`, `NFR-4` and, critically, `router_load_accounting_errors_total == 0` under sustained chaos. Also run the Rust router through the identical harness so the p99 TTFT comparison in `AC-R1` is apples-to-apples.
+**Phase 3 — traffic replay.** Use kvlab's replay tooling (`kvlab router analyze` capture → `replay_router` post) against v2 with mock leaves at measured latencies, asserting `NFR-1`, `NFR-3`, `NFR-4` and, critically, `router_load_accounting_errors_total == 0` under sustained chaos. Also run the Rust router through the identical harness so the p99 TTFT comparison in `AC-R1` is apples-to-apples.
 
 **Phase 4 — canary cutover.** 1% → 10% → 50% → 100% behind the existing ingress, ≥ 72 h at each of the last two steps (`AC-R1`). Rollback is a DNS/ingress weight change; v2 shares no state with v1, so rollback is instant and lossless except for the in-memory `{id}`→backend map (`GW-3`, an accepted `OQ-5` limitation).
 
@@ -1264,7 +1264,7 @@ Roughly 980 LOC of headroom under `NFR-11`'s 8,000. The headroom is deliberate a
 | Tracing | **`go.opentelemetry.io/otel` (trace API only), optional** | `OBS-6`. The API package alone is small; SDK and exporters are pulled only when tracing is compiled in. Zero-overhead-when-disabled via a nil tracer check, not a no-op tracer (which still allocates a span context). |
 | Randomness | **stdlib `math/rand/v2`** | Per-P state, no global mutex, `IntN` without modulo bias. `LB-15`, `LB-11`. |
 | Testing | **stdlib `testing`** + `go.uber.org/goleak` + `github.com/stretchr/testify/require` | `goleak` is mandated (`CACHE-8`, `NFR-9`). `testify/require` only — never `assert` — to keep failures fatal and the dependency shallow. Fuzzing and benchmarking are stdlib. Property tests are hand-rolled loops with reported seeds, not `gopter`/`rapid`: a seeded loop is 20 LOC and debuggable. |
-| Hashing | **stdlib `crypto/sha256`** | Bit-identical to wekai (`CU-2` golden test), collision-resistant against prompt-crafted affinity theft, and SHA-NI-accelerated. |
+| Hashing | **stdlib `crypto/sha256`** | Bit-identical to kvlab (`CU-2` golden test), collision-resistant against prompt-crafted affinity theft, and SHA-NI-accelerated. |
 
 Direct non-stdlib dependencies: **6** (client-go trio, prometheus, otel-api, goleak, testify, sigs.k8s.io/yaml). `govulncheck` in CI (`SEC-8`); distroless static base, non-root, read-only rootfs (`SEC-7`).
 

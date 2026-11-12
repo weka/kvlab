@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // rec builds a minimal analyzeRecord with a server-reported usage for tests.
@@ -24,7 +24,7 @@ func rec(user, model string, in, cacheRead, cacheCreate, out int) analyzeRecord 
 }
 
 // testModelRegistry is a minimal stand-in for the ResolveModel/
-// LookupModelByIdentifier hooks a real embedding application (e.g. wekai)
+// LookupModelByIdentifier hooks a real embedding application (e.g. kvlab)
 // registers from its static registry — core ships none of its own (see
 // llm.LookupModelByIdentifier), so tests exercising the hook-dependent path
 // install one locally.

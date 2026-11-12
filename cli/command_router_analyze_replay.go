@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // RouterAnalyzeReplayCommand simulates a replay or source capture offline
@@ -25,8 +25,8 @@ type RouterAnalyzeReplayCommand struct {
 
 	// --- Prefill/decode split estimate. Opt-in: with none of these set,
 	// output is byte-identical to the plain cache-ratio report above.
-	PrefillSplit            bool  `long:"prefill-split" description:"Additionally estimate the share of traffic and input tokens that would route through a dedicated prefill instance under dynamic prefill/decode segregation (see 'wekai router serve --prefill-split'). Opt-in: off by default, and adds an extra report section rather than changing the one above."`
-	PrefillMinMissingBlocks int   `long:"prefill-min-missing-blocks" default:"32" description:"Same meaning and default as 'wekai router serve --prefill-min-missing-blocks': cold depth, in router blocks (~256 estimated tokens each), strictly above which a request is modeled as taking the prefill path. The sensitivity table below scores several thresholds regardless, which is the point of the report."`
+	PrefillSplit            bool  `long:"prefill-split" description:"Additionally estimate the share of traffic and input tokens that would route through a dedicated prefill instance under dynamic prefill/decode segregation (see 'kvlab router serve --prefill-split'). Opt-in: off by default, and adds an extra report section rather than changing the one above."`
+	PrefillMinMissingBlocks int   `long:"prefill-min-missing-blocks" default:"32" description:"Same meaning and default as 'kvlab router serve --prefill-min-missing-blocks': cold depth, in router blocks (~256 estimated tokens each), strictly above which a request is modeled as taking the prefill path. The sensitivity table below scores several thresholds regardless, which is the point of the report."`
 	PrefillCacheMaxTokens   int64 `long:"prefill-cache-max-tokens" description:"Bound the simulated fleet-wide router-block cache to this many estimated tokens, modeling eviction (0 = unbounded/infinite retention, the default 'perfect affinity' lower bound). kvcache.RouterConfig()'s per-backend bound is 2,000,000 — a fleet-wide figure should scale that by node count."`
 
 	contextSize *contextSizeReport

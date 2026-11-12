@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // TestDumpCapturesTheWireNotTheParse drives a real exchange through do() and

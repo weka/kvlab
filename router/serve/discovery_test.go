@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // A vLLM-style backend answers GET /v1/models, and is probed actively from

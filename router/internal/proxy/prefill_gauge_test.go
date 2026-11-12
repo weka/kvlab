@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	"github.com/weka/wekai/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	"github.com/weka/kvlab/router/internal/policy"
 )
 
 // The prefill charge is held until the first upstream body byte and is

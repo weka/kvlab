@@ -27,9 +27,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/dialect"
-	"github.com/weka/wekai/router/internal/jsonscan"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/dialect"
+	"github.com/weka/kvlab/router/internal/jsonscan"
 )
 
 const ID = "openai"
@@ -108,7 +108,7 @@ func (Dialect) Introspect(body []byte) dialect.Introspection {
 // walk. Skipping it is what makes the rest of the system prompt the shared prefix
 // it actually is.
 //
-// The rule and the threshold are wekai's own, not a second opinion: the replay
+// The rule and the threshold are kvlab's own, not a second opinion: the replay
 // corpus is built by BuildReplayRequestPrefix under the identical `i == 0 &&
 // Bytes < 200` skip. A router that disagreed would route against a definition of
 // "prefix" that the measurement does not share, and every cache number taken from
@@ -117,7 +117,7 @@ const billingBlockBytes = 200
 
 // ExtractUnits builds the routable prefix for cache-affinity policies.
 //
-// Ordering follows wekai's BuildReplayRequestPrefix — system, then tools, then
+// Ordering follows kvlab's BuildReplayRequestPrefix — system, then tools, then
 // messages in order — because that is the order vLLM's own sequential prefix
 // hashing sees, so a shared system prompt forms a shared trie prefix.
 func (Dialect) ExtractUnits(body []byte, class string, dst []kvcache.Unit) ([]kvcache.Unit, bool) {

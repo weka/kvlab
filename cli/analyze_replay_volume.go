@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // Volume by context size: what share of the token volume, not of the request

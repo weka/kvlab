@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 func TestFakeNowAdvances(t *testing.T) {

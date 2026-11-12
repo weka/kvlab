@@ -1,6 +1,6 @@
 # Real-time replay in depth
 
-Reference for `wekai benchmark auto --router-replay-file`, the primary run mode
+Reference for `kvlab benchmark auto --router-replay-file`, the primary run mode
 (summarised in the [README](../README.md#real-time-replay)). For the other flags
 and run modes see [detailed-modes-of-benchmark.md](detailed-modes-of-benchmark.md).
 
@@ -61,8 +61,8 @@ resolves to off and an explicit value above 0 is rejected.
 
 ## Where the replay file comes from
 
-`wekai router serve --capture redacted` records live traffic;
-`wekai router replay-prepare` compiles those captures into one replay-v5 JSONL
+`kvlab router serve --capture redacted` records live traffic;
+`kvlab router replay-prepare` compiles those captures into one replay-v5 JSONL
 file (replay-v4 and v3 still load): a header line, one session per line in
 start-time order, and a final index line, so the replayer streams it with a
 bounded queue regardless of file size. Each request embeds the original
@@ -74,7 +74,7 @@ captured text.
 `replay-prepare --since/--until` bound the capture by request time and
 `--complete-by` keeps only requests whose response had finished by an instant,
 for rebuilding a corpus from a directory that has grown.
-`wekai router replay-trim --last-days N` (or `--last-sessions N`) cuts a smaller
+`kvlab router replay-trim --last-days N` (or `--last-sessions N`) cuts a smaller
 replay out of a replay-v5 file: it keeps sessions that started in the window and
 excludes sessions whose last request falls in the final `--incomplete-window`
 (default 24h) of the capture.
@@ -126,8 +126,8 @@ needs v5. Every lap gets its own content stamp.
 
 `--save-request-data <dir>` writes per-request JSONL under
 `<dir>/<run-timestamp>/` and, at the end of the run, an interactive `report.html`
-(TTFT / response time / cache hits over time). `wekai benchmark visualize <dir>`
-regenerates it and `wekai benchmark visualize-merge` combines runs. The
+(TTFT / response time / cache hits over time). `kvlab benchmark visualize <dir>`
+regenerates it and `kvlab benchmark visualize-merge` combines runs. The
 **output/s/worker** toggle adds a line: output tokens from requests completed in
 the trailing 60 seconds, divided by the window and the configured concurrency
 (including idle slots); each arm uses its recorded concurrency, falling back to
@@ -143,9 +143,9 @@ SGLang's tier split is mapped onto the same sources. Nothing is recorded for
 engines that report neither. Streaming requests already ask for
 `stream_options.include_usage`, which is how vLLM delivers them.
 
-**Timeline.** `wekai benchmark auto --timeline` (on by default under real-time
+**Timeline.** `kvlab benchmark auto --timeline` (on by default under real-time
 replay), `visualize --timeline`, `visualize-merge --timeline` and
-`wekai benchmark timeline <dir> -o timeline.html` add a Metrics/Timeline switch.
+`kvlab benchmark timeline <dir> -o timeline.html` add a Metrics/Timeline switch.
 Router replay draws one row per SESSION from its first request to its last
 (labelled `#<run>`, in start order; a corpus session replayed on a later lap is a
 new run), with overlapping requests (sub-agent fan-out) packed into sub-rows.

@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/sashabaranov/go-openai/jsonschema"
-	"github.com/weka/wekai/llm/mockserver"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/llm/mockserver"
+	"github.com/weka/kvlab/tools"
 )
 
 // newGeminiTestClient creates a GeminiLLMClient pointing at the given base URL.

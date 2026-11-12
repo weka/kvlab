@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 func newTTFTPolicy(t *testing.T, hard, soft time.Duration) *Policy {

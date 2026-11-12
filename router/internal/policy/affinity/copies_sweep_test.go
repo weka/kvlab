@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 // buildAffinityMode is buildAffinity with the shallow-anchor policy under test.

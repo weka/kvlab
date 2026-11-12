@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "wekai.fullname" . }}
+  name: {{ include "kvlab.fullname" . }}
   labels:
-    {{- include "wekai.labels" . | nindent 4 }}
+    {{- include "kvlab.labels" . | nindent 4 }}
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      {{- include "wekai.selectorLabels" . | nindent 6 }}
+      {{- include "kvlab.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "wekai.selectorLabels" . | nindent 8 }}
+        {{- include "kvlab.selectorLabels" . | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
@@ -33,7 +33,7 @@ spec:
               # it. The flag list below stays the single source of truth — a
               # separate echo of the same command would drift the moment one
               # of these conditionals changed.
-              set -- wekai benchmark auto \
+              set -- kvlab benchmark auto \
                 --router-replay-file={{ .Values.replay.replayFile }} \
                 {{- if .Values.endpoint }}
                 --models={{ if .Values.model }}{{ printf "%s,model=%s" .Values.endpoint .Values.model | quote }}{{ else }}{{ .Values.endpoint | quote }}{{ end }} \
@@ -188,7 +188,7 @@ spec:
                 --dry-run-output-tps={{ .Values.replay.dryRunOutputTPS | int64 }} \
                 {{- end }}
                 {{- end }}
-                --save-request-data={{ include "wekai.results.dataPath" . }}
+                --save-request-data={{ include "kvlab.results.dataPath" . }}
 
               # --save-request-data is rendered last, so its presence proves the
               # whole flag list survived. A truncated `set --` does not fail: sh
@@ -204,8 +204,8 @@ spec:
               esac
 
               echo "+ $*"
-              "$@" || echo "wekai benchmark auto exited with status $?"
-              echo "Benchmark finished. Sleeping so results under {{ include "wekai.results.dataPath" . }} stay explorable (kubectl exec/cp); delete the pod to rerun."
+              "$@" || echo "kvlab benchmark auto exited with status $?"
+              echo "Benchmark finished. Sleeping so results under {{ include "kvlab.results.dataPath" . }} stay explorable (kubectl exec/cp); delete the pod to rerun."
               sleep infinity
           {{- if .Values.llmApiKeySecretName }}
           envFrom:
@@ -219,7 +219,7 @@ spec:
               mountPath: {{ .Values.resultsMountPath }}
       volumes:
         - name: results
-          {{- $claim := include "wekai.results.claimName" . }}
+          {{- $claim := include "kvlab.results.claimName" . }}
           {{- if $claim }}
           persistentVolumeClaim:
             claimName: {{ $claim }}

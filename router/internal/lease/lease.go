@@ -24,8 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // accountingErrors counts detected underflows. Any non-zero value is a bug in

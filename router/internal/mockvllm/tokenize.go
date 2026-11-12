@@ -1,6 +1,6 @@
 package mockvllm
 
-import "github.com/weka/wekai/kvcache"
+import "github.com/weka/kvlab/kvcache"
 
 // This file reimplements kvcache.ChunkContent's chunking ONLY because that
 // function's per-chunk token count always goes through kvcache.EstimateTokens,

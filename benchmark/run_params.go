@@ -22,7 +22,7 @@ const runParamsSchemaVersion = 1
 // request rows beneath it, written once when the JSONL is opened.
 //
 // It exists so downstream tooling stops having to be told, out of band, things
-// the run already knew. `wekai benchmark visualize` needed --concurrency purely
+// the run already knew. `kvlab benchmark visualize` needed --concurrency purely
 // because the number was nowhere in the data; getting it wrong (or forgetting
 // it) silently mis-sized the rolling-percentile window, and nothing in the
 // report said so.

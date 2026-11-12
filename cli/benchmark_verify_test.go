@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // TestVerifyRejectsUnsupportedModes: --verify silently doing nothing would

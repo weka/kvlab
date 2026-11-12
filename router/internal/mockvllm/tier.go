@@ -3,7 +3,7 @@ package mockvllm
 import (
 	"sync"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // Tier is a KV cache SHARED BY THE WHOLE FLEET, standing in for LMCache backed

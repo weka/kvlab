@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/mockvllm"
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // Live tests against real hosted providers, mixed with a local mock fleet.
@@ -67,8 +67,8 @@ func TestMergedModelsWithRealHostedProviders(t *testing.T) {
 	// intermittently do not, failing the suite for reasons that have nothing
 	// to do with the change under test. Verification has to be deterministic;
 	// run these on purpose with `task test:live`.
-	if os.Getenv("WEKAI_LIVE") == "" {
-		t.Skip("set WEKAI_LIVE=1 to run live hosted-provider tests (task test:live)")
+	if os.Getenv("KVLAB_LIVE") == "" {
+		t.Skip("set KVLAB_LIVE=1 to run live hosted-provider tests (task test:live)")
 	}
 
 	local, _ := mockFleet(t, 1, mockvllm.SurfaceVLLM)

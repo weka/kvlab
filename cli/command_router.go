@@ -21,10 +21,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
-// RouterServeCommand implements the `wekai router serve` subcommand: a model-aware HTTP
+// RouterServeCommand implements the `kvlab router serve` subcommand: a model-aware HTTP
 // reverse proxy. Inspects each request's JSON body for the `model` field and
 // dispatches to upstreams declared on the command line.
 //
@@ -48,7 +48,7 @@ type RouterServeCommand struct {
 	AutoModel     string        `long:"auto-model" choice:"auto" choice:"off" choice:"force" default:"auto" description:"For routes with no explicit 'as <model>', ask the upstream (GET /v1/models) what it serves and rewrite the request's model to it. 'auto' (default) only rewrites when the upstream serves exactly one model; 'force' always takes the first listed; 'off' disables probing."`
 	LogHeaders    bool          `long:"log-headers" description:"Log full request/response headers (verbose, may leak tokens)"`
 	Capture       string        `long:"capture" choice:"raw" choice:"redacted" description:"Capture each request/response to JSONL for later analysis or replay. 'raw' saves bodies as-is (auth headers always redacted); 'redacted' replaces bodies with 'REDACTED_TOKENS=<approx>'."`
-	CaptureDir    string        `long:"capture-dir" description:"Override capture output directory. Default: ~/.wekai/router/capture/<mode>/"`
+	CaptureDir    string        `long:"capture-dir" description:"Override capture output directory. Default: ~/.kvlab/router/capture/<mode>/"`
 	CaptureBuffer int           `long:"capture-buffer" default:"512" description:"Async capture channel buffer size; overflow records are dropped and counted."`
 	DrainTimeout  time.Duration `long:"drain-timeout" default:"5m" description:"Grace period on SIGTERM/SIGINT: readiness flips to 503 (pod is removed from Service endpoints) and in-flight requests are allowed to finish. Forced shutdown after this deadline."`
 	UserPrefix    bool          `long:"user-prefix" description:"Enable per-user path prefix routing. When set, requests at /<user>/v1/<rest> route as /v1/<rest> upstream and the leading path segment is captured as the request's user. Lets clients distinguish themselves by setting ANTHROPIC_BASE_URL=http://router:port/<user>. Default off — behavior is unchanged unless this is enabled."`
@@ -638,7 +638,7 @@ func resolveCaptureDir(override, mode string) string {
 		return override
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".wekai", "router", "capture", mode)
+	return filepath.Join(home, ".kvlab", "router", "capture", mode)
 }
 
 func newCaptureSink(mode captureMode, dir string, buf int) (*captureSink, error) {

@@ -1,19 +1,19 @@
 # syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 #
-# wekai replay image: the wekai binary (benchmark/router/eval
+# kvlab replay image: the kvlab binary (benchmark/router/eval
 # command trees) plus one embedded router-replay JSONL artifact, so a
-# deployment can run `wekai benchmark auto --router-replay-file
-# /wekai/replay.jsonl ...` with no external volume or fetch step.
+# deployment can run `kvlab benchmark auto --router-replay-file
+# /kvlab/replay.jsonl ...` with no external volume or fetch step.
 #
 # The replay artifact is published separately (`task replay:push` /
-# `dagger call push-replay`) as a minimal scratch image in the same wekai
+# `dagger call push-replay`) as a minimal scratch image in the same kvlab
 # quay repo, distinguished by the replay- tag prefix.
 
 # ARGs used in a FROM must be declared before the first FROM (global scope).
 # Override with --build-arg REPLAY_IMAGE=... to embed a different capture.
-ARG REPLAY_IMAGE=quay.io/weka.io/wekai:replay-40d-oct14-337a03810637
+ARG REPLAY_IMAGE=quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637
 
-# ---- Builder: compile the wekai binary ----
+# ---- Builder: compile the kvlab binary ----
 FROM golang:1.25.7-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -26,7 +26,7 @@ COPY . .
 # amd64 executable, which fails at exec with no useful message.
 ARG TARGETARCH
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH
-RUN go build -o /out/wekai .
+RUN go build -o /out/kvlab .
 
 # ---- Replay artifact source ----
 # Pinned to amd64 deliberately: this stage contributes only replay.jsonl, a
@@ -37,9 +37,9 @@ FROM --platform=linux/amd64 ${REPLAY_IMAGE} AS replay
 
 # ---- Runtime ----
 FROM alpine:latest
-LABEL org.opencontainers.image.title="wekai" \
+LABEL org.opencontainers.image.title="kvlab" \
       org.opencontainers.image.description="LLM benchmarking, router/proxy, and capture-replay toolkit" \
-      org.opencontainers.image.source="https://github.com/weka/wekai"
+      org.opencontainers.image.source="https://github.com/weka/kvlab"
 RUN apk add --no-cache ca-certificates
 # --link: each COPY becomes an independent, content-addressed layer that
 # doesn't depend on prior layer state (both destinations are plain
@@ -49,6 +49,6 @@ RUN apk add --no-cache ca-certificates
 # source change) does not invalidate or recopy the replay layer — its
 # digest is stable across rebuilds, so registries can reuse/cross-mount the
 # existing blob instead of re-uploading it.
-COPY --link --from=builder /out/wekai /usr/local/bin/wekai
-COPY --link --from=replay /replay.jsonl /wekai/replay.jsonl
-ENTRYPOINT ["/usr/local/bin/wekai"]
+COPY --link --from=builder /out/kvlab /usr/local/bin/kvlab
+COPY --link --from=replay /replay.jsonl /kvlab/replay.jsonl
+ENTRYPOINT ["/usr/local/bin/kvlab"]

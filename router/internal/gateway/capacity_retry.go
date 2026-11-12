@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Waiting out a capacity refusal instead of passing it to the client.

@@ -9,16 +9,16 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	"github.com/weka/wekai/router/internal/gateway"
-	"github.com/weka/wekai/router/internal/policy/affinity"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	"github.com/weka/kvlab/router/internal/gateway"
+	"github.com/weka/kvlab/router/internal/policy/affinity"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // The bug, as reported from an 8-instance b300 pool:
 //
-//	"wekai-router does not aggregate upstream vLLM counters — it round-robin
+//	"kvlab-router does not aggregate upstream vLLM counters — it round-robin
 //	 proxies a single backend per scrape. A router scrape was byte-identical to
 //	 instance i7 on all three sources simultaneously; the preceding scrape
 //	 tracked i0. Consecutive probes jitter across the single-backend range

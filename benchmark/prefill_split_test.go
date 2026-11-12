@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // testDocs is a small, fixed corpus for synthText — big enough that

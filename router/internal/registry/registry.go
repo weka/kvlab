@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/router/internal/circuit"
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/circuit"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 // Snapshot is an immutable view of the backend set.

@@ -1,4 +1,4 @@
-# wekai — AI-Assisted Development Guide
+# kvlab — AI-Assisted Development Guide
 
 ## Commit Convention (MANDATORY)
 
@@ -38,7 +38,7 @@ Scope is optional but encouraged: `feat(llm): ...`, `fix(chart): ...`,
 
 ## Replay Content and KV
 
-**A wekai run generates unique content. KV is never reused between runs.**
+**A kvlab run generates unique content. KV is never reused between runs.**
 
 So a fleet is cold for a new run's prefixes whatever it served before, and two
 runs are comparable at equal elapsed time without resetting the backends. Cache
@@ -78,8 +78,8 @@ skipping the check that would have caught the problem.
 
 ## Build & Test
 
-- Binary is named `wekai` (main package at the repo root, so plain `go install github.com/weka/wekai@<vX>` works); module stays
-  `github.com/weka/wekai`. `task build`, `task test`, `task docker:build`.
+- Binary is named `kvlab` (main package at the repo root, so plain `go install github.com/weka/kvlab@<vX>` works); module stays
+  `github.com/weka/kvlab`. `task build`, `task test`, `task docker:build`.
 - Publishing: `task replay:push` / `task app:push` / `task helm:push`
   (Dagger module in `.dagger/`; `helm:push` publishes the image first by
   construction).

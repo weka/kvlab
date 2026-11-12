@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Auto-model discovery: a route with no explicit `as <model>` asks its own pool

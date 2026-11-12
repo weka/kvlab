@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/weka/wekai/benchmark"
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/benchmark"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // prefillSensitivityThresholds are the fixed reference points for the

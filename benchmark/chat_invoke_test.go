@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/llm"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/llm"
+	"github.com/weka/kvlab/tools"
 )
 
 // An agentic model can emit tool_calls even in a call that configured no
 // ToolSet at all (e.g. the coherency eval always passes nil — see
 // InvokeChat's call site in cache_coherency.go). That must be recorded as a
 // tool-not-found result the caller's normal scoring can see, never a panic:
-// github.com/weka/wekai/tools.(*ToolSet).GetToolByName used to dereference a
+// github.com/weka/kvlab/tools.(*ToolSet).GetToolByName used to dereference a
 // nil receiver's Tools field directly.
 func TestExecuteToolCallsParallelNilToolSetDoesNotPanic(t *testing.T) {
 	usage := &tools.ExecutionUsageData{}

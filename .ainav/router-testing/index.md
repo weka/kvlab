@@ -1,11 +1,11 @@
 # Router Mock-Testing Flow
 
-End-to-end loop for developing and evaluating the router (`wekai router serve`)
+End-to-end loop for developing and evaluating the router (`kvlab router serve`)
 against a GPU-less mock vLLM fleet, driven by a real captured-traffic replay — no
 hardware, no real model.
 
 ```
-mock-vllm fleet (N instances)  <--  wekai router serve  <--  wekai benchmark auto (replay-v3)
+mock-vllm fleet (N instances)  <--  kvlab router serve  <--  kvlab benchmark auto (replay-v3)
 ```
 
 See [calibration.md](calibration.md) for tuning the mock's latency/tokenizer rates to
@@ -27,9 +27,9 @@ cache numbers are meaningful (see
 Total runtime ~6 minutes.
 
 ```bash
-# 1. Build (once). There is no router binary: the router is `wekai router serve`.
+# 1. Build (once). There is no router binary: the router is `kvlab router serve`.
 go build -o /tmp/mock-vllm ./router/cmd/mock-vllm
-go build -o /tmp/wekai-local .
+go build -o /tmp/kvlab-local .
 
 # 2. Fleet: 4 instances, ×10 aggregate rates, admission cap stays at the backend default
 /tmp/mock-vllm --instances 4 --base-port 9001 --model-id <model-id> \
@@ -40,7 +40,7 @@ go build -o /tmp/wekai-local .
 # 3. Router: the per-node cap under test lives HERE, not on the mock instances.
 #    Endpoints are pipe-separated, the same syntax the client uses for a
 #    multi-endpoint model.
-/tmp/wekai-local router serve \
+/tmp/kvlab-local router serve \
   --listen :8080 --metrics-listen 127.0.0.1:29000 \
   --backends 'http://127.0.0.1:9001|http://127.0.0.1:9002|http://127.0.0.1:9003|http://127.0.0.1:9004' \
   --max-node-concurrency 32
@@ -50,7 +50,7 @@ until curl -sf http://127.0.0.1:8080/v1/models > /dev/null; do sleep 0.5; done
 
 # 5. Benchmark: concurrency = nodes x node-cap = 4x32 = 128; hot pool OFF for
 #    precise measurements; a LONG total for cache-realistic numbers
-/tmp/wekai-local benchmark auto \
+/tmp/kvlab-local benchmark auto \
   --router-replay-file <replay.jsonl> \
   --models "dynamic/http://127.0.0.1:8080/v1,type=openai_vllm,alias=<run-name>" \
   --replay-realtime=false \
@@ -73,9 +73,9 @@ until curl -sf http://127.0.0.1:8080/v1/models > /dev/null; do sleep 0.5; done
 ## 1. Build
 
 ```bash
-cd $WEKAI_DIR   # or submodules/wekai
+cd $KVLAB_DIR   # or submodules/kvlab
 go build -o /tmp/mock-vllm ./router/cmd/mock-vllm
-go build -o /tmp/wekai-local .
+go build -o /tmp/kvlab-local .
 ```
 
 ## 2. Launch the mock fleet
@@ -107,7 +107,7 @@ on consecutive ports:
 ## 3. Launch the router
 
 ```bash
-/tmp/wekai-local router serve \
+/tmp/kvlab-local router serve \
   --listen :8080 --metrics-listen 127.0.0.1:29000 \
   --backends 'http://127.0.0.1:9001|http://127.0.0.1:9002' \
   --max-node-concurrency <N>   # optional: enables the concurrency split signal
@@ -198,7 +198,7 @@ reason to race it: always gate.
 ## 5. Run the benchmark
 
 ```bash
-/tmp/wekai-local benchmark auto \
+/tmp/kvlab-local benchmark auto \
   --router-replay-file <replay.jsonl> \
   --models "dynamic/http://127.0.0.1:8080/v1,type=openai_vllm,alias=<run-name>" \
   --replay-realtime=false \
@@ -282,14 +282,14 @@ capacity source:
 
 ```bash
 # Arm A: predict saturation. Mock keeps its own --max-concurrency 256.
-/tmp/wekai-local router serve \
+/tmp/kvlab-local router serve \
   --listen :8080 --metrics-listen 127.0.0.1:29000 \
   --backends 'http://127.0.0.1:9001|http://127.0.0.1:9002|http://127.0.0.1:9003|http://127.0.0.1:9004' \
   --max-node-concurrency 32
 
 # Arm B: discover it. No router-side limit at all; the mock fleet 429s at its own
 # cap instead (--max-concurrency 32), so the `refused` signal drives everything.
-/tmp/wekai-local router serve \
+/tmp/kvlab-local router serve \
   --listen :8080 --metrics-listen 127.0.0.1:29000 \
   --backends 'http://127.0.0.1:9001|http://127.0.0.1:9002|http://127.0.0.1:9003|http://127.0.0.1:9004'
 ```

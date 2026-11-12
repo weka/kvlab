@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // Per-week trend: does context grow over the capture, and is that people

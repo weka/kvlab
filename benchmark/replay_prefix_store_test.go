@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // storeTestChains builds instances whose turns extend the previous one, with

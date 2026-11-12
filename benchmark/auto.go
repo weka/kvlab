@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/weka/wekai/config"
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/config"
+	"github.com/weka/kvlab/llm"
 )
 
 // hotGateFanoutMultiplier scales the hot gate so router-replay sub-agent fan-out
@@ -265,7 +265,7 @@ type AutoBenchmarkConfig struct {
 
 	// Tree-aware router replay. When set, instead of synthetic prompts
 	// or hermes-style flat conversations, the benchmark replays a tree of
-	// CLI sessions captured by the router (see `wekai router
+	// CLI sessions captured by the router (see `kvlab router
 	// replay-prepare`). Each series = one session; within a session,
 	// sub-agents fan out concurrently and honor parent->child sequencing.
 	//
@@ -723,7 +723,7 @@ func noCacheDataObserved(m cacheMetrics, minCount int) bool {
 // --enable-prompt-tokens-details and SGLang's --enable-cache-report. Both
 // require the client to ask per-request (already done for type=openai_sglang
 // — see llm/chat_clients.go and replay_router_wire.go) AND the server to be
-// launched with the matching flag; wekai controls only the former; a
+// launched with the matching flag; kvlab controls only the former; a
 // deployment missing the latter looks from here exactly like a server that
 // genuinely never caches — the message says both are possible rather than
 // asserting whichever cause a client can never observe from the API alone.
@@ -761,7 +761,7 @@ func isOpenAISGLangSpec(modelSpec string) bool {
 // noUsageWarningMessage fires when an openai_sglang run completed at least
 // one response but NONE of them ever carried a usage object — see
 // RequestMetrics.UsageObserved and autoState.sawResponseEver/sawUsageEver.
-// wekai tolerates this (UsageData stays all-zero rather than erroring —
+// kvlab tolerates this (UsageData stays all-zero rather than erroring —
 // see consumeOpenAISSE/consumeOpenAIPlain), which otherwise silently renders
 // a flat/zero "Totals (ingest)" chart in the report with no indication why.
 func noUsageWarningMessage() string {

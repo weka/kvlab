@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
-# wekai router image — the same wekai binary as the benchmark image, WITHOUT
+# kvlab router image — the same kvlab binary as the benchmark image, WITHOUT
 # the embedded replay artifact.
 #
 # That artifact is several GB uncompressed and exists so a benchmark pod can
@@ -13,7 +13,7 @@
 # rather than merely unlikely.
 #
 # It replaces the former Dockerfile.wllm-router, which built a standalone router
-# binary. There is no standalone router any more; the router is `wekai router
+# binary. There is no standalone router any more; the router is `kvlab router
 # serve`.
 FROM golang:1.25.7-alpine AS builder
 WORKDIR /src
@@ -29,17 +29,17 @@ ARG TARGETARCH
 ENV CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH
 # Trimpath and stripped symbols: this image is shipped, and neither the build
 # host's paths nor the DWARF tables belong in it.
-RUN go build -trimpath -ldflags="-s -w" -o /out/wekai .
+RUN go build -trimpath -ldflags="-s -w" -o /out/kvlab .
 
 FROM alpine:latest
-LABEL org.opencontainers.image.title="wekai-router" \
-      org.opencontainers.image.description="Model-aware LLM router with prefix-cache affinity (wekai router serve)" \
-      org.opencontainers.image.source="https://github.com/weka/wekai"
+LABEL org.opencontainers.image.title="kvlab-router" \
+      org.opencontainers.image.description="Model-aware LLM router with prefix-cache affinity (kvlab router serve)" \
+      org.opencontainers.image.source="https://github.com/weka/kvlab"
 RUN apk add --no-cache ca-certificates
 # Runs unprivileged: the router needs no filesystem beyond its own binary, and
 # capture (when enabled) writes to a mounted volume the operator owns.
 RUN addgroup -g 65532 -S nonroot && adduser -u 65532 -S nonroot -G nonroot
-COPY --link --from=builder /out/wekai /usr/local/bin/wekai
+COPY --link --from=builder /out/kvlab /usr/local/bin/kvlab
 USER 65532:65532
-ENTRYPOINT ["/usr/local/bin/wekai"]
+ENTRYPOINT ["/usr/local/bin/kvlab"]
 CMD ["router", "serve"]

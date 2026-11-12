@@ -52,7 +52,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 const (

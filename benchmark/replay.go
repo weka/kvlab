@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weka/wekai/config"
-	"github.com/weka/wekai/llm"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/config"
+	"github.com/weka/kvlab/llm"
+	"github.com/weka/kvlab/tools"
 )
 
 // replayQueue hands out conversations to series workers.

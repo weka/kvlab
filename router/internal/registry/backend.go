@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/router/internal/circuit"
-	"github.com/weka/wekai/router/internal/waitq"
+	"github.com/weka/kvlab/router/internal/circuit"
+	"github.com/weka/kvlab/router/internal/waitq"
 )
 
 // Kind distinguishes a leaf inference worker from a child router.

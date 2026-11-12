@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/obs"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/obs"
 )
 
 // The middleware chain, outermost first. The ORDER is the design:

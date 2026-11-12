@@ -135,7 +135,7 @@ func TestLiveServerPage(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	html := string(b)
 	// The live page embeds the same renderer as the report.
-	if resp.StatusCode != 200 || !strings.Contains(html, "var WekaiTimeline = (function") || !strings.Contains(html, `"live":true`) {
+	if resp.StatusCode != 200 || !strings.Contains(html, "var KVLabTimeline = (function") || !strings.Contains(html, `"live":true`) {
 		t.Errorf("status %d, live page incomplete", resp.StatusCode)
 	}
 }

@@ -1,7 +1,7 @@
 package cli
 
 // BenchmarkCommands groups the `benchmark` subcommand tree. Shared between
-// the full `wekai` binary and the slim `wekai-benchmark` binary so the
+// the full `kvlab` binary and the slim `kvlab-benchmark` binary so the
 // subcommand surface stays identical without duplicating the struct.
 type BenchmarkCommands struct {
 	Auto           BenchmarkAutoCommand           `command:"auto" description:"Auto-scaling benchmark to find max throughput"`

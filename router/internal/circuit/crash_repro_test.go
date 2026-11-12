@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 // The sequence a backend produced on hardware when its inference engine died:

@@ -11,16 +11,16 @@ import (
 	"time"
 
 	"github.com/weka/go-weka-observability/instrumentation"
-	"github.com/weka/wekai/config"
-	"github.com/weka/wekai/llm"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/config"
+	"github.com/weka/kvlab/llm"
+	"github.com/weka/kvlab/tools"
 )
 
 // readDirectoryContents reads a directory recursively and concatenates every
 // file's content into one string, each file/subdirectory marked with a
 // "---File: path---" / "---Directory: path---" header. Minimal local
-// reimplementation of wekai's pkg/utils/files.ReadDirectoryContents (which
-// is part of the agentic file-editing toolkit and stays in wekai) — this
+// reimplementation of kvlab's pkg/utils/files.ReadDirectoryContents (which
+// is part of the agentic file-editing toolkit and stays in kvlab) — this
 // covers only what --docs-dir needs: no path allow-listing, no symlink
 // guards, since the caller is a benchmark CLI reading a user-supplied local
 // path, not an agent operating on a sandboxed workspace.

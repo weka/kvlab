@@ -3,7 +3,7 @@ package kvcache_test
 import (
 	"testing"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // These tests pin down RecordAndPin/Unpin — the piece a live server

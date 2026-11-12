@@ -10,7 +10,7 @@ The current router (`wllm-router`) is ~36k LOC of Rust derived from the SGLang r
 
 Artifacts drafted: a requirements spec (`scratchpad/requirements.md`) and technical design (`scratchpad/design.md`), plus the `HIER-*` and `API-*` areas below. **Both scratchpad files are ephemeral — M0 persists them to `docs/rewrite/`.**
 
-> Naming correction: the prediction referred to as `wekai benchmark analyze` is actually `wekai router analyze`; the reusable engine is `benchmark/cache_sim.go` (281 LOC, stdlib-only, all unexported).
+> Naming correction: the prediction referred to as `kvlab benchmark analyze` is actually `kvlab router analyze`; the reusable engine is `benchmark/cache_sim.go` (281 LOC, stdlib-only, all unexported).
 
 ---
 
@@ -59,7 +59,7 @@ FR-RTR-01 requires identifying nodes where the KV slice **is** resident. I check
 **Neither is available in our deployment today.** So:
 
 - **`kv-aware` ships purely predictive** — a rebuilt trie mirroring what vLLM *probably* holds. **FR-RTR-01 is therefore approximated, not satisfied.** That is recorded here as a known gap so nobody later mistakes prediction for identification.
-- **Indexing is by text prefix**, not token ids — 1024-byte windows, per `wekai`'s `promptChunkBytes`. This keeps the drafted design's granularity decision and, importantly, means **no tokenizer in the router**. (Token-id indexing would have required either an in-router tokenizer or a `/tokenize` round trip per candidate; both were worse.)
+- **Indexing is by text prefix**, not token ids — 1024-byte windows, per `kvlab`'s `promptChunkBytes`. This keeps the drafted design's granularity decision and, importantly, means **no tokenizer in the router**. (Token-id indexing would have required either an in-router tokenizer or a `/tokenize` round trip per candidate; both were worse.)
 - The accuracy instrument stops being optional and becomes **the only way to know whether the prediction is worth anything**:
 
 | ID | Level | Requirement |
@@ -206,7 +206,7 @@ Four issues found by checking the design's claims rather than accepting them:
 - **FR-RTR-02** — flipping `--policy` changes selection with no other config change; `round-robin` gives each of N stable workers exactly 10 of 10N requests, including across a shrink-then-grow of the candidate set.
 - **FR-RTR-05** — kill WEKA reachability behind a mock LMCache: the node stays **healthy** (WEKA-1), its cache entries are invalidated (WEKA-2), and on restore the model repopulates with no router restart (WEKA-3).
 - **Core correctness** — `TestLeasePropertyAllCountersReturnToZero` (10k randomized lifecycles including double- and concurrent-release, under `-race`); the trie invariant walk under concurrent inserters + evictor; SSE terminal marker split at every byte offset; chaos test killing a worker mid-stream.
-- **Prediction quality** — offline replay against `wekai router analyze` traces, gated on predicted-vs-observed correlation ≥ 0.7. **This is the gate that decides whether `prefix-cache-aware` is worth shipping at all**, and it needs `--enable-prompt-tokens-details` on the nodes.
+- **Prediction quality** — offline replay against `kvlab router analyze` traces, gated on predicted-vs-observed correlation ≥ 0.7. **This is the gate that decides whether `prefix-cache-aware` is worth shipping at all**, and it needs `--enable-prompt-tokens-details` on the nodes.
 - **Rollout** — shadow mode (compute the choice, emit metrics, route by `least-outstanding`), then canary 1→10→50→100% with ≥72 h at the last two steps. Rollback is an ingress weight change; v2 shares no state with v1.
 
 ---
@@ -238,7 +238,7 @@ Documented, not implemented in v2.0. Model: a directed tree, same binary at ever
 
 # API dialects (`API-*`) — interface in v2.0, Anthropic later
 
-**Structural insight:** `wekai`'s prefix builder is already **Anthropic-native** — `BuildReplayRequestPrefix` orders units *system blocks → tools → messages* (the Messages shape), and the `i == 0 && Bytes < 200` skip exists because Anthropic's per-request billing header carries a near-unique hash that poisons prefix-block hashing. The OpenAI extractor is the adaptation, not the reverse — which inverts the natural reading of `CU-3`.
+**Structural insight:** `kvlab`'s prefix builder is already **Anthropic-native** — `BuildReplayRequestPrefix` orders units *system blocks → tools → messages* (the Messages shape), and the `i == 0 && Bytes < 200` skip exists because Anthropic's per-request billing header carries a near-unique hash that poisons prefix-block hashing. The OpenAI extractor is the adaptation, not the reverse — which inverts the natural reading of `CU-3`.
 
 | ID | Level | Requirement |
 |---|---|---|
@@ -248,7 +248,7 @@ Documented, not implemented in v2.0. Model: a directed tree, same binary at ever
 | **API-5/6/7** | MUST | Dialect comes from the matched route, never body sniffing; every backend declares its dialect; **passthrough only** — a dialect-D request only reaches dialect-D backends, else `503`. |
 | **API-8** | MUST | Stream terminal detection is dialect-provided: OpenAI `data: [DONE]`, Anthropic `event: message_stop`; line-oriented and correct across arbitrary chunk boundaries. |
 | **API-9/10** | MUST | Error envelopes render in the **inbound** dialect; cached-token extraction reads both OpenAI `prompt_tokens_details.cached_tokens` and Anthropic `cache_read_input_tokens`. |
-| **API-11/12** | MUST | Anthropic shape is the reference model; the `Bytes < 200` skip is documented as an Anthropic billing-header artifact and **not** applied to OpenAI. Golden test against a `wekai` `req-v1` corpus. |
+| **API-11/12** | MUST | Anthropic shape is the reference model; the `Bytes < 200` skip is documented as an Anthropic billing-header artifact and **not** applied to OpenAI. Golden test against a `kvlab` `req-v1` corpus. |
 | **API-15** | MUST | Partial scan only — no typed model, no re-serialization, for every dialect. |
 | **API-16** | MUST | Backend health model declared `active \| passive`; `passive` derives health from proxied outcomes and is never probed. |
 | **API-17** | MUST | Policy scoring is a sum of named, individually-toggleable terms — what makes C1, C3 and C4 config changes rather than redesigns. |

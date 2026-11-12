@@ -1,16 +1,16 @@
 # Replay Benchmark Specifics (router-replay mode)
 
-Mechanics of `wekai benchmark auto --router-replay-file` worth knowing before reading
+Mechanics of `kvlab benchmark auto --router-replay-file` worth knowing before reading
 run output or debugging a run that looks wrong. See README's "Replay benchmark"
 section for the general capture → replay-prepare → replay pipeline; this file covers
 router-mock-testing-relevant details and correctness fixes not yet in the README.
 
 ## replay-v3 file layout
 
-- Source captures: `~/.wekai/router/capture/redacted/` (from `wekai router serve
+- Source captures: `~/.kvlab/router/capture/redacted/` (from `kvlab router serve
   --capture redacted`).
-- Compiled replay file: `~/.wekai/router/capture/replays/replay-<start>-to-<end>.jsonl`
-  (default output of `wekai router replay-prepare`, overridable with `--out`).
+- Compiled replay file: `~/.kvlab/router/capture/replays/replay-<start>-to-<end>.jsonl`
+  (default output of `kvlab router replay-prepare`, overridable with `--out`).
 - Format: line 1 is a JSON header (`_schema: "replay-v3"`, summary counts); each
   following line is one `ReplaySession` — a session's full instance tree (parent/child
   spawn linkage, fan-out groups) with per-request structured spec (system blocks,

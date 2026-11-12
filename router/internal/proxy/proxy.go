@@ -52,15 +52,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/circuit"
-	"github.com/weka/wekai/router/internal/dialect"
-	"github.com/weka/wekai/router/internal/lease"
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/obs"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/prefill"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/circuit"
+	"github.com/weka/kvlab/router/internal/dialect"
+	"github.com/weka/kvlab/router/internal/lease"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/obs"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/prefill"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Config tunes the outbound side.

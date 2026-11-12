@@ -2,7 +2,7 @@ package benchmark
 
 // Prefix-cache simulation and content-level warm estimation.
 //
-// The engine itself now lives in github.com/weka/wekai/kvcache, shared with the
+// The engine itself now lives in github.com/weka/kvlab/kvcache, shared with the
 // router. What remains here are thin adapters that keep this package's existing
 // signatures — []string hashes and []int tokens — so every call site and test in
 // benchmark is unchanged.
@@ -17,12 +17,12 @@ package benchmark
 // Two uses remain:
 //
 //  1. Offline replay analysis (SimulateReplayCache), mirroring
-//     `wekai router analyze` so simulated and ground-truth ratios stay
+//     `kvlab router analyze` so simulated and ground-truth ratios stay
 //     comparable.
 //  2. Live content-level estimation (cacheEstimator) across all benchmark modes.
 
 import (
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // promptChunkBytes is the granularity at which prompts are segmented for the

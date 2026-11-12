@@ -24,12 +24,12 @@ set -euo pipefail
 # real cluster's, sometimes a production one, with no recovery path from here.
 #
 # A scratch file costs nothing and removes the possibility entirely.
-KUBECONFIG="$(mktemp -t wekai-kubeconfig)"
+KUBECONFIG="$(mktemp -t kvlab-kubeconfig)"
 export KUBECONFIG
 
 
-CLUSTER=${CLUSTER:-wekai-perf}
-NS=${NS:-wekai-perf}
+CLUSTER=${CLUSTER:-kvlab-perf}
+NS=${NS:-kvlab-perf}
 TAG=perf
 KEEP=${KEEP:-0}
 STEPS=${STEPS:-1,2,4,8,16,32,64,128,256,512}
@@ -41,7 +41,7 @@ ROUTER_CPU=${ROUTER_CPU:-2}
 # the client's ceiling wearing the router's name.
 LOADGEN_CPU=${LOADGEN_CPU:-2}
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT=${OUT:-${TMPDIR:-/tmp}/wekai-perf-result.json}
+OUT=${OUT:-${TMPDIR:-/tmp}/kvlab-perf-result.json}
 
 for tool in k3d kubectl helm docker; do
   command -v "$tool" >/dev/null || { echo "need $tool on PATH"; exit 1; }
@@ -59,7 +59,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> building images"
-docker build -q -f "$ROOT/Dockerfile.router"    -t "wekai-router:$TAG" "$ROOT" >/dev/null
+docker build -q -f "$ROOT/Dockerfile.router"    -t "kvlab-router:$TAG" "$ROOT" >/dev/null
 docker build -q -f "$ROOT/Dockerfile.mock-vllm" -t "mock-vllm:$TAG"    "$ROOT" >/dev/null
 docker build -q -f "$ROOT/Dockerfile.loadgen"   -t "loadgen:$TAG"      "$ROOT" >/dev/null
 
@@ -68,7 +68,7 @@ k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 k3d cluster create "$CLUSTER" --wait --timeout 180s >/dev/null
 
 echo "==> importing images (no registry involved)"
-k3d image import "wekai-router:$TAG" "mock-vllm:$TAG" "loadgen:$TAG" -c "$CLUSTER" >/dev/null
+k3d image import "kvlab-router:$TAG" "mock-vllm:$TAG" "loadgen:$TAG" -c "$CLUSTER" >/dev/null
 
 kubectl create namespace "$NS" >/dev/null
 kubectl config set-context --current --namespace="$NS" >/dev/null
@@ -89,7 +89,7 @@ echo "==> installing the router"
 # maxNodeConcurrency matches the backends' real ceiling in a production fleet;
 # here the backends never refuse, so it only gives the split guard a reference.
 helm install router "$ROOT/chart/router" \
-  --set imageRepository=wekai-router \
+  --set imageRepository=kvlab-router \
   --set imageTag="$TAG" \
   "${BACKENDS[@]}" \
   --set router.signals.maxNodeConcurrency=48 \

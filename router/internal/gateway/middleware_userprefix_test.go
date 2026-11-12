@@ -3,7 +3,7 @@ package gateway_test
 import (
 	"testing"
 
-	"github.com/weka/wekai/router/internal/gateway"
+	"github.com/weka/kvlab/router/internal/gateway"
 )
 
 // The contract: under per-user prefixes EVERY request carries one, so the first

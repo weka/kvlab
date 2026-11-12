@@ -6,7 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 // BackendSeriesRetention is how long a backend may stay unhealthy or removed

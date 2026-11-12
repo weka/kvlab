@@ -144,7 +144,7 @@ wall time. Caveat for long REAL runs driven from a laptop: ~18% of requests died
 client-side (mid-stream EOFs on the laptop↔cluster path under sustained 128-way
 SSE; router logged only 200s/rare 502s and backends were clean) — shares are
 computed over successes so comparisons stand, but for clean long real runs prefer
-driving wekai from inside the cluster (it is baked into the vLLM image).
+driving kvlab from inside the cluster (it is baked into the vLLM image).
 
 ## Sizing `--block-capacity`
 

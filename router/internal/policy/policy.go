@@ -25,8 +25,8 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // ErrNoCandidates reports an empty candidate set. Callers turn this into a 503

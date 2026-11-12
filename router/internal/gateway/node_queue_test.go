@@ -13,8 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/testutil/mockvllm"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/testutil/mockvllm"
 )
 
 // queueWaitCount reads router_backend_queue_wait_seconds' sample count for one

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 func field(t *testing.T, body []byte, k string) string {

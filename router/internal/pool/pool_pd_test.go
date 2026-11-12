@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/lease"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/policy/affinity"
-	"github.com/weka/wekai/router/internal/pool"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/lease"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/policy/affinity"
+	"github.com/weka/kvlab/router/internal/pool"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // With a band of its own the prefill flow saturates a node at the prefill hard

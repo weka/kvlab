@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // RouterReplayTrimCommand writes the newest part of a replay-v5 file as a

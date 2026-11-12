@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // wireSeen is what one request looked like on the wire.

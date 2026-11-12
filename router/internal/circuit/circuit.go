@@ -22,7 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 type State uint8

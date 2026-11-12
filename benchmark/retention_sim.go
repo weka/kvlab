@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // Retention simulation: the same prefix matching as SimulateReplayCache, but

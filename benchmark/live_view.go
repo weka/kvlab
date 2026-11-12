@@ -575,7 +575,7 @@ func (s *liveServer) handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		page, err := renderTimelinePage("wekai live timeline", "connecting…", nil, timelinePageConfig{
+		page, err := renderTimelinePage("kvlab live timeline", "connecting…", nil, timelinePageConfig{
 			Live: true, PollMs: livePollMs, MaxRequests: s.max, Kinds: timelineKinds,
 		})
 		if err != nil {

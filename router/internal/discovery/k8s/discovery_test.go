@@ -12,8 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	k8sdisc "github.com/weka/wekai/router/internal/discovery/k8s"
-	"github.com/weka/wekai/router/internal/registry"
+	k8sdisc "github.com/weka/kvlab/router/internal/discovery/k8s"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 const ns = "inference"

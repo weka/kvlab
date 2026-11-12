@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // captureStderr runs fn with os.Stderr redirected and returns what was

@@ -6,7 +6,7 @@ Design documentation for replacing the current Rust router with a Go implementat
 
 1. **Over-complication.** ~36k LOC of Rust carrying PyO3 bindings, a Python CLI, `mini_lb.py`, a ~2,100 LOC tokenizer subsystem that routing never calls, PD disaggregation (~4,600 LOC), and ~5,000 LOC of dead files not even declared in `src/lib.rs`.
 2. **Structurally broken load balancing.** In-flight load is incremented on exactly one code path, decremented on three, and wiped wholesale by the health checker every 10 cycles. Every load-sensitive decision — `power_of_two`, the cache-aware imbalance guard, `get_loads`, and the `worker_load`/`max_load`/`min_load` gauges — is made on noise. This is the central motivating defect.
-3. **Ownership.** Go is the team's language, and the cache-prediction engine being reused (`wekai`) is already Go.
+3. **Ownership.** Go is the team's language, and the cache-prediction engine being reused (`kvlab`) is already Go.
 
 ## Read in this order
 

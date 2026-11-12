@@ -39,7 +39,7 @@ func TestDashboardOnlyQueriesMetricsThatExist(t *testing.T) {
 	// Prometheus derives these from a histogram; the base name is what the code
 	// declares.
 	suffixes := []string{"_bucket", "_sum", "_count"}
-	metricRE := regexp.MustCompile(`\b(?:wekai_)?router_[a-z0-9_]+`)
+	metricRE := regexp.MustCompile(`\b(?:kvlab_)?router_[a-z0-9_]+`)
 
 	queried := map[string][]string{}
 	for _, p := range dash.Panels {
@@ -97,7 +97,7 @@ func TestDashboardCoversBackendRouting(t *testing.T) {
 // the authority the dashboard is checked against.
 func declaredMetrics(t *testing.T) map[string]bool {
 	t.Helper()
-	nameRE := regexp.MustCompile(`"((?:wekai_)?router_[a-z0-9_]+)"`)
+	nameRE := regexp.MustCompile(`"((?:kvlab_)?router_[a-z0-9_]+)"`)
 	out := map[string]bool{}
 	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {

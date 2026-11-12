@@ -1,4 +1,4 @@
-# wekai Navigation Index
+# kvlab Navigation Index
 
 > `.ainav/` is a navigation map and operational memory for this repo, mirroring the
 > convention in the parent `wllm` repo's `.ainav/`. It captures dev workflows and
@@ -10,11 +10,11 @@
 
 ## What is this project?
 
-**wekai** is Weka's LLM benchmarking/replay CLI and its routing gateway. One binary:
+**kvlab** is Weka's LLM benchmarking/replay CLI and its routing gateway. One binary:
 
-- `wekai` (root `main.go`, `cli/`) — capture/replay traffic, run coherency evals,
+- `kvlab` (root `main.go`, `cli/`) — capture/replay traffic, run coherency evals,
   benchmark real or replayed workloads against any OpenAI-compatible endpoint.
-- `router/` — the routing gateway behind `wekai router serve`, fronting a vLLM fleet with
+- `router/` — the routing gateway behind `kvlab router serve`, fronting a vLLM fleet with
   prefix-cache-affinity routing, plus a GPU-less mock vLLM fleet (`cmd/mock-vllm`) for
   developing and load-testing router policies without hardware.
 
@@ -39,15 +39,15 @@
 | Directory | Purpose |
 |-----------|---------|
 | `kvcache/` | Shared prefix-cache trie engine (stdlib-only leaf). Used by the benchmark and the mock vLLM; NOT by the router, which owns its own shared tree. |
-| `router/serve/` | The router entrypoint (`wekai router serve`); the only part of `router/` visible outside it |
+| `router/serve/` | The router entrypoint (`kvlab router serve`); the only part of `router/` visible outside it |
 | `router/cmd/mock-vllm/` | GPU-less mock vLLM server binary entrypoint |
 | `router/internal/` | Router packages: `gateway` (HTTP surface), `policy`/`policy/affinity` (the one routing flow + its signals), `registry`/`lease` (backend state, in-flight leases), `proxy` (upstream forwarding), `dialect/openai` (wire format), `mockvllm` (mock engine), `viz` (`/router-viz`), `hack` (architectural fence tests) |
-| `benchmark/` | Benchmark and replay engine (`wekai benchmark auto`, router-replay mode) |
+| `benchmark/` | Benchmark and replay engine (`kvlab benchmark auto`, router-replay mode) |
 | `cli/` | go-flags command trees for `benchmark`, `router`, `eval` |
 | `llm/` | Raw LLM client layer, dynamic model-spec parsing, mock servers for tests |
 
 ## Build Config (this repo)
 
-- Go module: `github.com/weka/wekai`. `task build`, `task test`, `task docker:build` (root `Taskfile.yaml`).
+- Go module: `github.com/weka/kvlab`. `task build`, `task test`, `task docker:build` (root `Taskfile.yaml`).
 - Commits: [Conventional Commits](https://www.conventionalcommits.org/) is **mandatory** — CI derives the next semver release from commit types on every push to `main`. See [CLAUDE.md](../CLAUDE.md).
 - Testing policy: no mocked LLM/chat flows — pure unit tests on data-transformation functions, `httptest` for HTTP utilities, real-endpoint e2e tests only.

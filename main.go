@@ -1,4 +1,4 @@
-// Command wekai-core is a standalone binary exposing the benchmark, router,
+// Command kvlab-core is a standalone binary exposing the benchmark, router,
 // and eval subcommand trees.
 package main
 
@@ -7,10 +7,10 @@ import (
 	"os"
 
 	"github.com/jessevdk/go-flags"
-	"github.com/weka/wekai/cli"
+	"github.com/weka/kvlab/cli"
 )
 
-// Options defines the wekai-core command structure: benchmark, router, and
+// Options defines the kvlab-core command structure: benchmark, router, and
 // eval subcommand trees plus global flags.
 type Options struct {
 	cli.GlobalOptions
@@ -27,8 +27,8 @@ func main() {
 	opts.Eval.Init()
 
 	parser := flags.NewParser(&opts, flags.Default)
-	parser.ShortDescription = "wekai-core - LLM benchmarking, router/proxy, and replay toolkit"
-	parser.LongDescription = `wekai-core exposes the benchmark, router, and eval subcommand trees against
+	parser.ShortDescription = "kvlab-core - LLM benchmarking, router/proxy, and replay toolkit"
+	parser.LongDescription = `kvlab-core exposes the benchmark, router, and eval subcommand trees against
 any dynamic model spec (dynamic/<url>,type=anthropic|openai|...) or
 openrouter/... spec. No static named-model registry is included — embed this
 module in an application that registers llm.ResolveModel /

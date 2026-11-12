@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 // Route is one endpoint a dialect claims.

@@ -1,4 +1,4 @@
-// Package chart holds render tests for the wekai Helm chart. There is no Go
+// Package chart holds render tests for the kvlab Helm chart. There is no Go
 // code here — the tests shell out to `helm template` and assert on the rendered
 // manifests, which is the only way to cover template logic. They skip when helm
 // isn't installed, matching how the node-based report tests behave.
@@ -18,9 +18,9 @@ func render(t *testing.T, args ...string) string {
 	if err != nil {
 		t.Skip("helm not installed; chart render test skipped")
 	}
-	// The chart lives in ./wekai; this file deliberately sits OUTSIDE it so it
+	// The chart lives in ./kvlab; this file deliberately sits OUTSIDE it so it
 	// is not swept into the packaged chart.
-	base := []string{"template", "t", "wekai", "--set", "endpoint=http://x:8000"}
+	base := []string{"template", "t", "kvlab", "--set", "endpoint=http://x:8000"}
 	out, err := exec.Command(helm, append(base, args...)...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template failed: %v\n%s", err, out)
@@ -42,7 +42,7 @@ func saveRequestDataArg(t *testing.T, manifest string) string {
 }
 
 // TestResultsDataPath covers where run data lands. The same PVC is normally
-// shared across purposes, so wekai writes into a subdirectory rather than
+// shared across purposes, so kvlab writes into a subdirectory rather than
 // dropping run directories loose at the volume root.
 //
 // The nil-vs-empty distinction is the point: Helm's `default` collapses them,
@@ -54,9 +54,9 @@ func TestResultsDataPath(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"default", nil, "/results/wekai-requests-data"},
+		{"default", nil, "/results/kvlab-requests-data"},
 		{"explicit empty writes at the volume root", []string{"--set", "resultsSubPath="}, "/results"},
-		{"null falls back to the default", []string{"--set", "resultsSubPath=null"}, "/results/wekai-requests-data"},
+		{"null falls back to the default", []string{"--set", "resultsSubPath=null"}, "/results/kvlab-requests-data"},
 		{"custom sub-path", []string{"--set", "resultsSubPath=teamA/soak"}, "/results/teamA/soak"},
 		{"stray slashes are normalised", []string{"--set", "resultsSubPath=/teamA/soak/"}, "/results/teamA/soak"},
 		{"custom mount path", []string{"--set", "resultsMountPath=/mnt/weka", "--set", "resultsSubPath=runs"}, "/mnt/weka/runs"},
@@ -73,7 +73,7 @@ func TestResultsDataPath(t *testing.T) {
 
 // TestResultsVolumeMountIsNotSubPath: the whole volume must stay mounted at
 // resultsMountPath. Using a volumeMount subPath would hide the rest of a shared
-// PVC from kubectl exec/cp, which is the opposite of what namespacing wekai's
+// PVC from kubectl exec/cp, which is the opposite of what namespacing kvlab's
 // own writes is for.
 func TestResultsVolumeMountIsNotSubPath(t *testing.T) {
 	manifest := render(t)
@@ -117,7 +117,7 @@ func TestSleepMessagePointsAtTheData(t *testing.T) {
 }
 
 // renderRouter templates the router chart. It is a separate chart from
-// ./wekai for a reason worth stating: the benchmark image embeds a multi-GB
+// ./kvlab for a reason worth stating: the benchmark image embeds a multi-GB
 // replay artifact, and a router that never reads it should not pay to pull it.
 func renderRouter(t *testing.T, args ...string) string {
 	t.Helper()
@@ -138,16 +138,16 @@ func renderRouter(t *testing.T, args ...string) string {
 // image would silently add gigabytes to every router pull.
 func TestRouterChartUsesTheReplaylessImage(t *testing.T) {
 	out := renderRouter(t, "--set", "router.routes[0]=* => http://vllm:8000")
-	if !strings.Contains(out, "quay.io/weka.io/wekai-router:") {
-		t.Errorf("rendered router deployment does not use the wekai-router image:\n%s", out)
+	if !strings.Contains(out, "quay.io/weka.io/kvlab-router:") {
+		t.Errorf("rendered router deployment does not use the kvlab-router image:\n%s", out)
 	}
-	if strings.Contains(out, "quay.io/weka.io/wekai:") ||
-		strings.Contains(out, "wekai-benchmark") {
+	if strings.Contains(out, "quay.io/weka.io/kvlab:") ||
+		strings.Contains(out, "kvlab-benchmark") {
 		t.Errorf("router chart references a replay-carrying image:\n%s", out)
 	}
 }
 
-// TestRouterChartRunsTheSubcommand: the router is `wekai router serve`, not a
+// TestRouterChartRunsTheSubcommand: the router is `kvlab router serve`, not a
 // standalone binary. If the args stop saying so, the pod runs the image's
 // default and serves nothing.
 func TestRouterChartRunsTheSubcommand(t *testing.T) {
@@ -683,7 +683,7 @@ func TestRenderedArgvKeepsItsTailFlag(t *testing.T) {
 		{"--set", "replay.realtime=true", "--set", "replay.skipIdle=true"},
 	} {
 		out := render(t, args...)
-		i := strings.Index(out, "set -- wekai benchmark auto")
+		i := strings.Index(out, "set -- kvlab benchmark auto")
 		if i < 0 {
 			t.Fatal("no argv block rendered")
 		}

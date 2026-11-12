@@ -1,18 +1,18 @@
-# wekai-router
+# kvlab-router
 
-Helm chart that deploys `wekai router serve` — the model-aware HTTP reverse
-proxy for LLM traffic. Uses the replay-less `wekai-router` image: the same
-binary as `wekai`, built without the embedded replay corpora, which keeps a
+Helm chart that deploys `kvlab router serve` — the model-aware HTTP reverse
+proxy for LLM traffic. Uses the replay-less `kvlab-router` image: the same
+binary as `kvlab`, built without the embedded replay corpora, which keeps a
 router pull small. `chart_test.go` guards that — pointing this chart back at the
 benchmark image adds gigabytes to every pull.
 
 ## Quick install
 
 ```bash
-helm upgrade --install wekai-router ./chart/router \
+helm upgrade --install kvlab-router ./chart/router \
   -n default \
   --set ingress.enabled=true \
-  --set domain=wekai-router.example.com \
+  --set domain=kvlab-router.example.com \
   --set 'router.default=https://api.anthropic.com using client'
 ```
 
@@ -36,10 +36,10 @@ comma-separated case-insensitive substrings of the model name, or `*` for
 catch-all. First matching rule wins.
 
 ```bash
-helm upgrade --install wekai-router ./chart/router \
+helm upgrade --install kvlab-router ./chart/router \
   -n default \
   --set ingress.enabled=true \
-  --set domain=wekai-router.example.com \
+  --set domain=kvlab-router.example.com \
   --set 'router.routes[0]=claude => https://api.anthropic.com using client' \
   --set 'router.routes[1]=gpt,openai => https://api.openai.com using client' \
   --set 'router.default=https://api.anthropic.com using client'
@@ -48,7 +48,7 @@ helm upgrade --install wekai-router ./chart/router \
 When the `--set` form gets unwieldy, write a values file and pass `-f`:
 
 ```bash
-helm upgrade --install wekai-router ./chart/router \
+helm upgrade --install kvlab-router ./chart/router \
   -n default \
   -f my-router-values.yaml
 ```
@@ -56,14 +56,14 @@ helm upgrade --install wekai-router ./chart/router \
 ## Capture to PVC
 
 ```bash
-helm upgrade --install wekai-router ./chart/router \
+helm upgrade --install kvlab-router ./chart/router \
   -n default \
   --set router.capture=redacted \
   --set datastore.sharedPvc.enabled=true
 ```
 
 Captures land in `/data/router/capture/<mode>/` on the PVC and survive pod
-restarts. Pair with `wekai router analyze` for offline analytics.
+restarts. Pair with `kvlab router analyze` for offline analytics.
 
 ## Values
 
@@ -71,7 +71,7 @@ Key values (see `values.yaml` for the full list):
 
 | Key | Default | Purpose |
 |---|---|---|
-| `imageRepository` | `quay.io/weka.io/wekai-router` | Replay-less router image |
+| `imageRepository` | `quay.io/weka.io/kvlab-router` | Replay-less router image |
 | `imageTag` | `""` (falls back to `.Chart.AppVersion`) | Pin to a specific build |
 | `replicaCount` | `1` | Cache-affinity state is per-pod and unshared; see `values.yaml` before scaling |
 | `resources.requests` | `cpu: 4`, `memory: 8Gi` | Scheduling floor — lower it for a small or test cluster |

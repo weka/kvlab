@@ -1,4 +1,4 @@
-# wekai
+# kvlab
 
 A real-time replay benchmark, model-aware LLM router, and capture toolkit for
 OpenAI (Chat Completions), OpenAI Responses API, Anthropic and Google protocols.
@@ -13,34 +13,34 @@ OpenAI (Chat Completions), OpenAI Responses API, Anthropic and Google protocols.
   change in a breaking way. **Compare runs only head to head on the same
   version**: a change in defaults or replay behaviour can move numbers on its own.
 
-wekai has three command groups: `benchmark` (replay and load tests, result
+kvlab has three command groups: `benchmark` (replay and load tests, result
 visualization), `router` (see below) and `eval` (model capability evaluations).
 It works against any endpoint, given as a plain `http(s)://` URL.
 
 ## Install
 
 ```
-go build -o wekai .
-# or: go install github.com/weka/wekai@latest
+go build -o kvlab .
+# or: go install github.com/weka/kvlab@latest
 ```
 
 ```
-wekai benchmark auto --help
-wekai router serve --help
-wekai eval coherency --help
+kvlab benchmark auto --help
+kvlab router serve --help
+kvlab eval coherency --help
 ```
 
 Released binaries, images and charts: see [Releases](#releases-and-license).
 
 ## Real-time replay
 
-`wekai benchmark auto --router-replay-file` replays previously captured agentic
+`kvlab benchmark auto --router-replay-file` replays previously captured agentic
 traffic against an endpoint. It runs **in real time by default**, which is also
 the Helm chart's default, and answers "what is the most sessions this fleet can
 carry":
 
 ```
-wekai benchmark auto \
+kvlab benchmark auto \
   --router-replay-file replay.jsonl \
   --models http://YOUR-LLM-HOST:8000 \
   --timeout 8h \
@@ -82,8 +82,8 @@ then thin out into a tail that can run for hours or days. Real-time replay keeps
 that shape, so the load a session puts on the fleet changes as it ages, and a
 run's total load depends on its mix of young and old sessions.
 
-**Where the replay file comes from.** `wekai router serve --capture redacted`
-records traffic and `wekai router replay-prepare` compiles it into one replay-v5
+**Where the replay file comes from.** `kvlab router serve --capture redacted`
+records traffic and `kvlab router replay-prepare` compiles it into one replay-v5
 JSONL file; see [docs/replay.md](docs/replay.md#where-the-replay-file-comes-from).
 Session selection, think-time modes and file format are in the same document.
 Other flags and run modes: [docs/detailed-modes-of-benchmark.md](docs/detailed-modes-of-benchmark.md).
@@ -100,11 +100,11 @@ registry client). Both are replay-v5 (per-request `think_ms` and a session index
 | `replay-160d-oct15-dfe3662680de` | 2026-05-12 → 10-15 | 14,305 / 1,729,396 | 6.1 GB / 40.8 GB |
 
 The 40d capture is the one embedded in the image and run by the Helm chart; it was
-cut from the 160d one with `wekai router replay-trim --last-days 40`. The 160d
+cut from the 160d one with `kvlab router replay-trim --last-days 40`. The 160d
 capture is the full corpus, for runs that need more sessions or older traffic.
 
 ```
-REPO=weka.io/wekai; TAG=replay-40d-oct14-337a03810637   # or the 160d tag
+REPO=weka.io/kvlab; TAG=replay-40d-oct14-337a03810637   # or the 160d tag
 TOKEN=$(curl -s "https://quay.io/v2/auth?service=quay.io&scope=repository:$REPO:pull" | jq -r .token)
 LAYER=$(curl -s -H "Authorization: Bearer $TOKEN" \
   -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
@@ -144,7 +144,7 @@ of the previous one; a run without `--verify` aligns better there.
 
 ## Router
 
-`wekai router serve` is a model-aware LLM router: it matches each request's model
+`kvlab router serve` is a model-aware LLM router: it matches each request's model
 to a pool of endpoints and routes **by cost**, sending each request to the usable
 backend with the lowest cost (the tokens it must prefill there, since that backend
 does not hold the prompt's prefix, plus the context tokens it is already serving),
@@ -152,7 +152,7 @@ so a conversation keeps landing on the backend that holds its KV cache. Capacity
 limits decide which backends are usable.
 
 ```
-wekai router serve \
+kvlab router serve \
   --listen :8080 --metrics-listen 0.0.0.0:29000 \
   --backends 'http://vllm-a:8000|http://vllm-b:8000|http://vllm-c:8000'
 ```
@@ -168,7 +168,7 @@ Shapes supported (CLI and Helm for each in **[docs/router.md](docs/router.md)**)
   to put Claude Code in front of a local server.
 
 Capture, then replay: `--capture redacted` records traffic under
-`~/.wekai/router/capture/redacted/`; `wekai router replay-prepare` turns it into a
+`~/.kvlab/router/capture/redacted/`; `kvlab router replay-prepare` turns it into a
 replay file for the benchmark above. Authentication, per-user prefixes, metrics and
 probes are all in [docs/router.md](docs/router.md).
 
@@ -189,9 +189,9 @@ this and for cache-source metrics sampling. Details:
 into one report, as arms of a head-to-head comparison:
 
 ```
-wekai benchmark visualize ./results/<run-timestamp> --timeline
+kvlab benchmark visualize ./results/<run-timestamp> --timeline
 
-wekai benchmark visualize-merge ./results/run-a ./results/run-b \
+kvlab benchmark visualize-merge ./results/run-a ./results/run-b \
   --labels baseline,candidate --baseline baseline --timeline -o ./results/compare
 ```
 
@@ -208,22 +208,22 @@ input.
 
 ## Helm quick start
 
-`chart/wekai/` is a run-once chart that runs the embedded 40d capture (3,190
-sessions) with `wekai benchmark auto --router-replay-file /wekai/replay.jsonl`.
+`chart/kvlab/` is a run-once chart that runs the embedded 40d capture (3,190
+sessions) with `kvlab benchmark auto --router-replay-file /kvlab/replay.jsonl`.
 The chart defaults to `replay.realtime: true`, so the run is the real-time recipe
 above. The only value most installs set is `endpoint`; get `<vX>` from the
-[releases page](https://github.com/weka/wekai/releases) (the chart `--version` is
+[releases page](https://github.com/weka/kvlab/releases) (the chart `--version` is
 mandatory).
 
 ```
-helm upgrade --install my-replay oci://quay.io/weka.io/helm/wekai --version <vX> \
+helm upgrade --install my-replay oci://quay.io/weka.io/helm/kvlab --version <vX> \
   --set endpoint=http://10.71.0.4:8000
 ```
 
 Smoke test, shortening `duration` (maps to `--timeout`, default `8h`):
 
 ```
-helm upgrade --install my-replay oci://quay.io/weka.io/helm/wekai --version <vX> \
+helm upgrade --install my-replay oci://quay.io/weka.io/helm/kvlab --version <vX> \
   --set endpoint=http://10.71.0.4:8000 --set duration=3m
 ```
 
@@ -231,32 +231,32 @@ After the run the pod sleeps so results stay reachable with `kubectl exec` /
 `kubectl cp`; delete the pod and the Deployment restarts the benchmark.
 
 **Persisting results.** Results are always written to
-`/results/wekai-requests-data/<run-timestamp>/`. With nothing set that is an
+`/results/kvlab-requests-data/<run-timestamp>/`. With nothing set that is an
 `emptyDir` that goes away with the pod. To keep them, mount an existing PVC:
 
 ```
-helm upgrade --install my-replay oci://quay.io/weka.io/helm/wekai --version <vX> \
+helm upgrade --install my-replay oci://quay.io/weka.io/helm/kvlab --version <vX> \
   --set endpoint=http://10.71.0.4:8000 \
   --set resultsClaim=my-existing-pvc
 ```
 
 or `--set createResultsClaim=true` to have the chart provision `<release>-results`
 (kept on `helm uninstall`). `resultsSubPath` changes the subdirectory. Every value
-is documented inline in [`chart/wekai/values.yaml`](chart/wekai/values.yaml).
+is documented inline in [`chart/kvlab/values.yaml`](chart/kvlab/values.yaml).
 
 **Bare-URL model selector.** A bare `http(s)://` URL given as `--models` (or
-`endpoint`) is all wekai needs. If the URL has no path,
+`endpoint`) is all kvlab needs. If the URL has no path,
 `GET <url>/v1/models` decides whether `/v1` is the base, and the first listed
 model id is used unless `model=` is given (`model` in the chart).
 
 ## Releases and license
 
 **Install commands for every version live on the
-[releases page](https://github.com/weka/wekai/releases)**: each release description
+[releases page](https://github.com/weka/kvlab/releases)**: each release description
 carries copy-paste `helm install`, `docker pull` and `go install` snippets pinned
 to that version.
 
-Embedding wekai, the Dagger-based publishing flow and the repository layout are
+Embedding kvlab, the Dagger-based publishing flow and the repository layout are
 in [docs/development.md](docs/development.md).
 
 Apache-2.0, see [LICENSE](LICENSE).

@@ -52,7 +52,7 @@ func resolveRunSeed(seed int64) (int64, error) {
 func runIDFromSeed(seed int64) string {
 	var s [8]byte
 	binary.LittleEndian.PutUint64(s[:], uint64(seed))
-	sum := sha256.Sum256(append([]byte("wekai-run-id:"), s[:]...))
+	sum := sha256.Sum256(append([]byte("kvlab-run-id:"), s[:]...))
 	return "run" + hex.EncodeToString(sum[:12])
 }
 

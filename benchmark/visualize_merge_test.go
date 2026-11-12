@@ -203,31 +203,31 @@ func TestDeriveSourceLabel(t *testing.T) {
 	}{
 		{
 			name:    "alias wins over opaque timestamp dir (the reported bug case)",
-			dir:     "/mnt/weka/wekai-runs-logs/DS3H_weka-64r8w_reqdata/2026-07-19T12-00-00Z",
+			dir:     "/mnt/weka/kvlab-runs-logs/DS3H_weka-64r8w_reqdata/2026-07-19T12-00-00Z",
 			records: wekaRecords,
 			want:    "DS3H_weka-64r8w",
 		},
 		{
 			name:    "alias wins over opaque timestamp dir, second arm",
-			dir:     "/mnt/weka/wekai-runs-logs/DS3H_hbm_reqdata/2026-07-19T12-05-00Z",
+			dir:     "/mnt/weka/kvlab-runs-logs/DS3H_hbm_reqdata/2026-07-19T12-05-00Z",
 			records: hbmRecords,
 			want:    "DS3H_hbm",
 		},
 		{
 			name:    "no alias, timestamp dir falls back to parent run-directory name",
-			dir:     "/mnt/weka/wekai-runs-logs/DS3H_weka-64r8w_reqdata/2026-07-19T12-00-00Z",
+			dir:     "/mnt/weka/kvlab-runs-logs/DS3H_weka-64r8w_reqdata/2026-07-19T12-00-00Z",
 			records: ambiguousRecords,
 			want:    "DS3H_weka-64r8w_reqdata",
 		},
 		{
 			name:    "no alias, non-timestamp dir keeps its own basename",
-			dir:     "/mnt/weka/wekai-runs-logs/my-custom-dir",
+			dir:     "/mnt/weka/kvlab-runs-logs/my-custom-dir",
 			records: ambiguousRecords,
 			want:    "my-custom-dir",
 		},
 		{
 			name:    "no records at all falls back to dir basename",
-			dir:     "/mnt/weka/wekai-runs-logs/my-custom-dir",
+			dir:     "/mnt/weka/kvlab-runs-logs/my-custom-dir",
 			records: nil,
 			want:    "my-custom-dir",
 		},

@@ -57,7 +57,7 @@ One renderer, three surfaces: `benchmark/timeline_assets/timeline.js` (+ `.css`,
   embed each arm's `timeline` plus the renderer and a Metrics/Timeline switch;
   the view shares the report's `viewTMin/viewTMax` (draw() calls
   `tlSyncFromReport`). Time basis is ms since the arm's first request.
-- Standalone: `wekai benchmark timeline <reqdata dir> -o file.html`.
+- Standalone: `kvlab benchmark timeline <reqdata dir> -o file.html`.
 - Live: `benchmark/live_view.go`, `benchmark auto --live-port N [--live-bind A]
   [--live-max-requests N]`. Endpoints: `/` page, `/api/arms`,
   `/api/data?arm=i&since=seq` (incremental; `reset` when the cursor fell off the

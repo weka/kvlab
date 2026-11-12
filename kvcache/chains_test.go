@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/weka/wekai/kvcache"
+	"github.com/weka/kvlab/kvcache"
 )
 
 func TestChains_EmptyTrie(t *testing.T) {

@@ -13,7 +13,7 @@ import (
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/weka/go-weka-observability/instrumentation"
 
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/tools"
 )
 
 type ContentBlock struct {

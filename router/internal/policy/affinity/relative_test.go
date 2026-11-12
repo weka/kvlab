@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 func newRelPolicy(t *testing.T, relTTFT, relDec bool, softTTFT time.Duration) *Policy {

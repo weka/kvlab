@@ -1,4 +1,4 @@
-module github.com/weka/wekai
+module github.com/weka/kvlab
 
 go 1.25.7
 

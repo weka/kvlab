@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 // prefillEpsilon absorbs float64 accumulation error in the settle loop —

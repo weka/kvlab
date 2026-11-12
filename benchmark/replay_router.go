@@ -1,7 +1,7 @@
 package benchmark
 
-// Tree-aware router replay. Drives sessions captured by the wekai router (see
-// `wekai router replay-prepare`) preserving:
+// Tree-aware router replay. Drives sessions captured by the kvlab router (see
+// `kvlab router replay-prepare`) preserving:
 //
 //   - per-session series boundary (each session = one replay-queue item)
 //   - per-instance sequential turn ordering
@@ -33,11 +33,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/config"
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/config"
+	"github.com/weka/kvlab/llm"
 )
 
-// ---- File schema (mirrors wekai router replay-prepare output) ----
+// ---- File schema (mirrors kvlab router replay-prepare output) ----
 //
 // replay-v3 is a JSONL file:
 //   line 1: header (RouterReplayHeader)

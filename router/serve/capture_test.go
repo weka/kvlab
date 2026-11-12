@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
 type capturedHook struct {

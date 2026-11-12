@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/weka/wekai/router/internal/obs"
+	"github.com/weka/kvlab/router/internal/obs"
 )
 
 // Captured is one proxied request/response pair, as the capture sink sees it.

@@ -12,8 +12,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Set is the P/D split of one pool.

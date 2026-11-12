@@ -14,15 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/dialect/openai"
-	"github.com/weka/wekai/router/internal/gateway"
-	"github.com/weka/wekai/router/internal/mockvllm"
-	"github.com/weka/wekai/router/internal/policy/affinity"
-	"github.com/weka/wekai/router/internal/pool"
-	"github.com/weka/wekai/router/internal/prefill"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
-	"github.com/weka/wekai/router/internal/routing"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
+	"github.com/weka/kvlab/router/internal/gateway"
+	"github.com/weka/kvlab/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/internal/policy/affinity"
+	"github.com/weka/kvlab/router/internal/pool"
+	"github.com/weka/kvlab/router/internal/prefill"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/routing"
 )
 
 // These run the real mock engine, with its shared KV tier and its

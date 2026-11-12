@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/dialect/openai"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/dialect/openai"
 )
 
 func extract(t *testing.T, body string) []kvcache.Unit {

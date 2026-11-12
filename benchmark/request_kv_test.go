@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // goldenUsageJSON returns a usage object built from vLLM's golden usage
@@ -162,7 +162,7 @@ func TestRequestDataKVRoundTripAndOldFormat(t *testing.T) {
 			t.Fatalf("timeline=%v: %v", withTL, err)
 		}
 		html, _ := os.ReadFile(path)
-		if got := strings.Contains(string(html), "var WekaiTimeline = (function"); got != withTL {
+		if got := strings.Contains(string(html), "var KVLabTimeline = (function"); got != withTL {
 			t.Errorf("timeline=%v: page embeds renderer = %v", withTL, got)
 		}
 	}

@@ -6,7 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // Prometheus metrics for the router. Counters are user/session/model-tagged so
@@ -21,35 +21,35 @@ import (
 // because the user explicitly asked for per-session visibility.
 var (
 	routerRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_requests_total",
+		Name: "kvlab_router_requests_total",
 		Help: "Total proxied requests, labeled by user, session, model, status class and whether this was an inference endpoint.",
 	}, []string{"user", "session_id", "model", "status", "inference"})
 
 	routerInputTokensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_input_tokens_total",
+		Name: "kvlab_router_input_tokens_total",
 		Help: "Total uncached input tokens consumed (does not include cache reads or cache writes; see the *_cache_* metrics).",
 	}, []string{"user", "session_id", "model"})
 
 	routerCacheReadTokensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_cache_read_tokens_total",
+		Name: "kvlab_router_cache_read_tokens_total",
 		Help: "Input tokens served from cache (billed at the cache-read rate).",
 	}, []string{"user", "session_id", "model"})
 
 	routerCacheCreationTokensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_cache_creation_tokens_total",
+		Name: "kvlab_router_cache_creation_tokens_total",
 		Help: "Input tokens written to cache (billed at the cache-write rate).",
 	}, []string{"user", "session_id", "model"})
 
 	routerOutputTokensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_output_tokens_total",
+		Name: "kvlab_router_output_tokens_total",
 		Help: "Output tokens produced by the upstream model.",
 	}, []string{"user", "session_id", "model"})
 
 	// Estimated USD cost via llm.LookupModelByIdentifier + llm.CalculateCost.
 	// Increments by 0 (no-op) for models we don't have prices for — see
-	// wekai_router_unknown_model_total for that signal.
+	// kvlab_router_unknown_model_total for that signal.
 	routerCostUSDTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_cost_usd_total",
+		Name: "kvlab_router_cost_usd_total",
 		Help: "Total estimated USD cost (per llm.CalculateCost). 0 for unpriced models.",
 	}, []string{"user", "session_id", "model"})
 
@@ -57,7 +57,7 @@ var (
 	// registry, so cost is underreported. Use this to identify registry
 	// gaps. No session_id/user labels — the value is per-model.
 	routerUnknownModelTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "wekai_router_unknown_model_total",
+		Name: "kvlab_router_unknown_model_total",
 		Help: "Requests whose model id wasn't in the llm registry (cost underreported).",
 	}, []string{"model"})
 )

@@ -56,7 +56,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Defaults, matching the reference implementation.

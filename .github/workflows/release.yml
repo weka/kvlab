@@ -94,9 +94,9 @@ jobs:
           mkdir -p dist
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             export GOOS="${target%/*}" GOARCH="${target#*/}"
-            out="dist/wekai_${GOOS}_${GOARCH}"
-            CGO_ENABLED=0 go build -trimpath -o "${out}/wekai" .
-            tar -czf "dist/wekai_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C "${out}" wekai
+            out="dist/kvlab_${GOOS}_${GOARCH}"
+            CGO_ENABLED=0 go build -trimpath -o "${out}/kvlab" .
+            tar -czf "dist/kvlab_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C "${out}" kvlab
           done
           ls -lh dist/*.tar.gz
 
@@ -142,7 +142,7 @@ jobs:
             attached below, e.g.:
 
             ```
-            curl -fsSL https://github.com/weka/wekai/releases/download/${{ steps.semver.outputs.new_tag }}/wekai_${{ steps.semver.outputs.new_tag }}_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz | tar -xz
+            curl -fsSL https://github.com/weka/kvlab/releases/download/${{ steps.semver.outputs.new_tag }}/kvlab_${{ steps.semver.outputs.new_tag }}_$(uname -s | tr A-Z a-z)_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz | tar -xz
             ```
 
             ### Benchmark
@@ -151,13 +151,13 @@ jobs:
             This image embeds the replay artifact, so no volume or fetch step is needed:
 
             ```
-            helm upgrade --install my-replay oci://quay.io/weka.io/helm/wekai \
+            helm upgrade --install my-replay oci://quay.io/weka.io/helm/kvlab \
               --version ${{ steps.semver.outputs.new_tag }} \
               --set endpoint=http://YOUR-LLM-HOST:8000
             ```
 
             ```
-            docker pull quay.io/weka.io/wekai:${{ steps.semver.outputs.new_tag }}
+            docker pull quay.io/weka.io/kvlab:${{ steps.semver.outputs.new_tag }}
             ```
 
             ### Router
@@ -170,7 +170,7 @@ jobs:
             its own port, so several DaemonSets on different ports stay one pool:
 
             ```
-            helm upgrade --install my-router oci://quay.io/weka.io/helm/wekai-router \
+            helm upgrade --install my-router oci://quay.io/weka.io/helm/kvlab-router \
               --version ${{ steps.semver.outputs.new_tag }} \
               --set-string 'router.backends[0].pods.app=vllm' \
               --set-string 'router.backends[0].port=http'
@@ -184,14 +184,14 @@ jobs:
             ```
 
             Per-model routes, a hosted fallback and credentials are in
-            [docs/router.md](https://github.com/weka/wekai/blob/main/docs/router.md).
+            [docs/router.md](https://github.com/weka/kvlab/blob/main/docs/router.md).
 
             ```
-            docker pull quay.io/weka.io/wekai-router:${{ steps.semver.outputs.new_tag }}
+            docker pull quay.io/weka.io/kvlab-router:${{ steps.semver.outputs.new_tag }}
             ```
 
-            CLI (binary is named `wekai`):
+            CLI (binary is named `kvlab`):
 
             ```
-            go install github.com/weka/wekai@${{ steps.semver.outputs.new_tag }}
+            go install github.com/weka/kvlab@${{ steps.semver.outputs.new_tag }}
             ```

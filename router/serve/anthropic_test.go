@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/mockvllm"
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // counters reads the router's own exposition from the serving listener, which a

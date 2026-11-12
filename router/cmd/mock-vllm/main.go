@@ -1,7 +1,7 @@
 // Command mock-vllm is a standalone, GPU-less stand-in for a vLLM OpenAI
 // server. It models prefix-cache behavior (chained block hashing, LRU
 // eviction of unpinned blocks, and in-flight-request pinning, via
-// github.com/weka/wekai/kvcache — the same engine the router's
+// github.com/weka/kvlab/kvcache — the same engine the router's
 // prefix-cache-aware policy uses to predict residency), per-instance
 // concurrency admission (HTTP 429 past --max-concurrency), and a token-rate
 // latency model, so router routing/cache policies can be developed and
@@ -57,7 +57,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/weka/wekai/router/internal/mockvllm"
+	"github.com/weka/kvlab/router/internal/mockvllm"
 )
 
 func main() {

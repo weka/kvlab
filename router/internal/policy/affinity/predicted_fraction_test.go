@@ -7,8 +7,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/weka/wekai/kvcache"
-	"github.com/weka/wekai/router/internal/metrics"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/metrics"
 )
 
 // router_cache_predicted_fraction exists to be read against

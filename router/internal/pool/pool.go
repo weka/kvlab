@@ -5,7 +5,7 @@
 //
 // This is the unit the router was missing. `wllm-router` had exactly one of
 // these, implicit in its main() wiring, which is why it could front a fleet but
-// not a fleet PER MODEL. `wekai router serve` had the opposite shape: many
+// not a fleet PER MODEL. `kvlab router serve` had the opposite shape: many
 // routes, but each pointing at a single URL with no health, no affinity and no
 // failover. A pool is what lets one router do both — a route names a pool, and
 // inside it the endpoints are interchangeable in exactly the way the client's
@@ -23,15 +23,15 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/weka/wekai/router/internal/circuit"
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/health"
-	"github.com/weka/wekai/router/internal/metrics"
-	"github.com/weka/wekai/router/internal/pd"
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/policy/affinity"
-	"github.com/weka/wekai/router/internal/prefill"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/circuit"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/health"
+	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/pd"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/policy/affinity"
+	"github.com/weka/kvlab/router/internal/prefill"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // Backend is one statically configured endpoint.

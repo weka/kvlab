@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // newTestRouter starts a router with one catch-all route at endpoints and

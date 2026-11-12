@@ -1,10 +1,10 @@
 # Benchmark modes and options
 
-Real-time replay (`wekai benchmark auto --router-replay-file ...`) is the primary
-way to benchmark with wekai; see the [README](../README.md#real-time-replay) and
+Real-time replay (`kvlab benchmark auto --router-replay-file ...`) is the primary
+way to benchmark with kvlab; see the [README](../README.md#real-time-replay) and
 [replay.md](replay.md). This page lists the ways to vary that run, and the
 alternative modes. Defaults below are those of the binary; run
-`wekai benchmark auto --help` for the authoritative text.
+`kvlab benchmark auto --help` for the authoritative text.
 
 Contents: [1. Varying a real-time replay](#1-varying-a-real-time-replay) |
 [2. Fixed-pool replay](#2-fixed-pool-replay) |
@@ -123,7 +123,7 @@ think time and no TTFT admission. It asks "how does the fleet behave at
 concurrency N" rather than "what is the most sessions this fleet can carry".
 
 ```
-wekai benchmark auto \
+kvlab benchmark auto \
   --router-replay-file replay.jsonl \
   --models http://YOUR-LLM-HOST:8000 \
   --replay-realtime=false \
@@ -173,7 +173,7 @@ series with a unique GUID so prefixes do not collide. The run auto-scales:
 series grow while the cache hit rate holds.
 
 ```
-wekai benchmark auto --models http://YOUR-LLM-HOST:8000 --timeout 30m \
+kvlab benchmark auto --models http://YOUR-LLM-HOST:8000 --timeout 30m \
   --save-request-data ./results
 ```
 
@@ -204,12 +204,12 @@ no `--series`/`--admit-every`) start and max series default to N. Defaults
 
 ## 4. Throughput command
 
-`wekai benchmark throughput` measures three phases on the same prompts: cold
+`kvlab benchmark throughput` measures three phases on the same prompts: cold
 prefill, warm prefill and decode. It answers "what are this endpoint's raw
 prefill and decode rates at concurrency C".
 
 ```
-wekai benchmark throughput --models http://YOUR-LLM-HOST:8000 \
+kvlab benchmark throughput --models http://YOUR-LLM-HOST:8000 \
   --starting-concurrency 16 --decode-tokens 1000
 ```
 
@@ -229,7 +229,7 @@ wekai benchmark throughput --models http://YOUR-LLM-HOST:8000 \
 
 ## 5. Eval commands
 
-### `wekai eval coherency`
+### `kvlab eval coherency`
 
 Verifies that an inference server's prefix/KV cache returns correct bytes, not
 just fast ones. Each series gets a large garbage-padded system prompt (213,000
@@ -238,7 +238,7 @@ the model's only job is to echo its own comma-joined UUID list. Any deviation is
 evidence of cache corruption, not model weakness.
 
 ```
-wekai eval coherency \
+kvlab eval coherency \
   --model dynamic/http://YOUR-LLM-HOST:8000,type=openai_vllm \
   --series 256 --shared-prefix-per-series 4 --abort-fraction 0.1
 ```
@@ -274,7 +274,7 @@ vLLM's dev-mode `reset_prefix_cache` every N completed requests; needs
 budget for reasoning models), `--full-missing-responses` (untruncated failure
 dumps). Alias: `cache-coherency-garbage-clean`.
 
-### `wekai eval simple-tool`
+### `kvlab eval simple-tool`
 
 Evaluates tool-calling: the model must drive an increment tool through a chain of
 calls. `--model` (required, any model spec) and `--target` (default 10, number of
@@ -294,7 +294,7 @@ tool calls in the chain).
 
 ## 7. Helm values
 
-Run-shape values in `chart/wekai/values.yaml`, grouped by what they select. Values
+Run-shape values in `chart/kvlab/values.yaml`, grouped by what they select. Values
 left empty are not passed, so the binary's defaults apply.
 
 | Group | Values |

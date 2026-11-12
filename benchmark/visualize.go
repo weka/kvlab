@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // aliasParamRe matches an "alias=<value>" parameter embedded in a raw model
@@ -571,7 +571,7 @@ func readJSONLFile(path string) ([]requestDataRecord, []vllmMetricsSample, error
 // Unknown record types and malformed lines are skipped — a new record type
 // must never corrupt request parsing (unmarshalling a sample into
 // requestDataRecord would otherwise "succeed" as an all-zero phantom
-// request), which is also what lets a file written by a NEWER wekai stay
+// request), which is also what lets a file written by a NEWER kvlab stay
 // readable by an older one.
 //
 // A series carries samples from at most one of the two metrics samplers
@@ -1993,7 +1993,7 @@ function renderSummary(perSeries) {
 }
 
 // --- Recorded run parameters ---
-// Runs written by a wekai that records run_params carry their own workload
+// Runs written by a kvlab that records run_params carry their own workload
 // shape (concurrency, hot pool, series, timeout, source). Reports built from
 // older data simply have none, and everything below degrades to the previous
 // behaviour rather than inventing values.
@@ -3857,7 +3857,7 @@ function scopeToken() {
 // timestamp. extraLines is appended last, for an export-specific caveat.
 function provenanceHeader(kind, extraLines) {
   const lines = [];
-  lines.push("# wekai benchmark report -- " + kind + " export");
+  lines.push("# kvlab benchmark report -- " + kind + " export");
   lines.push("# generated " + new Date().toISOString());
   const visible = visibleIndices();
   const hidden = DATA.map((_, i) => i).filter(i => hiddenSeries.has(i));
@@ -4044,7 +4044,7 @@ function triggerDownload(filename, lines, mime) {
 }
 
 function downloadRequestsCsv() {
-  const filename = "wekai-requests-" + visibleIndices().length + "arms-" + scopeToken() + ".csv";
+  const filename = "kvlab-requests-" + visibleIndices().length + "arms-" + scopeToken() + ".csv";
   const notes = [
     "NOTE: excludes only the diagnostic text fields (prompt/question/response/raw-tail, error-only",
     "in the raw .jsonl) and error_message -- read a failure from the run's .jsonl on the results",
@@ -4055,7 +4055,7 @@ function downloadRequestsCsv() {
   triggerDownload(filename, provenanceHeader("per-request rows", notes).concat(buildRequestsRows()));
 }
 function downloadSummaryCsv() {
-  const filename = "wekai-summary-" + visibleIndices().length + "arms-" + scopeToken() + ".csv";
+  const filename = "kvlab-summary-" + visibleIndices().length + "arms-" + scopeToken() + ".csv";
   triggerDownload(filename, provenanceHeader("summary panel", []).concat(buildSummaryRows()));
 }
 
@@ -4527,7 +4527,7 @@ function currentPubResolutionMs() {
 function downloadPublicReport() {
   const resolutionMs = currentPubResolutionMs();
   const html = buildPublicReportHtml(resolutionMs);
-  const filename = "wekai-public-" + DATA.length + "arms-" + pubResolutionLabel(resolutionMs) + ".html";
+  const filename = "kvlab-public-" + DATA.length + "arms-" + pubResolutionLabel(resolutionMs) + ".html";
   triggerDownload(filename, [html], "text/html;charset=utf-8");
 }
 document.getElementById("downloadPublicBtn").addEventListener("click", downloadPublicReport);
@@ -4567,7 +4567,7 @@ document.getElementById("downloadPublicBtn").addEventListener("click", downloadP
 });
 
 // --- Timeline view (opt-in: generated with --timeline) ---
-// The renderer (WekaiTimeline) is the same module the standalone and live
+// The renderer (KVLabTimeline) is the same module the standalone and live
 // pages use. It shares THIS page's zoom window: viewTMin/viewTMax are elapsed
 // ms from each arm's own start, which is exactly the timeline's time basis, so
 // zooming in either view is reflected in the other and in the Summary panel.
@@ -5052,7 +5052,7 @@ const V3 = (() => {
 // View switch: Metrics (the canvas above), Timeline (only with --timeline
 // data), 3D (always: it is built from the same records as Metrics).
 {
-  const hasTl = HAS_TIMELINE && typeof WekaiTimeline !== "undefined";
+  const hasTl = HAS_TIMELINE && typeof KVLabTimeline !== "undefined";
   const sw = document.getElementById("viewSwitch");
   const host = document.getElementById("tlHost");
   const btnM = document.getElementById("viewMetrics");
@@ -5076,7 +5076,7 @@ const V3 = (() => {
     V3.show(m === "3d");
     if (m === "timeline") {
       if (!tlView) {
-        tlView = WekaiTimeline.createSplit(host, {
+        tlView = KVLabTimeline.createSplit(host, {
           kinds: TIMELINE_KINDS,
           onZoom: (a, b) => {
             if (a === null) { resetZoomView(); return; }

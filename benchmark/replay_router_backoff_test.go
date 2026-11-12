@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // A router enforcing a per-backend concurrency cap sheds with 429 and expects

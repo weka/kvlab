@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/clock"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // The imbalance signal has to distinguish fleets that are RATIO-IDENTICAL.

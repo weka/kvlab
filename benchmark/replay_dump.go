@@ -118,7 +118,7 @@ func (d *requestDumper) ensureDir() string {
 	if d.dir != "" || d.dirErr != nil {
 		return d.dir
 	}
-	dir, err := os.MkdirTemp("", "wekai-garbage-")
+	dir, err := os.MkdirTemp("", "kvlab-garbage-")
 	if err != nil {
 		d.dirErr = err
 		fmt.Fprintf(os.Stderr, "[dump] cannot create a capture directory: %v (capture disabled)\n", err)

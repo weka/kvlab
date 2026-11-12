@@ -32,7 +32,7 @@ spec:
     matchLabels: {app: mock-vllm}
   template:
     metadata:
-      labels: {app: mock-vllm, wekai.io/pool: perf}
+      labels: {app: mock-vllm, kvlab.io/pool: perf}
     spec:
       terminationGracePeriodSeconds: 1
       containers:

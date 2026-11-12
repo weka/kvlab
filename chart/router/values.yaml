@@ -1,11 +1,11 @@
-# Default values for wekai-router.
+# Default values for kvlab-router.
 #
-# Deploys `wekai router serve` from the REPLAY-LESS image. The benchmark image
+# Deploys `kvlab router serve` from the REPLAY-LESS image. The benchmark image
 # carries a multi-GB embedded replay artifact that a router never reads; this
 # chart deliberately does not use it. Both images are published from the same
 # commit under the same semver on every release.
 
-imageRepository: quay.io/weka.io/wekai-router
+imageRepository: quay.io/weka.io/kvlab-router
 imageTag: ""  # defaults to .Chart.AppVersion
 imagePullSecrets: []
 nameOverride: ""
@@ -18,7 +18,7 @@ nameOverride: ""
 # throughput bottleneck, knowing that is the trade.
 replicaCount: 1
 
-# Router CLI flags (see `wekai router serve --help`).
+# Router CLI flags (see `kvlab router serve --help`).
 router:
   # Grace period after SIGTERM: readiness flips to 503 so k8s stops routing new
   # traffic, in-flight requests are allowed to finish, then force shutdown.
@@ -261,7 +261,7 @@ router:
 
   # Optional override for capture directory. Defaults to
   # /data/router/capture/<mode> when datastore PVC is enabled; otherwise to
-  # the binary default (~/.wekai/router/capture/<mode>).
+  # the binary default (~/.kvlab/router/capture/<mode>).
   captureDir: ""
 
   # Async capture channel buffer size.
@@ -296,7 +296,7 @@ service:
 
 # Ingress: off by default. Set `domain` to expose externally.
 # `className` is optional — omit to let the cluster default IngressClass take
-# over (matches wekai/wekai-restricted behavior).
+# over (matches kvlab/kvlab-restricted behavior).
 ingress:
   enabled: false
   className: ""
@@ -311,7 +311,7 @@ ingress:
     # streams the body straight through to the router as it arrives.
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
   tls: []
-  # - secretName: wekai-router-tls
+  # - secretName: kvlab-router-tls
   #   hosts:
   #     - router.example.com
 

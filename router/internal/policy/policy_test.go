@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 func mkBackends(t *testing.T, n int) []*registry.Backend {

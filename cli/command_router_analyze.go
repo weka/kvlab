@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // RouterAnalyzeCommand scans capture files and emits per-model analytics.

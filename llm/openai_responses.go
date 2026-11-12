@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/weka/go-weka-observability/instrumentation"
-	"github.com/weka/wekai/tools"
+	"github.com/weka/kvlab/tools"
 )
 
 // ResponsesMessage represents a message in the Responses API format

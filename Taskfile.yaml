@@ -1,23 +1,23 @@
 version: "3"
 
 vars:
-  IMAGE: wekai
+  IMAGE: kvlab
   TAG: '{{.TAG | default "dev"}}'
-  REPLAY_IMAGE: '{{.REPLAY_IMAGE | default "quay.io/weka.io/wekai:replay-40d-oct14-337a03810637"}}'
-  REGISTRY: '{{.REGISTRY | default "quay.io/weka.io/wekai"}}'
-  REPLAY_REGISTRY: '{{.REPLAY_REGISTRY | default "quay.io/weka.io/wekai"}}'
+  REPLAY_IMAGE: '{{.REPLAY_IMAGE | default "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637"}}'
+  REGISTRY: '{{.REGISTRY | default "quay.io/weka.io/kvlab"}}'
+  REPLAY_REGISTRY: '{{.REPLAY_REGISTRY | default "quay.io/weka.io/kvlab"}}'
   HELM_REGISTRY: '{{.HELM_REGISTRY | default "quay.io/weka.io/helm"}}'
-  BINARY: wekai
-  ROUTER_REGISTRY: '{{.ROUTER_REGISTRY | default "quay.io/weka.io/wekai-router"}}'
+  BINARY: kvlab
+  ROUTER_REGISTRY: '{{.ROUTER_REGISTRY | default "quay.io/weka.io/kvlab-router"}}'
   # First-party Go source. vendor/ is excluded deliberately: it is generated,
   # not committed, and gofmt has no business rewriting it.
   GO_DIRS: "benchmark chart cli config kvcache llm router tools"
 
 tasks:
   build:
-    desc: "Build the wekai binary locally (module github.com/weka/wekai)"
+    desc: "Build the kvlab binary locally (module github.com/weka/kvlab)"
     cmds:
-      - go build -o wekai .
+      - go build -o kvlab .
 
   # --- Developer and CI contract. `task verify` is the single definition of
   # "this is good"; ci.yml runs it. These were a separate Makefile, which meant
@@ -75,7 +75,7 @@ tasks:
       # Kept out of `verify` on purpose: these call third-party APIs, so they
       # are neither hermetic nor deterministic. Each pool skips if its key is
       # absent. Only /models is called, never a completion.
-      - WEKAI_LIVE=1 go test ./router/serve/ -run 'RealHosted|Hosted' -count=1 -v
+      - KVLAB_LIVE=1 go test ./router/serve/ -run 'RealHosted|Hosted' -count=1 -v
 
   perf:k8s:
     desc: "Measure the router's own throughput ceiling in k3d: 8 zero-latency backends, load stepped until it plateaus"
@@ -155,7 +155,7 @@ tasks:
         --helm-password=env://QUAY_PASSWORD
 
   docker:build:
-    desc: "Build the wekai replay image locally (no push). Override TAG=... and REPLAY_IMAGE=... as needed."
+    desc: "Build the kvlab replay image locally (no push). Override TAG=... and REPLAY_IMAGE=... as needed."
     cmds:
       - >-
         docker build
@@ -164,7 +164,7 @@ tasks:
         .
 
   replay:push:
-    desc: "Push a replay JSONL as a layer image (tag replay-<hash>, or replay-<LABEL>-<hash> with LABEL=40d-oct14) into the wekai quay repo (dagger call push-replay). Override REPLAY_REGISTRY=... as needed."
+    desc: "Push a replay JSONL as a layer image (tag replay-<hash>, or replay-<LABEL>-<hash> with LABEL=40d-oct14) into the kvlab quay repo (dagger call push-replay). Override REPLAY_REGISTRY=... as needed."
     requires:
       vars: [REPLAY]
     cmds:
@@ -175,7 +175,7 @@ tasks:
         {{if .LABEL}}--label="{{.LABEL}}"{{end}}
 
   app:push:
-    desc: "Build (from this repo's Dockerfile) and publish the wekai image (dagger call publish). Override REGISTRY=... and REPLAY_IMAGE=... as needed."
+    desc: "Build (from this repo's Dockerfile) and publish the kvlab image (dagger call publish). Override REGISTRY=... and REPLAY_IMAGE=... as needed."
     cmds:
       - >-
         dagger call publish
@@ -184,7 +184,7 @@ tasks:
         --replay-image="{{.REPLAY_IMAGE}}"
 
   helm:push:
-    desc: "Publish the wekai image, then package+push chart/wekai pinned to it (dagger call push-helm). Override REGISTRY=..., HELM_REGISTRY=..., and REPLAY_IMAGE=... as needed."
+    desc: "Publish the kvlab image, then package+push chart/kvlab pinned to it (dagger call push-helm). Override REGISTRY=..., HELM_REGISTRY=..., and REPLAY_IMAGE=... as needed."
     cmds:
       - >-
         dagger call push-helm

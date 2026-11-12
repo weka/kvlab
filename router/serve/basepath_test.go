@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/serve"
+	"github.com/weka/kvlab/router/serve"
 )
 
 // A provider whose API does not live at the root can only be reached if the

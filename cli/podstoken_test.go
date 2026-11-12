@@ -23,7 +23,7 @@ func TestParsePodsToken(t *testing.T) {
 		{in: "app=vllm:8000", selector: "app=vllm", port: 8000},
 		{in: "app=vllm,tier=prod:http", selector: "app=vllm,tier=prod", portName: "http"},
 		// A label key may carry a DNS-subdomain prefix with a slash and dots.
-		{in: "wekai.io/pool=perf:http", selector: "wekai.io/pool=perf", portName: "http"},
+		{in: "kvlab.io/pool=perf:http", selector: "kvlab.io/pool=perf", portName: "http"},
 		{in: " app=vllm : http ", selector: "app=vllm", portName: "http"},
 		{in: "app=vllm:", wantErr: true},
 		{in: "app=vllm:70000", wantErr: true},

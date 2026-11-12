@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/weka/wekai/benchmark"
+	"github.com/weka/kvlab/benchmark"
 )
 
 // RouterReplayPrepareCommand transforms a directory of redacted JSONL captures
@@ -38,7 +38,7 @@ type RouterReplayPrepareCommand struct {
 	Shards  int `long:"shards" default:"256" description:"Split the capture by session into this many temp shards; peak memory is about one shard per worker"`
 	Workers int `long:"workers" description:"Shards parsed in parallel (default: number of CPUs)"`
 	Args    struct {
-		Src string `positional-arg-name:"src" description:"Directory of redacted *.jsonl files (or one .jsonl). Default: ~/.wekai/router/capture/redacted/"`
+		Src string `positional-arg-name:"src" description:"Directory of redacted *.jsonl files (or one .jsonl). Default: ~/.kvlab/router/capture/redacted/"`
 	} `positional-args:"yes"`
 }
 
@@ -188,7 +188,7 @@ func (c *RouterReplayPrepareCommand) Execute(args []string) error {
 	src := c.Args.Src
 	if src == "" {
 		home, _ := os.UserHomeDir()
-		src = filepath.Join(home, ".wekai", "router", "capture", "redacted")
+		src = filepath.Join(home, ".kvlab", "router", "capture", "redacted")
 	}
 	files, err := collectJSONLFiles(src)
 	if err != nil {

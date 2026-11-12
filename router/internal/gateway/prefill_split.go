@@ -5,10 +5,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/weka/wekai/router/internal/policy"
-	"github.com/weka/wekai/router/internal/prefill"
-	"github.com/weka/wekai/router/internal/proxy"
-	"github.com/weka/wekai/router/internal/registry"
+	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/prefill"
+	"github.com/weka/kvlab/router/internal/proxy"
+	"github.com/weka/kvlab/router/internal/registry"
 )
 
 // splitAndServe answers a request its backend refused as a large prefill,

@@ -11,7 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 	"github.com/weka/go-weka-observability/instrumentation"
-	"github.com/weka/wekai/llm"
+	"github.com/weka/kvlab/llm"
 )
 
 // LoadDotEnv loads a .env file from the working directory if present. Safe
@@ -25,7 +25,7 @@ func LoadDotEnv() error {
 
 // getBaseLogger builds the base zerolog-backed logr.Logger: stderr when
 // StderrLogs is set (or TmpDir is unusable), otherwise a log file under
-// TmpDir/wekai-core.log.
+// TmpDir/kvlab-core.log.
 func getBaseLogger() *logr.Logger {
 	if Config.StderrLogs || Config.TmpDir == "" {
 		l := zerolog.New(os.Stderr).
@@ -43,7 +43,7 @@ func getBaseLogger() *logr.Logger {
 		lr := zerologr.New(&l)
 		return &lr
 	}
-	logFilePath := filepath.Join(Config.TmpDir, "wekai-core.log")
+	logFilePath := filepath.Join(Config.TmpDir, "kvlab-core.log")
 	file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		l := zerolog.New(os.Stderr).Level(zerolog.InfoLevel).With().Timestamp().Logger()
@@ -56,9 +56,9 @@ func getBaseLogger() *logr.Logger {
 	return &lr
 }
 
-// Init is the unified initialization entry point for wekai-core commands:
+// Init is the unified initialization entry point for kvlab-core commands:
 // loads .env, loads API keys from the environment (unless the embedding
-// application already populated Config.APIKeys — see the wekai-side
+// application already populated Config.APIKeys — see the kvlab-side
 // migration notes), propagates LogHTTPRequests to the LOG_HTTP_REQUESTS env
 // var the llm package reads directly, and sets up logging/OTel.
 //
@@ -86,7 +86,7 @@ func Init(ctx context.Context, mode string) (context.Context, func(context.Conte
 
 	baseLogger := getBaseLogger()
 	ctx, logger := instrumentation.GetLoggerForContext(ctx, baseLogger, "")
-	shutdown, err := instrumentation.SetupOTelSDK(ctx, "wekai-core", "v0.0.1", logger, "mode", mode)
+	shutdown, err := instrumentation.SetupOTelSDK(ctx, "kvlab-core", "v0.0.1", logger, "mode", mode)
 	if err != nil {
 		shutdown = func(context.Context) error { return nil }
 	}

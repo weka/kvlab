@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/weka/wekai/router/internal/circuit"
-	"github.com/weka/wekai/router/internal/clock"
+	"github.com/weka/kvlab/router/internal/circuit"
+	"github.com/weka/kvlab/router/internal/clock"
 )
 
 func newBreaker(clk clock.Clock, tweak func(*circuit.Config)) *circuit.Breaker {

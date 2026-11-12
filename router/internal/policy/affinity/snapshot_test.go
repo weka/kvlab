@@ -3,7 +3,7 @@ package affinity
 import (
 	"testing"
 
-	"github.com/weka/wekai/router/internal/viz"
+	"github.com/weka/kvlab/router/internal/viz"
 )
 
 // TestSnapshotImplementsDataSource is a compile-time-ish guard: main.go's

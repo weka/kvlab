@@ -24,7 +24,7 @@ func repoRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// hack/ -> router/ (the router subtree root inside the wekai module)
+	// hack/ -> router/ (the router subtree root inside the kvlab module)
 	return filepath.Dir(wd)
 }
 
@@ -323,12 +323,12 @@ func TestCoreDoesNotImportDialects(t *testing.T) {
 	}
 	for _, pkg := range core {
 		out, err := exec.Command("go", "list", "-deps",
-			"github.com/weka/wekai/router/internal/"+pkg).Output()
+			"github.com/weka/kvlab/router/internal/"+pkg).Output()
 		if err != nil {
 			t.Fatalf("go list -deps %s: %v", pkg, err)
 		}
 		for _, dep := range strings.Split(string(out), "\n") {
-			if strings.Contains(dep, "wekai/router/internal/dialect/") {
+			if strings.Contains(dep, "kvlab/router/internal/dialect/") {
 				t.Errorf("core package %s depends on %s — a dialect must not reach "+
 					"the routing core (API-1)", pkg, dep)
 			}
