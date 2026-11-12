@@ -1,4 +1,4 @@
-# kvlab
+# kvlab (formerly wekai)
 
 A real-time replay benchmark, model-aware LLM router, and capture toolkit for
 OpenAI (Chat Completions), OpenAI Responses API, Anthropic and Google protocols.
