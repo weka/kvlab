@@ -52,6 +52,10 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           default_bump: false # no feat/fix/breaking since last tag -> no release
           tag_prefix: v
+          # Compute only. The tag is created by the GitHub Release step, after both
+          # publishes succeed, so a failed publish leaves no tag behind and the
+          # next push to main retries the same version.
+          dry_run: true
 
       - name: No release needed
         if: steps.semver.outputs.new_tag == ''
@@ -133,6 +137,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.semver.outputs.new_tag }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: dist/*.tar.gz
           body: |
