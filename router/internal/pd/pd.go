@@ -133,3 +133,72 @@ func encode(doc map[string]json.RawMessage, orig []byte) []byte {
 	}
 	return out
 }
+
+// URLs is the configured prefill URLs, normalised and in no particular order.
+func (s *Set) URLs() []string {
+	out := make([]string, 0, len(s.prefill))
+	for u := range s.prefill {
+		out = append(out, u)
+	}
+	return out
+}
+
+// Event is a change in whether a named prefill URL is present in the pool.
+type Event struct {
+	URL  string
+	Kind EventKind
+}
+
+// EventKind says what happened to a named prefill URL.
+type EventKind string
+
+const (
+	// Missing: never seen, and the grace period for discovery to find it is over.
+	Missing EventKind = "missing"
+	// Gone: was present, now is not.
+	Gone EventKind = "gone"
+	// Back: was reported Missing or Gone and is present again.
+	Back EventKind = "back"
+)
+
+// Watch reports, over successive Check calls, which named prefill URLs are
+// absent from a pool whose backends are discovered rather than listed. Roles
+// are assigned by URL, so an absent P node is not an error: the request just
+// falls back to decode. It is only worth telling the operator about.
+type Watch struct {
+	set      *Set
+	seen     map[string]bool // present at the last check
+	reported map[string]bool // a Missing or Gone is outstanding
+}
+
+// NewWatch watches the set's URLs.
+func NewWatch(s *Set) *Watch {
+	return &Watch{set: s, seen: map[string]bool{}, reported: map[string]bool{}}
+}
+
+// Check compares the pool's backends with the named prefill URLs and returns
+// what changed since the last call. A URL not yet seen is reported Missing only
+// once graceOver is true, so discovery has time to sync first.
+func (w *Watch) Check(backends []*registry.Backend, graceOver bool) []Event {
+	present := map[string]bool{}
+	for _, b := range backends {
+		present[Normalize(b.URL)] = true
+	}
+	var out []Event
+	for u := range w.set.prefill {
+		was, have := w.seen[u], present[u]
+		switch {
+		case have && w.reported[u]:
+			w.reported[u] = false
+			out = append(out, Event{u, Back})
+		case !have && was:
+			w.reported[u] = true
+			out = append(out, Event{u, Gone})
+		case !have && !was && graceOver && !w.reported[u]:
+			w.reported[u] = true
+			out = append(out, Event{u, Missing})
+		}
+		w.seen[u] = have
+	}
+	return out
+}

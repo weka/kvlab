@@ -319,7 +319,15 @@ func (o Options) prefillConfig() *prefill.Config {
 }
 
 // pdPrefillFor is the part of the P set that belongs to one route.
+//
+// A discovery-backed route has no static endpoint list to filter by: its pods
+// arrive later, at scheme://PodIP:port, and the named URLs are matched against
+// them as they appear. It therefore gets the whole set, and a URL that never
+// appears is a warning from the pool, not a startup error.
 func (o Options) pdPrefillFor(rt Route) []string {
+	if rt.DiscoverySelector != "" {
+		return o.PDPrefillBackends
+	}
 	var out []string
 	for _, ep := range rt.Endpoints {
 		for _, p := range o.PDPrefillBackends {
@@ -414,6 +422,9 @@ func (o Options) validatePD() error {
 	for _, p := range o.PDPrefillBackends {
 		found := false
 		for _, rt := range o.Routes {
+			// A discovered pool's members are unknown until it syncs, so the
+			// URL may be one of them; the pool warns if it never is.
+			found = found || rt.DiscoverySelector != ""
 			for _, ep := range rt.Endpoints {
 				found = found || pd.Normalize(ep) == pd.Normalize(p)
 			}

@@ -29,6 +29,26 @@ func TestValidatePD(t *testing.T) {
 	}
 }
 
+// A pods: route has no static endpoint list, so the named prefill URLs cannot be
+// checked against it at startup and every one goes to the pool, which matches
+// them as pods appear. A purely static list keeps the hard error.
+func TestValidatePDWithDiscovery(t *testing.T) {
+	pdURL := []string{"http://10.10.41.83:8000"}
+	disc := []Route{{Patterns: "*", DiscoverySelector: "app=vllm"}}
+	if err := (Options{Routes: disc, PDPrefillBackends: pdURL}).validatePD(); err != nil {
+		t.Errorf("discovery route: %v", err)
+	}
+	o := Options{Routes: disc, PDPrefillBackends: pdURL}
+	if got := o.pdPrefillFor(disc[0]); len(got) != 1 || got[0] != pdURL[0] {
+		t.Errorf("pdPrefillFor(discovery route) = %v, want %v", got, pdURL)
+	}
+	static := []Route{{Patterns: "*", Endpoints: []string{"http://d1:8000"}}}
+	err := (Options{Routes: static, PDPrefillBackends: pdURL}).validatePD()
+	if err == nil || !strings.Contains(err.Error(), "not one of") {
+		t.Errorf("static list: err = %v, want the not-one-of error", err)
+	}
+}
+
 func TestPDBandOverrides(t *testing.T) {
 	routes := []Route{{Patterns: "*", Endpoints: []string{"http://p:8000", "http://d1:8000"}}}
 	pd := []string{"http://p:8000"}

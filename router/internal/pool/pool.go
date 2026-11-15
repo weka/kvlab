@@ -105,6 +105,7 @@ type Pool struct {
 	PDFlow *affinity.Policy
 
 	checker *health.Checker
+	clk     clock.Clock
 	log     *slog.Logger
 }
 
@@ -165,6 +166,7 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 		Registry: reg,
 		Flow:     flow,
 		log:      log.With("pool", cfg.Name),
+		clk:      clk,
 	}
 
 	if cfg.PrefillSplit != nil {
@@ -236,8 +238,48 @@ func (p *Pool) Run(ctx context.Context) {
 		go p.tick(ctx, sweepInterval(p.PDFlow.TailTTL()), func() { p.PDFlow.Sweep() })
 		go p.tick(ctx, gaugeInterval, p.PDFlow.PublishGauges)
 	}
+	if p.PD != nil {
+		go p.watchPD(ctx)
+	}
 	if p.Split != nil {
 		go p.Split.Run(ctx, func() []*registry.Backend { return p.Registry.Snapshot().Backends })
+	}
+}
+
+// pdWatchInterval and pdWatchGrace pace the warning about a named prefill URL
+// that is not in the pool: discovery gets the grace to find it before its
+// absence is news.
+const (
+	pdWatchInterval = 5 * time.Second
+	pdWatchGrace    = 30 * time.Second
+)
+
+// watchPD warns, without failing anything, when a named prefill backend is not
+// in the pool, or leaves it. With discovery the pool's membership is not known
+// at startup, so a wrong or late URL cannot be an exit-time error; until it
+// appears the pool simply has no prefill node and requests fall back to decode.
+func (p *Pool) watchPD(ctx context.Context) {
+	w := pd.NewWatch(p.PD)
+	start := p.clk.Now()
+	t := time.NewTicker(pdWatchInterval)
+	defer t.Stop()
+	for {
+		for _, ev := range w.Check(p.Registry.Snapshot().Backends, p.clk.Now().Sub(start) >= pdWatchGrace) {
+			switch ev.Kind {
+			case pd.Back:
+				p.log.Info("prefill backend is back", "backend", ev.URL)
+			case pd.Gone:
+				p.log.Warn("prefill backend left the pool; requests fall back to decode until it returns", "backend", ev.URL)
+			default:
+				p.log.Warn("--pd-prefill-backends names a backend that has not appeared in the pool; "+
+					"requests fall back to decode until it does", "backend", ev.URL)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
 	}
 }
 

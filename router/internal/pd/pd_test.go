@@ -78,3 +78,39 @@ func TestSetPartitionsByURLIgnoringTrailingSlash(t *testing.T) {
 		t.Errorf("D = %v", got)
 	}
 }
+
+func TestWatchReportsMissingGoneAndBack(t *testing.T) {
+	w := NewWatch(New("t", []string{"http://p1:8000/"}))
+	p1 := &registry.Backend{URL: "http://p1:8000"}
+	d1 := &registry.Backend{URL: "http://d1:8000"}
+
+	kinds := func(ev []Event) (out []EventKind) {
+		for _, e := range ev {
+			out = append(out, e.Kind)
+		}
+		return out
+	}
+	if ev := w.Check([]*registry.Backend{d1}, false); len(ev) != 0 {
+		t.Errorf("inside the grace period: %v", ev)
+	}
+	if k := kinds(w.Check([]*registry.Backend{d1}, true)); len(k) != 1 || k[0] != Missing {
+		t.Errorf("after grace, never seen: %v", k)
+	}
+	if ev := w.Check([]*registry.Backend{d1}, true); len(ev) != 0 {
+		t.Errorf("Missing reported twice: %v", ev)
+	}
+	if k := kinds(w.Check([]*registry.Backend{d1, p1}, true)); len(k) != 1 || k[0] != Back {
+		t.Errorf("appeared: %v", k)
+	}
+	if k := kinds(w.Check([]*registry.Backend{d1}, true)); len(k) != 1 || k[0] != Gone {
+		t.Errorf("left: %v", k)
+	}
+	if k := kinds(w.Check([]*registry.Backend{p1, d1}, true)); len(k) != 1 || k[0] != Back {
+		t.Errorf("returned: %v", k)
+	}
+	// Present from the first check: nothing to say, even inside the grace period.
+	w = NewWatch(New("t", []string{"http://p1:8000"}))
+	if ev := w.Check([]*registry.Backend{p1}, true); len(ev) != 0 {
+		t.Errorf("present from the start: %v", ev)
+	}
+}

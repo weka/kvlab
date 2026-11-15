@@ -212,8 +212,17 @@ the bypass. It needs a KV tier the nodes share; without one the prefill is
 wasted work.
 
 **Prefill/decode disaggregation (vanilla vLLM NIXL).** `--pd-prefill-backends=<urls>` (ladder only; needs `--no-cost-routing`)
-names a static set of prefill (P) nodes, a subset of `--backends`; the rest are
-decode (D) nodes. It replaces vLLM's round-robin toy proxy and is exclusive with
+names the prefill (P) nodes by URL; every other backend is a decode (D) node.
+With a static `--backends` list the URLs must be members of it, or the router
+exits at startup. With `--backends=pods:<selector>` the members are not known at
+startup, so there is no such check: roles are assigned by URL as pods appear
+(discovery builds `http://<PodIP>:<port>`, so name the P pods that way), and a
+URL that has not appeared 30 s after start, or later leaves the pool, is logged
+as a warning (and logged again when it returns), never an exit. Until a P node is
+live, requests fall back to a D node alone; with no live D node a request is
+answered `503` at once ("no healthy decode backend is available (only prefill
+nodes are live)" when only P nodes are up). Selecting the P pool by its own label
+selector is not supported. It replaces vLLM's round-robin toy proxy and is exclusive with
 `--prefill-split`. Every `/v1/chat/completions` and `/v1/completions` request goes
 to a P node first, as a copy with `max_tokens=1`, `stream=false`, no
 `stream_options` and `kv_transfer_params={"do_remote_decode": true, ...}`. The

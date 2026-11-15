@@ -245,8 +245,13 @@ func (s *Server) inferenceHandler(route dialect.Route, affine bool) http.Handler
 			// Capacity is no longer judged here — the flow's signals do that and
 			// answer 429 themselves — so an empty candidate set now means one
 			// thing only: nothing is healthy.
-			s.dialect.WriteError(w, http.StatusServiceUnavailable,
-				"no_healthy_backends", "no healthy backend is available")
+			msg := "no healthy backend is available"
+			if target.PD != nil && len(s.healthy(target)) > 0 {
+				// Only prefill nodes are live: they never serve a client
+				// request alone, so say what is actually missing.
+				msg = "no healthy decode backend is available (only prefill nodes are live)"
+			}
+			s.dialect.WriteError(w, http.StatusServiceUnavailable, "no_healthy_backends", msg)
 			return
 		}
 
