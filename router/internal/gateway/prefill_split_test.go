@@ -376,7 +376,11 @@ func TestOtherServiceUnavailablePassesThroughIntact(t *testing.T) {
 	}
 }
 
-func affinityCfg() affinity.Config { return affinity.Config{} }
+// splitCostRouting makes affinityCfg() build cost-routing flows, so the
+// prefill-split scenarios can be re-run under the default routing mode.
+var splitCostRouting bool
+
+func affinityCfg() affinity.Config { return affinity.Config{CostRouting: splitCostRouting} }
 
 // A rejection is a routing signal. However many a backend sends, it stays
 // healthy: no breaker opens and no failure is recorded against it.

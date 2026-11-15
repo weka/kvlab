@@ -106,7 +106,7 @@ signals below, so these still apply under cost routing:
 instead, and is **required** by the settings only the ladder honours:
 `--soft-node-concurrency`, `--soft-ttft-split`, `--relative-ttft-split`,
 `--relative-decode-split`, `--transient-fallback-threshold`, a non-default
-`--cache-split-guard`, `--prefill-split` and the `--pd-prefill-soft-node-concurrency`
+`--cache-split-guard` and the `--pd-prefill-soft-node-concurrency`
 / `--pd-decode-soft-node-concurrency` bands. `--pd-prefill-backends` works under
 either mode. Setting one without `--no-cost-routing` stops the router at
 startup, naming the flag. `--cost-routing` is accepted and does nothing.
@@ -178,7 +178,7 @@ binds. `router_cache_stretch_inflight` is the check — piled against the hard
 limit means soft is set too low, and the router is paying the queueing cost
 continuously rather than as relief.
 
-**Heavy prefills move to their own nodes.** With `--prefill-split` (ladder only; needs `--no-cost-routing`), a backend
+**Heavy prefills move to their own nodes.** With `--prefill-split` (works under cost routing and the ladder; the prefill node and the decode resend are chosen by the active mode), a backend
 that refuses a request because recomputing its prompt would stall the node's
 running decodes (HTTP `503` carrying `X-Weka-Prefill-Reject: <tokens>`, error type
 `large_prefill_rejected`; it is a routing signal and never counts toward the

@@ -42,7 +42,7 @@ func (c pdCall) isPrefillLeg() bool {
 
 // pdFlow is the flow config the fleets' P and D flows are built from. Tests
 // that run the same scenarios under cost routing set it with usePDCostRouting.
-var pdFlow = func() affinity.Config { return affinityCfg() }
+var pdFlow = func() affinity.Config { return affinity.Config{} }
 
 func usePDCostRouting(t *testing.T, nodeConcurrency int64) {
 	t.Helper()
