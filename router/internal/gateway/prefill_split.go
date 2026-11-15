@@ -57,6 +57,7 @@ func (s *Server) splitAndServe(
 	job, err := m.Reserve(s.healthy(target), rejected.PrefillTokens, s.prefillPicker(target, m, rr, r))
 	if err != nil {
 		if res, isGone := gone(); isGone {
+			m.FallbackSkipped()
 			return res
 		}
 		m.FallbackNoNode()
@@ -68,7 +69,7 @@ func (s *Server) splitAndServe(
 
 	if err := m.WaitReady(r.Context(), job); err != nil {
 		// The caller left while the job waited for a slot: it never ran.
-		f := jobFailure{reason: "waiting", cancelled: true, err: err}
+		f := jobFailure{reason: "abandoned", cancelled: true, err: err}
 		m.CountJobCancelled(f.reason)
 		s.jobFails.log(r, s.cfg.Clock.Now(), f, job.Backend, rejected.PrefillTokens, s.cfg.Clock.Now().Sub(reservedAt), 0)
 		return proxy.Result{Err: err}
@@ -89,6 +90,9 @@ func (s *Server) splitAndServe(
 		s.jobFails.log(r, now, f, job.Backend, rejected.PrefillTokens, startedAt.Sub(reservedAt), now.Sub(startedAt))
 	}
 	if res, isGone := gone(); isGone {
+		if !ok {
+			m.FallbackSkipped()
+		}
 		return res
 	}
 	if !ok {
@@ -194,7 +198,7 @@ func (s *Server) runPrefillJob(r *http.Request, m *prefill.Manager, target Targe
 		select {
 		case <-s.cfg.Clock.After(wait):
 		case <-r.Context().Done():
-			return jobFailure{reason: "running", cancelled: true, status: res.Status, err: r.Context().Err()}
+			return jobFailure{reason: "client_cancelled", cancelled: true, status: res.Status, err: r.Context().Err()}
 		}
 	}
 }
@@ -218,7 +222,7 @@ func classifyJob(r *http.Request, res proxy.Result) jobFailure {
 	var ne net.Error
 	switch {
 	case r.Context().Err() != nil:
-		f.reason, f.cancelled = "running", true
+		f.reason, f.cancelled = "client_cancelled", true
 	case res.PrefillRejected:
 		f.reason = "rejected"
 	case res.Err != nil && (errors.Is(res.Err, context.DeadlineExceeded) || errors.As(res.Err, &ne) && ne.Timeout()):

@@ -205,8 +205,9 @@ func (f *jobFailFleet) cancelled(reason string) float64 {
 }
 
 // assertSettled checks that every job's slot, budget share and pending tokens
-// came back, and that nothing was counted as failed.
-func (f *jobFailFleet) assertSettled(t *testing.T) {
+// came back, that nothing was counted as failed, and that skipped fallbacks
+// number skipped.
+func (f *jobFailFleet) assertSettled(t *testing.T, skipped uint64) {
 	t.Helper()
 	waitFor(t, func() bool {
 		for _, n := range f.mgr.State().Nodes {
@@ -221,8 +222,9 @@ func (f *jobFailFleet) assertSettled(t *testing.T) {
 			t.Errorf("a cancellation counted as failed{reason=%q}", r)
 		}
 	}
-	if st := f.mgr.State(); st.JobsFailed != 0 || st.BypassFallbacks != 0 {
-		t.Errorf("jobs_failed %d, bypass fallbacks %d; want 0 for a caller that left", st.JobsFailed, st.BypassFallbacks)
+	if st := f.mgr.State(); st.JobsFailed != 0 || st.BypassFallbacks != 0 || st.FallbacksSkipped != skipped {
+		t.Errorf("jobs_failed %d, bypass fallbacks %d, fallbacks skipped %d; want 0, 0, %d for a caller that left",
+			st.JobsFailed, st.BypassFallbacks, st.FallbacksSkipped, skipped)
 	}
 }
 
@@ -235,14 +237,33 @@ func TestPrefillJobCancelledWhileRunningSendsNothingMore(t *testing.T) {
 	f.be.jobDelay.Store(int64(2 * time.Second))
 	f.post(t, 100*time.Millisecond)
 
-	waitFor(t, func() bool { return f.cancelled("running") == 1 })
-	f.assertSettled(t)
+	waitFor(t, func() bool { return f.cancelled("client_cancelled") == 1 })
+	f.assertSettled(t, 1)
 	time.Sleep(50 * time.Millisecond) // a resend would have arrived by now
 	if n := f.be.resends.Load(); n != 0 {
 		t.Errorf("%d requests sent with the bypass after the caller left", n)
 	}
-	if l := lb.lines(`msg="prefill job cancelled"`); len(l) != 1 || !strings.Contains(l[0], "reason=running") {
+	if l := lb.lines(`msg="prefill job cancelled"`); len(l) != 1 || !strings.Contains(l[0], "reason=client_cancelled") {
 		t.Errorf("cancel log lines = %q", l)
+	}
+}
+
+// A caller that leaves while its job waits out a 429 from its node cancels the
+// job in its backoff: counted as cancelled, nothing more sent, everything
+// returned once.
+func TestPrefillJobCancelledDuringItsRetryBackoffSendsNothingMore(t *testing.T) {
+	f := newJobFailFleet(t, 0)
+	f.be.jobStatus.Store(http.StatusTooManyRequests) // the backoff runs on the fleet's fake clock
+	f.post(t, 100*time.Millisecond)
+
+	waitFor(t, func() bool { return f.cancelled("client_cancelled") == 1 })
+	f.assertSettled(t, 1)
+	if n := f.mgr.State().JobRetries; n == 0 {
+		t.Error("the job was never in its 429 backoff")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := f.be.resends.Load(); n != 0 {
+		t.Errorf("%d requests sent with the bypass after the caller left", n)
 	}
 }
 
@@ -258,15 +279,15 @@ func TestPrefillJobCancelledWhileWaitingSendsNothing(t *testing.T) {
 	f.post(t, 100*time.Millisecond) // queues behind it, then leaves
 	<-first
 
-	waitFor(t, func() bool { return f.cancelled("waiting") == 1 })
+	waitFor(t, func() bool { return f.cancelled("abandoned") == 1 })
 	if n := testutil.ToFloat64(metrics.PrefillJobs.WithLabelValues(f.pool, "ok", "")); n != 1 {
 		t.Errorf("ok jobs = %v, want the first", n)
 	}
-	f.assertSettled(t)
+	f.assertSettled(t, 0)
 	if n := f.be.resends.Load(); n != 1 {
 		t.Errorf("%d bypassed resends, want only the first request's", n)
 	}
-	if l := lb.lines("reason=waiting"); len(l) != 1 {
+	if l := lb.lines("reason=abandoned"); len(l) != 1 {
 		t.Errorf("waiting-cancel log lines = %q", l)
 	}
 }

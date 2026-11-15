@@ -490,7 +490,7 @@ var (
 
 	PrefillJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_jobs_total",
-		Help: "Prefill jobs, by outcome and reason: ok (no reason); failed, by timeout, status_4xx, status_5xx, transport, rejected or other; cancelled by the caller, while waiting for a slot or while running.",
+		Help: "Prefill jobs, by outcome and reason: ok (no reason); failed, by timeout, status_4xx, status_5xx, transport, rejected or other; cancelled by the caller, abandoned (while waiting for a slot) or client_cancelled (while running or retrying).",
 	}, []string{"pool", "outcome", "reason"})
 
 	PrefillConversions = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -501,6 +501,11 @@ var (
 	PrefillReleases = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_releases_total",
 		Help: "Prefill nodes returned to decode when their last prefill job finished.",
+	}, []string{"pool"})
+
+	PrefillFallbacksSkipped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "router_prefill_fallbacks_skipped_total",
+		Help: "Rejected requests whose bypass fallback was not sent because the caller had already left.",
 	}, []string{"pool"})
 
 	PrefillBypassFallbacks = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -625,7 +630,7 @@ func All() []prometheus.Collector {
 		CachePoolSize, CacheTreeRuns, CacheTailSet, CacheBlocksExpired, VLLMMetricsEndpoints,
 		RequestsShed, SaturationRejects, BackendCapExceeded, observedShadow,
 		PrefillRejections, PrefillJobs, PrefillConversions, PrefillReleases,
-		PrefillBypassFallbacks, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
+		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds,
 	}
 }
@@ -871,6 +876,7 @@ type PrefillMetrics struct {
 	Queued                    prometheus.Gauge
 	FallbackNoNode            prometheus.Counter
 	FallbackJobFail           prometheus.Counter
+	FallbackSkipped           prometheus.Counter
 }
 
 // ForPrefill resolves the prefill-split collectors for a pool, creating every
@@ -901,6 +907,7 @@ func ForPrefill(pool string) *PrefillMetrics {
 		Queued:          PrefillQueuedJobs.WithLabelValues(pool),
 		FallbackNoNode:  PrefillBypassFallbacks.WithLabelValues(pool, "no_node"),
 		FallbackJobFail: PrefillBypassFallbacks.WithLabelValues(pool, "job_failed"),
+		FallbackSkipped: PrefillFallbacksSkipped.WithLabelValues(pool),
 	}
 }
 
@@ -918,14 +925,15 @@ var PrefillJobFailureReasons = []string{
 }
 
 // PrefillJobCancelReasons is the closed enum of the reason label on a job its
-// caller cancelled: while it waited in the router for a slot, or while it ran.
-var PrefillJobCancelReasons = []string{"waiting", "running"}
+// caller cancelled: abandoned while it waited in the router for a slot,
+// client_cancelled while it ran or waited out a 429.
+var PrefillJobCancelReasons = []string{"abandoned", "client_cancelled"}
 
 // JobCancelled counts a prefill job its caller cancelled; a reason outside the
-// enum counts as running.
+// enum counts as client_cancelled.
 func (m *PrefillMetrics) JobCancelled(reason string) {
 	if !slices.Contains(PrefillJobCancelReasons, reason) {
-		reason = "running"
+		reason = "client_cancelled"
 	}
 	m.jobsCancelled.WithLabelValues(reason).Inc()
 }

@@ -149,7 +149,7 @@ type Manager struct {
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
-	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves, jobsCancelled atomic.Uint64
+	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves, jobsCancelled, fallbackSkipped atomic.Uint64
 }
 
 // New builds a manager for one pool.
@@ -729,6 +729,13 @@ func (m *Manager) FallbackNoNode() {
 	m.m.FallbackNoNode.Inc()
 }
 
+// FallbackSkipped records a request whose bypass fallback was not sent because
+// its caller had already left.
+func (m *Manager) FallbackSkipped() {
+	m.fallbackSkipped.Add(1)
+	m.m.FallbackSkipped.Inc()
+}
+
 // FallbackJobFailed records a request sent for decode with the bypass because
 // its prefill job did not succeed.
 func (m *Manager) FallbackJobFailed() {
@@ -759,12 +766,15 @@ type State struct {
 	JobsFailed       uint64      `json:"jobs_failed"`
 	// JobsCancelled is jobs whose caller left; they are in neither Jobs nor
 	// JobsFailed.
-	JobsCancelled   uint64 `json:"jobs_cancelled"`
-	JobRetries      uint64 `json:"job_retries"`
-	JobMoves        uint64 `json:"job_moves"`
-	Conversions     uint64 `json:"conversions"`
-	Releases        uint64 `json:"releases"`
-	BypassFallbacks uint64 `json:"bypass_fallbacks"`
+	JobsCancelled uint64 `json:"jobs_cancelled"`
+	// FallbacksSkipped is rejected requests whose fallback was not sent
+	// because the caller had left; they are not in BypassFallbacks.
+	FallbacksSkipped uint64 `json:"fallbacks_skipped"`
+	JobRetries       uint64 `json:"job_retries"`
+	JobMoves         uint64 `json:"job_moves"`
+	Conversions      uint64 `json:"conversions"`
+	Releases         uint64 `json:"releases"`
+	BypassFallbacks  uint64 `json:"bypass_fallbacks"`
 }
 
 // State snapshots the modes, queues and counters, nodes sorted by URL.
@@ -780,6 +790,7 @@ func (m *Manager) State() State {
 	st.Jobs = m.jobsOK.Load() + m.jobsFailed.Load()
 	st.JobsFailed = m.jobsFailed.Load()
 	st.JobsCancelled = m.jobsCancelled.Load()
+	st.FallbacksSkipped = m.fallbackSkipped.Load()
 	st.JobRetries = m.jobRetries.Load()
 	st.JobMoves = m.jobMoves.Load()
 	st.Conversions = m.conversions.Load()
