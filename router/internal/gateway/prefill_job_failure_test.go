@@ -33,6 +33,9 @@ import (
 type jobBackend struct {
 	jobDelay  atomic.Int64 // nanoseconds
 	jobStatus atomic.Int32
+	// resends counts bypassed requests that are not jobs: the decode resend,
+	// or the fallback to the refusing backend.
+	resends atomic.Int64
 }
 
 func (j *jobBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +53,9 @@ func (j *jobBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(prefill.RejectHeader, "9000")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
+	}
+	if doc.MaxTokens != 1 {
+		j.resends.Add(1)
 	}
 	if doc.MaxTokens == 1 {
 		select {
@@ -101,6 +107,7 @@ var jobFailFleets atomic.Int64
 
 type jobFailFleet struct {
 	srv  *httptest.Server
+	mgr  *prefill.Manager
 	be   *jobBackend
 	clk  *clock.Fake
 	pool string
@@ -123,8 +130,8 @@ func newJobFailFleet(t *testing.T, requestTimeout time.Duration) *jobFailFleet {
 		}
 		b.SetHealth(registry.Healthy)
 	}
-	p := &pool.Pool{Name: "default", Registry: reg, Flow: mustFlow(t, affinityCfg()),
-		Split: prefill.New(prefill.Config{PoolName: f.pool, NodeConcurrency: 1})}
+	f.mgr = prefill.New(prefill.Config{PoolName: f.pool, NodeConcurrency: 1})
+	p := &pool.Pool{Name: "default", Registry: reg, Flow: mustFlow(t, affinityCfg()), Split: f.mgr}
 	tbl, _ := routing.NewTable([]routing.Rule{{Pool: p}})
 	f.srv = httptest.NewServer(gateway.New(
 		gateway.Config{MaxBodyBytes: 1 << 20, DefaultCapacity: 1, Clock: f.clk}, tbl,
@@ -168,7 +175,6 @@ func TestPrefillJobFailureIsCountedAndLoggedWithItsReason(t *testing.T) {
 		{reason: "timeout", requestTimeout: 100 * time.Millisecond, jobDelay: 2 * time.Second},
 		{reason: "status_5xx", jobStatus: http.StatusInternalServerError, want: []string{"status=500"}},
 		{reason: "status_4xx", jobStatus: http.StatusBadRequest, want: []string{"status=400"}},
-		{reason: "client_cancelled", jobDelay: 2 * time.Second, clientTimeout: 100 * time.Millisecond},
 	} {
 		t.Run(c.reason, func(t *testing.T) {
 			lb := captureLog(t)
@@ -194,9 +200,55 @@ func TestPrefillJobFailureIsCountedAndLoggedWithItsReason(t *testing.T) {
 	}
 }
 
-// A job whose caller leaves while it waits for a slot never ran: it is
-// counted as abandoned.
-func TestPrefillJobAbandonedWhileWaitingIsCounted(t *testing.T) {
+func (f *jobFailFleet) cancelled(reason string) float64 {
+	return testutil.ToFloat64(metrics.PrefillJobs.WithLabelValues(f.pool, "cancelled", reason))
+}
+
+// assertSettled checks that every job's slot, budget share and pending tokens
+// came back, and that nothing was counted as failed.
+func (f *jobFailFleet) assertSettled(t *testing.T) {
+	t.Helper()
+	waitFor(t, func() bool {
+		for _, n := range f.mgr.State().Nodes {
+			if n.PendingTokens != 0 || n.RunningJobs != 0 || n.QueuedJobs != 0 || n.RunningTokens != 0 {
+				return false
+			}
+		}
+		return true
+	})
+	for _, r := range metrics.PrefillJobFailureReasons {
+		if n := f.failed(r); n != 0 {
+			t.Errorf("a cancellation counted as failed{reason=%q}", r)
+		}
+	}
+	if st := f.mgr.State(); st.JobsFailed != 0 || st.BypassFallbacks != 0 {
+		t.Errorf("jobs_failed %d, bypass fallbacks %d; want 0 for a caller that left", st.JobsFailed, st.BypassFallbacks)
+	}
+}
+
+// A caller that leaves while its job runs cancels the job. That is counted as
+// cancelled, not failed; nothing more is sent for the request; and the job's
+// slot, budget share and pending tokens come back.
+func TestPrefillJobCancelledWhileRunningSendsNothingMore(t *testing.T) {
+	lb := captureLog(t)
+	f := newJobFailFleet(t, 0)
+	f.be.jobDelay.Store(int64(2 * time.Second))
+	f.post(t, 100*time.Millisecond)
+
+	waitFor(t, func() bool { return f.cancelled("running") == 1 })
+	f.assertSettled(t)
+	time.Sleep(50 * time.Millisecond) // a resend would have arrived by now
+	if n := f.be.resends.Load(); n != 0 {
+		t.Errorf("%d requests sent with the bypass after the caller left", n)
+	}
+	if l := lb.lines(`msg="prefill job cancelled"`); len(l) != 1 || !strings.Contains(l[0], "reason=running") {
+		t.Errorf("cancel log lines = %q", l)
+	}
+}
+
+// A caller that leaves while its job waits for a slot: the job never runs, is
+// counted as cancelled while waiting, and nothing is sent for it.
+func TestPrefillJobCancelledWhileWaitingSendsNothing(t *testing.T) {
 	lb := captureLog(t)
 	f := newJobFailFleet(t, 0)
 	f.be.jobDelay.Store(int64(500 * time.Millisecond))
@@ -205,12 +257,17 @@ func TestPrefillJobAbandonedWhileWaitingIsCounted(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	f.post(t, 100*time.Millisecond) // queues behind it, then leaves
 	<-first
-	waitFor(t, func() bool { return f.failed("abandoned") == 1 })
+
+	waitFor(t, func() bool { return f.cancelled("waiting") == 1 })
 	if n := testutil.ToFloat64(metrics.PrefillJobs.WithLabelValues(f.pool, "ok", "")); n != 1 {
 		t.Errorf("ok jobs = %v, want the first", n)
 	}
-	if l := lb.lines("reason=abandoned"); len(l) != 1 {
-		t.Errorf("abandoned log lines = %q", l)
+	f.assertSettled(t)
+	if n := f.be.resends.Load(); n != 1 {
+		t.Errorf("%d bypassed resends, want only the first request's", n)
+	}
+	if l := lb.lines("reason=waiting"); len(l) != 1 {
+		t.Errorf("waiting-cancel log lines = %q", l)
 	}
 }
 

@@ -149,7 +149,7 @@ type Manager struct {
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
-	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves atomic.Uint64
+	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves, jobsCancelled atomic.Uint64
 }
 
 // New builds a manager for one pool.
@@ -707,6 +707,14 @@ func (m *Manager) CountJob(ok bool) {
 	m.CountJobFailed("other")
 }
 
+// CountJobCancelled records a prefill job its caller cancelled, while waiting
+// or running: one of metrics.PrefillJobCancelReasons. It is not a failure of
+// the job or the node.
+func (m *Manager) CountJobCancelled(reason string) {
+	m.jobsCancelled.Add(1)
+	m.m.JobCancelled(reason)
+}
+
 // CountJobFailed records a prefill job that did not succeed, and why: one of
 // metrics.PrefillJobFailureReasons.
 func (m *Manager) CountJobFailed(reason string) {
@@ -749,11 +757,14 @@ type State struct {
 	Rejections       uint64      `json:"rejections"`
 	Jobs             uint64      `json:"jobs"`
 	JobsFailed       uint64      `json:"jobs_failed"`
-	JobRetries       uint64      `json:"job_retries"`
-	JobMoves         uint64      `json:"job_moves"`
-	Conversions      uint64      `json:"conversions"`
-	Releases         uint64      `json:"releases"`
-	BypassFallbacks  uint64      `json:"bypass_fallbacks"`
+	// JobsCancelled is jobs whose caller left; they are in neither Jobs nor
+	// JobsFailed.
+	JobsCancelled   uint64 `json:"jobs_cancelled"`
+	JobRetries      uint64 `json:"job_retries"`
+	JobMoves        uint64 `json:"job_moves"`
+	Conversions     uint64 `json:"conversions"`
+	Releases        uint64 `json:"releases"`
+	BypassFallbacks uint64 `json:"bypass_fallbacks"`
 }
 
 // State snapshots the modes, queues and counters, nodes sorted by URL.
@@ -768,6 +779,7 @@ func (m *Manager) State() State {
 	st.Rejections = m.rejections.Load()
 	st.Jobs = m.jobsOK.Load() + m.jobsFailed.Load()
 	st.JobsFailed = m.jobsFailed.Load()
+	st.JobsCancelled = m.jobsCancelled.Load()
 	st.JobRetries = m.jobRetries.Load()
 	st.JobMoves = m.jobMoves.Load()
 	st.Conversions = m.conversions.Load()

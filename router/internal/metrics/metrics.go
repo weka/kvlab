@@ -490,7 +490,7 @@ var (
 
 	PrefillJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_jobs_total",
-		Help: "Prefill jobs, by outcome (ok or failed) and, for failed, reason: timeout, client_cancelled, abandoned, status_4xx, status_5xx, transport, rejected or other. An ok job has no reason.",
+		Help: "Prefill jobs, by outcome and reason: ok (no reason); failed, by timeout, status_4xx, status_5xx, transport, rejected or other; cancelled by the caller, while waiting for a slot or while running.",
 	}, []string{"pool", "outcome", "reason"})
 
 	PrefillConversions = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -861,15 +861,16 @@ type PrefillMetrics struct {
 
 	Rejections prometheus.Counter
 	JobsOK     prometheus.Counter
-	// jobsFailed is by reason, one of PrefillJobFailureReasons.
-	jobsFailed      *prometheus.CounterVec
-	Conversions     prometheus.Counter
-	Releases        prometheus.Counter
-	JobRetries      prometheus.Counter
-	JobMoves        prometheus.Counter
-	Queued          prometheus.Gauge
-	FallbackNoNode  prometheus.Counter
-	FallbackJobFail prometheus.Counter
+	// jobsFailed and jobsCancelled are by reason, one of
+	// PrefillJobFailureReasons and PrefillJobCancelReasons.
+	jobsFailed, jobsCancelled *prometheus.CounterVec
+	Conversions               prometheus.Counter
+	Releases                  prometheus.Counter
+	JobRetries                prometheus.Counter
+	JobMoves                  prometheus.Counter
+	Queued                    prometheus.Gauge
+	FallbackNoNode            prometheus.Counter
+	FallbackJobFail           prometheus.Counter
 }
 
 // ForPrefill resolves the prefill-split collectors for a pool, creating every
@@ -882,6 +883,9 @@ func ForPrefill(pool string) *PrefillMetrics {
 	for _, r := range PrefillJobFailureReasons {
 		PrefillJobs.WithLabelValues(pool, "failed", r)
 	}
+	for _, r := range PrefillJobCancelReasons {
+		PrefillJobs.WithLabelValues(pool, "cancelled", r)
+	}
 	return &PrefillMetrics{
 		pool:            pool,
 		nodeMode:        PrefillNodeMode.MustCurryWith(lbl),
@@ -889,6 +893,7 @@ func ForPrefill(pool string) *PrefillMetrics {
 		Rejections:      PrefillRejections.WithLabelValues(pool),
 		JobsOK:          PrefillJobs.WithLabelValues(pool, "ok", ""),
 		jobsFailed:      PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "failed"}),
+		jobsCancelled:   PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "cancelled"}),
 		Conversions:     PrefillConversions.WithLabelValues(pool),
 		Releases:        PrefillReleases.WithLabelValues(pool),
 		JobRetries:      PrefillJobRetries.WithLabelValues(pool),
@@ -909,7 +914,20 @@ func (m *PrefillMetrics) SetNode(backend string, mode int, pending int64) {
 // PrefillJobFailureReasons is the closed enum of router_prefill_jobs_total's
 // reason label on a failed job.
 var PrefillJobFailureReasons = []string{
-	"timeout", "client_cancelled", "abandoned", "status_4xx", "status_5xx", "transport", "rejected", "other",
+	"timeout", "status_4xx", "status_5xx", "transport", "rejected", "other",
+}
+
+// PrefillJobCancelReasons is the closed enum of the reason label on a job its
+// caller cancelled: while it waited in the router for a slot, or while it ran.
+var PrefillJobCancelReasons = []string{"waiting", "running"}
+
+// JobCancelled counts a prefill job its caller cancelled; a reason outside the
+// enum counts as running.
+func (m *PrefillMetrics) JobCancelled(reason string) {
+	if !slices.Contains(PrefillJobCancelReasons, reason) {
+		reason = "running"
+	}
+	m.jobsCancelled.WithLabelValues(reason).Inc()
 }
 
 // JobFailed counts a failed prefill job; a reason outside the enum counts as
