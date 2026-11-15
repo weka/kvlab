@@ -181,6 +181,9 @@ type Options struct {
 	PrefillReleaseIdle  time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
+	// MoveWeight is --move-cost-weight: affinity.Config.MoveWeight. 0 is the
+	// default.
+	MoveWeight float64
 	// AutoModel controls asking a pool what it serves when a route carries no
 	// explicit `as <model>`: "auto" (rewrite only when the pool serves exactly
 	// one model), "force", or "off". Empty means "auto".
@@ -277,6 +280,7 @@ func (o Options) flowConfig() affinity.Config {
 		RelativeTTFT:        o.RelativeTTFT,
 		RelativeDecode:      o.RelativeDecode,
 		CostRouting:         o.CostRouting,
+		MoveWeight:          o.MoveWeight,
 		RebalanceRatio:      o.RebalanceRatio,
 		SplitGuard:          o.SplitGuard,
 		TransientFallback:   o.TransientFallback,
@@ -346,12 +350,21 @@ func (o Options) pdPrefillFor(rt Route) []string {
 // DefaultSplitGuard is the --cache-split-guard default.
 const DefaultSplitGuard = affinity.DefaultSplitGuard
 
+// DefaultMoveWeight is the --move-cost-weight default.
+const DefaultMoveWeight = affinity.DefaultMoveWeight
+
 // validateRouting rejects settings that only the affinity ladder honours when
 // cost routing is on, so they are never silently ignored. The hard filters
 // (max node concurrency and its queue, hard TTFT, rebalance ratio, retry time
 // limit, refusal and tail TTLs) apply to both modes.
 func (o Options) validateRouting() error {
+	if o.MoveWeight < 0 {
+		return fmt.Errorf("router: --move-cost-weight must not be negative")
+	}
 	if !o.CostRouting {
+		if o.MoveWeight != 0 && o.MoveWeight != DefaultMoveWeight {
+			return fmt.Errorf("router: --move-cost-weight only applies to cost routing; drop --no-cost-routing to use it")
+		}
 		return nil
 	}
 	ladderOnly := [...]struct {

@@ -1,6 +1,8 @@
 package affinity
 
 import (
+	"math"
+
 	"github.com/weka/kvlab/router/internal/metrics"
 	"github.com/weka/kvlab/router/internal/policy"
 	"github.com/weka/kvlab/router/internal/registry"
@@ -50,17 +52,19 @@ func lowestOther(usable []*registry.Backend, self *registry.Backend, f func(*reg
 // (see Config.CostRouting). Ties go to the fewest in-flight requests. It marks
 // the winner, so the tree records the copy a move creates.
 //
-// A prefill-only request (rr.PrefillOnly) is costed as its time to first
-// token: the node's queued uncached prefill tokens (rr.PrefillQueue, else the
-// node's in-flight prefill gauge) plus this request's own uncached tokens
-// there, both drained at the same node prefill rate. The
-// node's active context is left out. On a node that only runs prefill legs it
-// is the full prompt of every queued leg, cached part included, so it measures
-// queue length in prompts rather than in work: a difference of one queued leg
-// would outweigh a whole held prefix, and a conversation would leave the node
-// holding its prefix for one that must recompute all of it. Costed as time to
-// first token, a holder keeps the conversation until its queue is longer than
-// the alternative's by more than the prefix it holds.
+// A prefill-only request (rr.PrefillOnly) is costed by the node's queued
+// uncached prefill tokens (rr.PrefillQueue, else the node's in-flight prefill
+// gauge) plus its own uncached tokens there. The node's active context is left
+// out: on a node that only runs prefill legs it is the full prompt of every
+// queued leg, cached part included, so it measures queue length in prompts
+// rather than in work, and one extra queued leg would outweigh a whole held
+// prefix.
+//
+// For a disaggregated leg (prefill-only, or a decode leg receiving its KV by
+// transfer) the tokens a node lacks are weighted by Config.MoveWeight, so a
+// holder keeps the conversation until its extra load exceeds MoveWeight times
+// what moving costs: the recompute a prefill leg would put on another node's
+// queue, or the KV a decode leg would pull and hold again.
 func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path, rr *policy.RoutingRequest) *registry.Backend {
 	var total int64
 	for i := 0; i < pth.len(); i++ {
@@ -84,11 +88,11 @@ func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path,
 		var cost int64
 		switch {
 		case !rr.PrefillOnly:
-			cost = (total - held[i]) + c.PrefillTokens() + c.ActiveTokens()
+			cost = p.moveCost(rr, total-held[i]) + c.PrefillTokens() + c.ActiveTokens()
 		case rr.PrefillQueue != nil:
-			cost = (total - held[i]) + rr.PrefillQueue(c)
+			cost = p.moveCost(rr, total-held[i]) + rr.PrefillQueue(c)
 		default:
-			cost = (total - held[i]) + c.PrefillTokens()
+			cost = p.moveCost(rr, total-held[i]) + c.PrefillTokens()
 		}
 		if i == 0 || cost < bestCost || (cost == bestCost && p.costTieWins(rr, c, usable[best], local[i], local[best])) {
 			best, bestCost = i, cost
@@ -102,6 +106,15 @@ func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path,
 		p.m.Decision("cost_stay")
 	}
 	return usable[best]
+}
+
+// moveCost is the cost term for the tokens a node lacks: weighted by
+// Config.MoveWeight for a disaggregated leg, as is for anything else.
+func (p *Policy) moveCost(rr *policy.RoutingRequest, tokens int64) int64 {
+	if !rr.PrefillOnly && !rr.KVTransfer {
+		return tokens
+	}
+	return int64(math.Round(float64(tokens) * p.cfg.MoveWeight))
 }
 
 // costTieWins breaks a cost tie between candidate c and the best so far. A

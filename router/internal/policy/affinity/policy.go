@@ -21,6 +21,11 @@ const FlowName = "prefix-cache-split"
 const (
 	DefaultSplitGuard = 0.20
 	DefaultTailTTL    = 5 * time.Minute
+	// DefaultMoveWeight is Config.MoveWeight's default: a move must save four
+	// times the tokens it costs. 2 still leaves a compute-bound fleet moving
+	// about one turn in seven; 8 stops moves even from a holder that is
+	// minutes behind.
+	DefaultMoveWeight = 4.0
 	// DefaultRefusalTTL is how long a backend's 429 keeps it out of its own
 	// prefixes. Short on purpose: it is a hint that saves the next request a
 	// wasted round trip, not a health verdict, and a success clears it
@@ -91,6 +96,21 @@ type Config struct {
 	// its extra load exceeds what moving would cost, and a move is cheap when a
 	// shared KV tier can supply the prefix.
 	CostRouting bool
+
+	// MoveWeight weighs, in the cost of a disaggregated leg, the tokens a node
+	// would have to prefill (a prefill leg or prefill job) or receive by KV
+	// transfer (a decode leg) against that node's load. A node not holding the
+	// prompt is chosen only when the holder's extra load exceeds MoveWeight
+	// times the tokens moving costs. 0 means DefaultMoveWeight. Ordinary
+	// requests are costed at weight 1 whatever it is set to.
+	//
+	// Weight 1 is a greedy time-to-first-token choice, and it is unstable on a
+	// compute-bound fleet without a shared tier: a move puts a whole-prompt
+	// recompute on another node's queue, which lengthens the queues that make
+	// the next move look worthwhile, and the fleet settles in a state where most
+	// turns move. Above 1 a move must also pay for the delay its extra work
+	// imposes on the requests queued behind it.
+	MoveWeight float64
 
 	// RebalanceRatio enables the imbalance signal: a backend is unusable while
 	// (inflight - fleetMin) / inflight exceeds this. 0.5 means "rebalance once
@@ -170,6 +190,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.TailTTL <= 0 {
 		c.TailTTL = DefaultTailTTL
+	}
+	if c.MoveWeight <= 0 {
+		c.MoveWeight = DefaultMoveWeight
 	}
 	if c.RefusalTTL <= 0 {
 		c.RefusalTTL = DefaultRefusalTTL

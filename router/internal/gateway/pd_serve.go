@@ -34,6 +34,7 @@ func (s *Server) pdServe(
 	decodeBody := body
 	if params, ok := s.runPDPrefill(r, target, rr, body, outcome, auth); ok {
 		decodeBody = pd.DecodeBody(body, params)
+		rr.KVTransfer = true
 	}
 	rr.PolicyState = nil
 	start := s.cfg.Clock.Now()

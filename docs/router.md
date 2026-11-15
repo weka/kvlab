@@ -97,7 +97,9 @@ pool on its own.
 **Routing is by cost.** By default each request goes to the usable backend with
 the lowest cost: the tokens it would have to prefill there (the part of the
 prompt that backend does not already hold) plus the context tokens it is
-already serving. There is no tunable. "Usable" is decided by the capacity
+already serving. Ordinary requests have no tunable; the legs of disaggregated
+serving (P/D legs and prefill-split jobs) add `--move-cost-weight`, below.
+"Usable" is decided by the capacity
 signals below, so these still apply under cost routing:
 `--max-node-concurrency` (and its wait queue and
 `--max-node-concurrency-queue-depth`), `--hard-ttft-split`,
@@ -196,8 +198,8 @@ as with fixed P/D. Prefill jobs are placed by a flow of their own with its own
 prefix tree: among the prefill nodes with budget room (and under the node
 concurrency bound) the one with the lowest cost wins, not the fullest node (the
 ladder still packs onto the fullest and uses the flow only to break ties). Cost
-is the job's time to first token in tokens, as for the fixed P/D prefill leg:
-the prompt tokens that node cannot supply plus the node's pending job tokens
+is weighted as for the fixed P/D prefill leg: `--move-cost-weight` times the
+prompt tokens that node cannot supply, plus the node's pending job tokens
 (the jobs queued on it and running there, as charged by the manager). The
 node's active context is left out, for the same reason as on a P node. What a
 node can supply is the larger of what its prefill tree holds and what an
@@ -208,7 +210,7 @@ recorded. So with the tier holding a conversation's earlier jobs a job goes to
 the node with the shortest queue, and a node holding more than the cut keeps an
 advantage only for the tokens past it; with nothing stored a conversation stays
 on its prefill node until that node's queue is longer than another's by more
-than the prefix it holds. Prefixes the tier holds from decode nodes' own
+than `--move-cost-weight` times the prefix it holds. Prefixes the tier holds from decode nodes' own
 stores are not credited: the router has no record of them. On equal cost a job
 (and a fixed P/D prefill leg) goes to the node holding more of its prompt
 itself, since a local hit is cheaper than a tier load. `cost_move` in
@@ -285,23 +287,39 @@ alone, which recomputes (`router_pd_fallbacks_total`). `/v1/messages` carries no
 backend's role as its `mode` (`prefill` or `decode`).
 
 Under cost routing each leg picks the usable node of its own set with the lowest
-cost, over that set's own prefix tree. P leg: its time to first token, in tokens
-— the prompt tokens not held in the P tree plus the node's in-flight (queued and
-running) uncached prefill tokens. The node's active context tokens are left out:
-on a P node they are the whole prompt of every queued leg, cached part included,
-so one extra queued leg would outweigh a whole held prefix and conversations
-would leave the node holding their prefix for one that recomputes all of it. A
-conversation therefore stays on its P node until that node's prefill queue is
-longer than another's by more than the prefix it holds. D leg: the aggregated
-formula over the D tree (tokens its tree lacks, plus in-flight prefill and active
-context tokens), so a D node that already holds the conversation is charged only
-for the tokens its tree lacks (the missing blocks arrive by NIXL transfer; they
-are still counted at full weight, a conservative simplification). With D nodes
-busy, active decode context dominates that cost, so the D leg mostly balances by
-decode load and keeps a conversation only while the nodes are close.
+cost, over that set's own prefix tree, with `w` = `--move-cost-weight` (default
+4):
+
+- P leg: `w × (prompt tokens not held in the P tree) + the node's in-flight
+  (queued and running) uncached prefill tokens`. The node's active context
+  tokens are left out: on a P node they are the whole prompt of every queued
+  leg, cached part included, so one extra queued leg would outweigh a whole held
+  prefix.
+- D leg (one carrying `kv_transfer_params`): `w × (tokens the D tree lacks) +
+  in-flight prefill + active context tokens`. The lacking tokens arrive by NIXL
+  transfer rather than recompute.
+
+So a conversation leaves the node holding its prefix only when that node's
+extra queue (P) or load (D) exceeds `w` times what moving costs: the recompute
+it would put on another P node's queue, or the KV another D node would pull and
+hold again. `w = 1` is a greedy time-to-first-token choice, and on a
+compute-bound P set without a shared KV tier it is unstable: each move puts a
+whole-prompt recompute on another node's queue, which lengthens the queues that
+make the next move look worthwhile, and the fleet settles where most turns move
+and most prompts are recomputed. Above 1 a move must also pay for the delay its
+extra work imposes on the legs queued behind it; at 4 a replay of live-sized
+traffic (50k-250k-token prompts, 1-3k-token turns, P nodes draining a fixed
+token rate) keeps 98-99% of turns on their P node where `w = 1` keeps 63%
+(`TestPrefillLegStaysOnItsHolderOnACompoundingFleet`). New conversations hold
+nothing anywhere and still go to the shortest queue. On D, without the weight,
+one conversation's active context (a whole prompt) outweighs the prefix a D node
+holds, so turns churn between D nodes and each move pulls the whole prompt's KV
+again; with it, a D node keeps its conversations until it carries several
+conversations' worth more than another. A node that is slow rather than loaded
+does not show in these token counts; `--hard-ttft-split` covers that.
 `router_route_decisions_total{pool="<pool>:prefill",decision=~"cost_stay|cost_move"}`
-shows P-leg stickiness: `cost_move` is a P leg sent away from the node holding
-the deepest part of its prefix.
+(and `pool="<pool>"` for D) shows stickiness: `cost_move` is a leg sent away from
+the node holding the deepest local part of its prefix.
 Per-role `--pd-*-max-node-concurrency` caps are hard limits in both modes. The
 per-role *soft* bands are ladder-only.
 

@@ -90,7 +90,11 @@ type RoutingRequest struct {
 	// itself (the prefill split's manager, which holds jobs before they are
 	// dispatched). Nil reads the node's in-flight prefill gauge.
 	PrefillQueue func(*registry.Backend) int64
-	Deadline     time.Time
+	// KVTransfer marks a decode leg that receives its prompt's KV from a
+	// prefill node: the tokens a decode node lacks arrive by transfer rather
+	// than recompute.
+	KVTransfer bool
+	Deadline   time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

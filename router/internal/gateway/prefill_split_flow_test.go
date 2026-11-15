@@ -270,7 +270,13 @@ func TestSplitPrefillFlowObservesRefusalsAndAcceptances(t *testing.T) {
 		t.Fatal("no job was refused")
 	}
 	b := f.backend[node]
+	// The refused latch holds only while the node carries at least what it
+	// carried when it refused, which includes the refused job's own lease when
+	// the proxy reports the status before releasing it. Probing with a lease
+	// of our own reads the latch either way.
 	saturated := func() bool {
+		probe := lease.Acquire(b)
+		defer probe.Release()
 		_, err := f.pool.SplitFlow.Select(context.Background(), []*registry.Backend{b}, &policy.RoutingRequest{
 			Model: "m", Units: []kvcache.Unit{{Hash: 9, Tokens: 10}}})
 		return errors.Is(err, policy.ErrAllBackendsSaturated)
