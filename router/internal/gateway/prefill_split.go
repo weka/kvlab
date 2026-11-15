@@ -37,7 +37,7 @@ func (s *Server) splitAndServe(
 	// request's final one.
 	rr.PolicyState = nil
 
-	job, err := m.Reserve(s.healthy(target), rejected.PrefillTokens, s.prefillPicker(target, rr, r))
+	job, err := m.Reserve(s.healthy(target), rejected.PrefillTokens, s.prefillPicker(target, m, rr, r))
 	if err != nil {
 		m.FallbackNoNode()
 		return s.serveOnOriginal(w, r, target, rr, bypassed, rejected.Backend, accepted, outcome, auth)
@@ -78,15 +78,32 @@ func (s *Server) splitAndServe(
 // so the choice sees the same prefix knowledge and load rules as ordinary
 // routing. It selects on a copy of the request: the flow's per-request state
 // belongs to the decode decision that comes after.
-func (s *Server) prefillPicker(t Target, rr *policy.RoutingRequest, r *http.Request) prefill.Picker {
-	return func(eligible []*registry.Backend) (*registry.Backend, error) {
+//
+// The job is costed as a prefill-only request (see RoutingRequest.PrefillOnly)
+// whose queue on each node is the manager's pending job tokens there. The prefix
+// an earlier job of the prefill flow stored, up to the tier's storage cut, is
+// loadable by every node, so it is credited to all of them as preloaded: a node
+// that holds it locally keeps an advantage only for the tokens past it.
+func (s *Server) prefillPicker(t Target, m *prefill.Manager, rr *policy.RoutingRequest, r *http.Request) prefill.Picker {
+	var stored int64
+	if h, ok := t.SplitSelector.(heldDepther); ok {
+		stored = m.StoreCut(h.HeldDepth(rr))
+	}
+	return func(eligible []*registry.Backend, queued func(*registry.Backend) int64) (*registry.Backend, error) {
 		sel := *rr
 		sel.PolicyState = nil
 		if t.SplitSelector != nil {
+			sel.PrefillOnly, sel.PrefillQueue, sel.PreloadedTokens = true, queued, stored
 			return t.SplitSelector.Select(r.Context(), eligible, &sel)
 		}
 		return t.Selector.Select(r.Context(), eligible, &sel)
 	}
+}
+
+// heldDepther is a flow that can say how deep a prefix any of its backends is
+// recorded holding.
+type heldDepther interface {
+	HeldDepth(rr *policy.RoutingRequest) int64
 }
 
 // runPrefillJob sends the job to its node through the ordinary proxy path, so

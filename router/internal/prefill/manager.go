@@ -115,10 +115,13 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Picker breaks a tie between equally loaded prefill nodes with room. The
+// Picker chooses among prefill nodes with room (see Config.CostPick). The
 // gateway passes the pool's routing flow, so the choice uses the same prefix
-// knowledge and load rules as ordinary routing, over the tied set.
-type Picker func(eligible []*registry.Backend) (*registry.Backend, error)
+// knowledge and load rules as ordinary routing. queued is a node's pending job
+// tokens, queued and running: the prefill work ahead of a new job there. It
+// reads the manager's state under the lock the picker is called with, so it is
+// valid only during the call.
+type Picker func(eligible []*registry.Backend, queued func(*registry.Backend) int64) (*registry.Backend, error)
 
 type node struct {
 	b *registry.Backend
@@ -295,7 +298,7 @@ func (m *Manager) pickLocked(eligible []*registry.Backend, pick Picker) *registr
 	if m.cfg.CostPick && pick != nil {
 		// A policy that declines (every node saturated by some signal) must not
 		// refuse work the budget says fits: fall through to packing.
-		if b, err := pick(eligible); err == nil && b != nil {
+		if b, err := pick(eligible, m.pendingLocked); err == nil && b != nil {
 			return b
 		}
 	}
@@ -312,11 +315,20 @@ func (m *Manager) pickLocked(eligible []*registry.Backend, pick Picker) *registr
 		// The policy declining — a saturation signal on a node already
 		// running prefill jobs is expected — must not refuse work the budget
 		// says fits, so any tied node will do.
-		if b, err := pick(fullest); err == nil && b != nil {
+		if b, err := pick(fullest, m.pendingLocked); err == nil && b != nil {
 			return b
 		}
 	}
 	return fullest[0]
+}
+
+// pendingLocked is b's pending job tokens, 0 for a node the manager has not
+// seen.
+func (m *Manager) pendingLocked(b *registry.Backend) int64 {
+	if n := m.nodes[b.URL]; n != nil {
+		return n.pending
+	}
+	return 0
 }
 
 func (m *Manager) leastPendingLocked(bs []*registry.Backend) *registry.Backend {

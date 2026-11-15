@@ -51,8 +51,9 @@ func lowestOther(usable []*registry.Backend, self *registry.Backend, f func(*reg
 // the winner, so the tree records the copy a move creates.
 //
 // A prefill-only request (rr.PrefillOnly) is costed as its time to first
-// token: the node's queued uncached prefill tokens plus this request's own
-// uncached tokens there, both drained at the same node prefill rate. The
+// token: the node's queued uncached prefill tokens (rr.PrefillQueue, else the
+// node's in-flight prefill gauge) plus this request's own uncached tokens
+// there, both drained at the same node prefill rate. The
 // node's active context is left out. On a node that only runs prefill legs it
 // is the full prompt of every queued leg, cached part included, so it measures
 // queue length in prompts rather than in work: a difference of one queued leg
@@ -65,33 +66,54 @@ func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path,
 	for i := 0; i < pth.len(); i++ {
 		total += int64(pth.tokens(i))
 	}
-	held := p.tree.heldTokens(pth, slots)
+	// local is what each node holds itself; held adds what any node can load
+	// from a shared tier, which is all the cost sees.
+	local := p.tree.heldTokens(pth, slots)
+	held := local
 	if credit := min(rr.PreloadedTokens, total); credit > 0 {
+		held = make([]int64, len(local))
 		for i := range held {
-			held[i] = max(held[i], credit)
+			held[i] = max(local[i], credit)
 		}
 	}
 	var deepest int64
-	best, bestHeld := 0, int64(0)
+	best := 0
 	var bestCost int64
 	for i, c := range usable {
-		deepest = max(deepest, held[i])
-		cost := (total - held[i]) + c.PrefillTokens()
-		if !rr.PrefillOnly {
-			cost += c.ActiveTokens()
+		deepest = max(deepest, local[i])
+		var cost int64
+		switch {
+		case !rr.PrefillOnly:
+			cost = (total - held[i]) + c.PrefillTokens() + c.ActiveTokens()
+		case rr.PrefillQueue != nil:
+			cost = (total - held[i]) + rr.PrefillQueue(c)
+		default:
+			cost = (total - held[i]) + c.PrefillTokens()
 		}
-		if i == 0 || cost < bestCost || (cost == bestCost && c.Inflight() < usable[best].Inflight()) {
-			best, bestCost, bestHeld = i, cost, held[i]
+		if i == 0 || cost < bestCost || (cost == bestCost && p.costTieWins(rr, c, usable[best], local[i], local[best])) {
+			best, bestCost = i, cost
 		}
 	}
 	rr.PolicyState = markDecision
-	rr.Prefill = &policy.PrefillEstimate{Backend: usable[best], Tokens: total - bestHeld}
-	if bestHeld < deepest {
+	rr.Prefill = &policy.PrefillEstimate{Backend: usable[best], Tokens: total - held[best]}
+	if local[best] < deepest {
 		p.m.Decision("cost_move")
 	} else {
 		p.m.Decision("cost_stay")
 	}
 	return usable[best]
+}
+
+// costTieWins breaks a cost tie between candidate c and the best so far. A
+// prefill-only request prefers the node holding more of its prompt itself: the
+// cost counts a tier load as free, and a local hit is cheaper still, so a tie
+// is no reason to leave the holder. Otherwise, and between equal holders, the
+// fewest in-flight requests win.
+func (p *Policy) costTieWins(rr *policy.RoutingRequest, c, best *registry.Backend, cLocal, bestLocal int64) bool {
+	if rr.PrefillOnly && cLocal != bestLocal {
+		return cLocal > bestLocal
+	}
+	return c.Inflight() < best.Inflight()
 }
 
 // estTokens is this request's estimated context size in tokens: the gateway's

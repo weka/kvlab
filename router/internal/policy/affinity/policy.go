@@ -849,6 +849,16 @@ func (p *Policy) Commit(b *registry.Backend, rr *policy.RoutingRequest) {
 	p.tree.commit(pth, p.tree.slotOrCreate(b.URL))
 }
 
+// HeldDepth is how many leading tokens of rr's prompt some backend of this flow
+// is recorded holding. Under the prefill split that is the deepest prefix a
+// finished prefill job of this flow wrote, which the shared tier can supply.
+func (p *Policy) HeldDepth(rr *policy.RoutingRequest) int64 {
+	if len(rr.Units) == 0 {
+		return 0
+	}
+	return p.tree.deepestHeld(path{units: rr.Units, modelKey: modelKey(rr.Model)})
+}
+
 // AddBackend allocates a backend's slot. Wired to the registry's add hook.
 func (p *Policy) AddBackend(b *registry.Backend) {
 	p.tree.slotFor(b.URL)

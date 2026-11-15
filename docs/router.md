@@ -195,8 +195,25 @@ Under cost routing the prefill nodes are routed separately from the decode nodes
 as with fixed P/D. Prefill jobs are placed by a flow of their own with its own
 prefix tree: among the prefill nodes with budget room (and under the node
 concurrency bound) the one with the lowest cost wins, not the fullest node (the
-ladder still packs onto the fullest and uses the flow only to break ties), where cost is the prompt tokens that node's prefill tree does not hold plus
-its in-flight prefill and active tokens. After a job succeeds its prefix is
+ladder still packs onto the fullest and uses the flow only to break ties). Cost
+is the job's time to first token in tokens, as for the fixed P/D prefill leg:
+the prompt tokens that node cannot supply plus the node's pending job tokens
+(the jobs queued on it and running there, as charged by the manager). The
+node's active context is left out, for the same reason as on a P node. What a
+node can supply is the larger of what its prefill tree holds and what an
+earlier job stored in the tier: the deepest prefix of the prompt any node's
+prefill tree holds, cut to `floor(depth / unit) * unit` by
+`--prefill-store-unit-tokens`, is credited to every prefill node without being
+recorded. So with the tier holding a conversation's earlier jobs a job goes to
+the node with the shortest queue, and a node holding more than the cut keeps an
+advantage only for the tokens past it; with nothing stored a conversation stays
+on its prefill node until that node's queue is longer than another's by more
+than the prefix it holds. Prefixes the tier holds from decode nodes' own
+stores are not credited: the router has no record of them. On equal cost a job
+(and a fixed P/D prefill leg) goes to the node holding more of its prompt
+itself, since a local hit is cheaper than a tier load. `cost_move` in
+`router_route_decisions_total{pool="<pool>:prefill"}` counts jobs placed away
+from the node holding the deepest local prefix, credited or not. After a job succeeds its prefix is
 recorded in the prefill tree only, never in the decode tree, so the decode resend
 (over the decode nodes, with the decode tree) is unaffected. A node's marks count
 only while it is in the role that made them: when a node leaves decode its decode

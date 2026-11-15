@@ -85,7 +85,12 @@ type RoutingRequest struct {
 	// leg. Its time on a node is the node's queued prefill work plus its own,
 	// so cost routing weighs only those and not the node's active context.
 	PrefillOnly bool
-	Deadline    time.Time
+	// PrefillQueue, when set, is a PrefillOnly request's view of each node's
+	// prefill queue in uncached tokens, for a caller that keeps that queue
+	// itself (the prefill split's manager, which holds jobs before they are
+	// dispatched). Nil reads the node's in-flight prefill gauge.
+	PrefillQueue func(*registry.Backend) int64
+	Deadline     time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

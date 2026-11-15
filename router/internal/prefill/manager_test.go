@@ -248,7 +248,7 @@ func TestPickerChoosesAmongEligibleNodesOnly(t *testing.T) {
 	}
 
 	// Only a has room for 45, though b and c hold more.
-	j, err := f.m.Reserve(f.bs, 45, func(el []*registry.Backend) (*registry.Backend, error) {
+	j, err := f.m.Reserve(f.bs, 45, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
 		t.Errorf("picker consulted with no tie: %d nodes", len(el))
 		return el[0], nil
 	})
@@ -263,7 +263,7 @@ func TestPickerChoosesAmongEligibleNodesOnly(t *testing.T) {
 	// over those two only.
 	want := c.Backend
 	var offered []*registry.Backend
-	j2, _ := f.m.Reserve(f.bs, 5, func(el []*registry.Backend) (*registry.Backend, error) {
+	j2, _ := f.m.Reserve(f.bs, 5, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
 		offered = el
 		for _, e := range el {
 			if e == want {
@@ -285,7 +285,7 @@ func TestPickerErrorStillPlacesTheJobOnATiedNode(t *testing.T) {
 	if a.Backend == b.Backend {
 		t.Fatal("setup")
 	}
-	j, err := f.m.Reserve(f.bs, 10, func([]*registry.Backend) (*registry.Backend, error) {
+	j, err := f.m.Reserve(f.bs, 10, func([]*registry.Backend, func(*registry.Backend) int64) (*registry.Backend, error) {
 		return nil, errors.New("saturated")
 	})
 	if err != nil || (j.Backend != a.Backend && j.Backend != b.Backend) {
@@ -716,7 +716,7 @@ func TestCostPickOffersEveryEligibleNodeNotJustTheFullest(t *testing.T) {
 	// Ladder: node b/c are fullest with room for 5, a is not offered at all.
 	f, a, b, c := setup(false)
 	var offered []*registry.Backend
-	_, _ = f.m.Reserve(f.bs, 5, func(el []*registry.Backend) (*registry.Backend, error) {
+	_, _ = f.m.Reserve(f.bs, 5, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
 		offered = el
 		return el[0], nil
 	})
@@ -729,7 +729,7 @@ func TestCostPickOffersEveryEligibleNodeNotJustTheFullest(t *testing.T) {
 	// policy's, even a node that is not the fullest.
 	f, a, b, c = setup(true)
 	offered = nil
-	j, _ := f.m.Reserve(f.bs, 5, func(el []*registry.Backend) (*registry.Backend, error) {
+	j, _ := f.m.Reserve(f.bs, 5, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
 		offered = el
 		for _, e := range el {
 			if e == a.Backend {
@@ -744,7 +744,7 @@ func TestCostPickOffersEveryEligibleNodeNotJustTheFullest(t *testing.T) {
 
 	// Budget still bounds eligibility: 45 fits only a.
 	offered = nil
-	_, _ = f.m.Reserve(f.bs, 45, func(el []*registry.Backend) (*registry.Backend, error) {
+	_, _ = f.m.Reserve(f.bs, 45, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
 		offered = el
 		return el[0], nil
 	})
@@ -755,7 +755,7 @@ func TestCostPickOffersEveryEligibleNodeNotJustTheFullest(t *testing.T) {
 
 	// A declining policy falls back to packing instead of refusing the job.
 	f, _, _, _ = setup(true)
-	if _, err := f.m.Reserve(f.bs, 5, func([]*registry.Backend) (*registry.Backend, error) {
+	if _, err := f.m.Reserve(f.bs, 5, func([]*registry.Backend, func(*registry.Backend) int64) (*registry.Backend, error) {
 		return nil, errors.New("saturated")
 	}); err != nil {
 		t.Errorf("declining policy refused a job that fits: %v", err)

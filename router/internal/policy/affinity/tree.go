@@ -423,6 +423,40 @@ func (t *tree) heldTokens(p path, slots []int) []int64 {
 	return out
 }
 
+// deepestHeld is how many leading tokens of p some backend is marked holding,
+// whichever backend that is.
+func (t *tree) deepestHeld(p path) int64 {
+	sh := t.shardFor(p)
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+
+	root := sh.roots[p.modelKey]
+	if root == nil {
+		return 0
+	}
+	var cum, deepest int64
+	cur, i, n := root, 0, p.len()
+	for i < n {
+		child := cur.find(p.hash(i))
+		if child == nil {
+			break
+		}
+		m := 0
+		for m < child.blocks() && i+m < n && child.hashes[m] == p.hash(i+m) {
+			cum += int64(p.tokens(i + m))
+			m++
+		}
+		if !child.marks.Empty() {
+			deepest = cum
+		}
+		cur, i = child, i+m
+		if m < child.blocks() {
+			break
+		}
+	}
+	return deepest
+}
+
 // ---------------------------------------------------------------- commit
 
 // commit inserts p and marks slot on EVERY run along the path, not only the
