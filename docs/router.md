@@ -252,7 +252,15 @@ meanwhile: draining costs decode capacity before it adds any prefill, so a
 brief overflow is cheaper to queue through. Past the cap, or while the overflow
 is younger than that, jobs queue on the least-loaded prefill node, and with no
 prefill node at all the request is resent to the backend that refused it, with
-the bypass. It needs a KV tier the nodes share; without one the prefill is
+the bypass. The budget also bounds what a node is *sent*: a node runs jobs only
+while their tokens fit its budget (a single larger job runs alone), so jobs
+queued over it wait in the router, not in the engine. A waiting job moves to
+any prefill node that could start it at once and has no queue of its own — one
+that frees room, or finishes draining — taking the head of the longest queue
+first (`router_prefill_job_moves_total`). A burst that arrives while
+`--prefill-convert-after` holds back conversions therefore spreads over the
+nodes converted after it, instead of running on the first one for minutes while
+they sit idle. It needs a KV tier the nodes share; without one the prefill is
 wasted work.
 
 **Prefill/decode disaggregation (vanilla vLLM NIXL).** `--pd-prefill-backends=<urls>` (works under cost routing, the default, and the ladder)
@@ -1006,7 +1014,8 @@ So alert on all three:
 | `router_prefill_bypass_fallbacks_total{reason}` | requests served with the bypass and no prefill: `no_node` (none could be added) or `job_failed` |
 | `router_prefill_nodes{mode}` / `router_prefill_node_mode{backend}` | backends per mode, and each backend's mode (0 decode, 1 draining, 2 prefill) |
 | `router_prefill_queued_jobs` / `router_prefill_job_retries_total` | prefill jobs waiting for a slot under `--max-node-concurrency` (a prefill node never runs more jobs than that, counting its other in-flight requests), and jobs retried on the same node after it answered 429 |
-| `router_prefill_pending_tokens{backend}` | queued plus in-flight prefill tokens on a backend, the quantity `--prefill-node-budget-tokens` bounds |
+| `router_prefill_pending_tokens{backend}` | queued plus in-flight prefill tokens on a backend. A node is sent at most `--prefill-node-budget-tokens` of it at once; the rest waits in the router (`router_prefill_queued_jobs`) and may move. `/router-viz` shows each node's `running_tokens` |
+| `router_prefill_job_moves_total` | queued prefill jobs moved to another prefill node that could start them at once |
 | `router_pd_prefill_legs_total{outcome}` | prefill legs sent to a P node (`--pd-prefill-backends` only): `ok`, `failed` (non-2xx or transport error) or `no_params` (answered without `kv_transfer_params`) |
 | `router_pd_fallbacks_total{reason}` | requests sent to a D node without `kv_transfer_params`, so it recomputes: `no_prefill_node`, `prefill_failed` or `no_params` |
 | `router_pd_prefill_retries_total` | prefill legs retried after every P node was saturated or the chosen one answered 429 |

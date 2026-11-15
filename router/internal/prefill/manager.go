@@ -125,11 +125,13 @@ type Picker func(eligible []*registry.Backend, queued func(*registry.Backend) in
 
 type node struct {
 	b *registry.Backend
-	// running is the jobs holding a slot; queue the jobs waiting for one, in
-	// arrival order.
-	running int
-	queue   []*Job
-	mode    Mode
+	// running is the jobs holding a slot and runningTokens their tokens;
+	// queue the jobs waiting for one, in arrival order.
+	running       int
+	runningTokens int64
+	queue         []*Job
+	mode          Mode
+	// pending is the tokens of every job on the node, running or queued.
 	pending int64
 	// overSince is when pending last rose above the budget (zero while
 	// within it); idleSince when a prefill node last ran out of jobs (zero
@@ -147,7 +149,7 @@ type Manager struct {
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
-	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed atomic.Uint64
+	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves atomic.Uint64
 }
 
 // New builds a manager for one pool.
@@ -173,19 +175,35 @@ type Job struct {
 // Done releases the job's tokens and stamps the node as recently busy.
 func (j *Job) Done() {
 	j.once.Do(func() {
-		j.mgr.mu.Lock()
-		defer j.mgr.mu.Unlock()
-		j.mgr.dequeueLocked(j)
-		if j.held {
-			j.held = false
-			j.n.running--
-			j.mgr.grantLocked(j.n)
-		}
+		m := j.mgr
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.dequeueLocked(j)
+		m.unholdLocked(j)
 		j.n.pending -= j.tokens
-		j.mgr.trackBudgetLocked(j.n)
-		j.mgr.releaseIfIdleLocked(j.n)
-		j.mgr.publishLocked(j.n)
+		// A node pruned while the job ran is no longer the manager's: its
+		// counters settle, but its mode, metrics and release belong to
+		// whichever node now has the URL.
+		if m.nodes[j.n.b.URL] != j.n {
+			return
+		}
+		m.trackBudgetLocked(j.n)
+		m.releaseIfIdleLocked(j.n)
+		m.publishLocked(j.n)
+		m.spreadLocked()
 	})
+}
+
+// unholdLocked returns a held job's slot and tokens to its node and hands them
+// on.
+func (m *Manager) unholdLocked(j *Job) {
+	if !j.held {
+		return
+	}
+	j.held = false
+	j.n.running--
+	j.n.runningTokens -= j.tokens
+	m.grantLocked(j.n)
 }
 
 func (m *Manager) nodeLocked(b *registry.Backend) *node {
@@ -291,6 +309,7 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	j := &Job{mgr: m, n: n, tokens: tokens, Backend: chosen, granted: make(chan struct{}), queued: true}
 	n.queue = append(n.queue, j)
 	m.publishQueuedLocked()
+	m.spreadLocked()
 	return j, nil
 }
 
@@ -402,12 +421,14 @@ func (m *Manager) WaitReady(ctx context.Context, j *Job) error {
 		if j.n.mode == Draining && j.Backend.Inflight() == 0 {
 			m.setModeLocked(j.n, Prefill)
 			m.publishLocked(j.n)
+			m.spreadLocked()
 		}
 		if j.n.mode != Draining {
 			break
 		}
 		m.mu.Unlock()
 		select {
+		case <-j.granted: // moved to a node that was ready
 		case <-m.cfg.Clock.After(drainPoll):
 		case <-ctx.Done():
 			return ctx.Err()
@@ -418,6 +439,9 @@ func (m *Manager) WaitReady(ctx context.Context, j *Job) error {
 	for {
 		m.grantLocked(j.n)
 		if j.held {
+			// Its node's queue may now be empty, which lets it take waiting
+			// work from elsewhere.
+			m.spreadLocked()
 			m.mu.Unlock()
 			return nil
 		}
@@ -428,12 +452,8 @@ func (m *Manager) WaitReady(ctx context.Context, j *Job) error {
 		case <-ctx.Done():
 			m.mu.Lock()
 			m.dequeueLocked(j)
-			if j.held {
-				// Granted in the same instant: hand the slot on.
-				j.held = false
-				j.n.running--
-				m.grantLocked(j.n)
-			}
+			// Granted in the same instant: hand the slot on.
+			m.unholdLocked(j)
 			m.mu.Unlock()
 			return ctx.Err()
 		}
@@ -447,18 +467,94 @@ func (m *Manager) WaitReady(ctx context.Context, j *Job) error {
 // node counts against the same ceiling. The poll in WaitReady re-checks the
 // latter, which changes without anyone telling the manager.
 func (m *Manager) grantLocked(n *node) {
-	limit := m.cfg.NodeConcurrency
-	for len(n.queue) > 0 && n.mode != Draining {
-		if limit > 0 && (int64(n.running) >= limit || n.b.Inflight() >= limit) {
-			return
-		}
+	for len(n.queue) > 0 && m.canRunLocked(n, n.queue[0]) {
 		j := n.queue[0]
 		n.queue = n.queue[1:]
 		j.queued, j.held = false, true
 		n.running++
+		n.runningTokens += j.tokens
 		close(j.granted)
 		m.publishQueuedLocked()
 	}
+}
+
+// canRunLocked reports whether j may start on n now: n is not draining, has a
+// slot under the concurrency limit, and its running jobs leave room for j in
+// the token budget. A job bigger than the budget runs alone.
+//
+// The budget bounds what is SENT to a node, not only what is placed on it.
+// Jobs placed over it — queued on the least-pending node while ConvertAfter
+// holds back a conversion — wait in the manager, where spreadLocked can still
+// move them to a node that frees room or finishes converting. Sent to the
+// engine they would be bound to that node until it ran them all.
+func (m *Manager) canRunLocked(n *node, j *Job) bool {
+	if n.mode == Draining {
+		return false
+	}
+	if limit := m.cfg.NodeConcurrency; limit > 0 && (int64(n.running) >= limit || n.b.Inflight() >= limit) {
+		return false
+	}
+	return n.running == 0 || n.runningTokens+j.tokens <= m.cfg.NodeBudgetTokens
+}
+
+// spreadLocked moves jobs waiting on a node that cannot start them onto
+// prefill nodes that could start them now and have no queue of their own. It takes the head of the longest queue (by
+// tokens) whose head fits somewhere, so waiting work goes wherever it can run
+// first, and repeats until nothing can move. The head is the job that has
+// waited longest on its node, so moving it keeps arrival order as far as the
+// nodes allow.
+func (m *Manager) spreadLocked() {
+	for m.moveOneLocked() {
+	}
+}
+
+func (m *Manager) moveOneLocked() bool {
+	type src struct {
+		n      *node
+		queued int64
+	}
+	var srcs []src
+	for _, n := range m.nodes {
+		var q int64
+		for _, j := range n.queue {
+			q += j.tokens
+		}
+		if q > 0 {
+			srcs = append(srcs, src{n, q})
+		}
+	}
+	sort.Slice(srcs, func(i, j int) bool { return srcs[i].queued > srcs[j].queued })
+	for _, s := range srcs {
+		head := s.n.queue[0]
+		if m.canRunLocked(s.n, head) {
+			continue // about to start where it is
+		}
+		for _, n := range m.nodes {
+			if n != s.n && n.mode == Prefill && len(n.queue) == 0 && m.canRunLocked(n, head) {
+				m.moveLocked(head, s.n, n)
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// moveLocked moves a queued job from src to dst and starts it there.
+func (m *Manager) moveLocked(j *Job, src, dst *node) {
+	src.queue = src.queue[1:]
+	src.pending -= j.tokens
+	dst.pending += j.tokens
+	j.n, j.Backend = dst, dst.b
+	dst.queue = append(dst.queue, j)
+	dst.idleSince = time.Time{}
+	m.trackBudgetLocked(src)
+	m.trackBudgetLocked(dst)
+	m.grantLocked(dst)
+	m.releaseIfIdleLocked(src)
+	m.publishLocked(src)
+	m.publishLocked(dst)
+	m.jobMoves.Add(1)
+	m.m.JobMoves.Inc()
 }
 
 func (m *Manager) dequeueLocked(j *Job) {
@@ -633,6 +729,9 @@ type NodeState struct {
 	PendingTokens int64  `json:"pending_tokens"`
 	RunningJobs   int    `json:"running_jobs"`
 	QueuedJobs    int    `json:"queued_jobs"`
+	// RunningTokens is the tokens of the running jobs: what the node has been
+	// sent, at most the budget unless one job exceeds it.
+	RunningTokens int64 `json:"running_tokens"`
 }
 
 // State is the split's view for /router-viz.
@@ -645,6 +744,7 @@ type State struct {
 	Jobs             uint64      `json:"jobs"`
 	JobsFailed       uint64      `json:"jobs_failed"`
 	JobRetries       uint64      `json:"job_retries"`
+	JobMoves         uint64      `json:"job_moves"`
 	Conversions      uint64      `json:"conversions"`
 	Releases         uint64      `json:"releases"`
 	BypassFallbacks  uint64      `json:"bypass_fallbacks"`
@@ -655,7 +755,7 @@ func (m *Manager) State() State {
 	m.mu.Lock()
 	st := State{Enabled: true, NodeBudgetTokens: m.cfg.NodeBudgetTokens, MaxFleetFraction: m.cfg.MaxFleetFraction}
 	for url, n := range m.nodes {
-		st.Nodes = append(st.Nodes, NodeState{URL: url, Mode: n.mode.String(), PendingTokens: n.pending, RunningJobs: n.running, QueuedJobs: len(n.queue)})
+		st.Nodes = append(st.Nodes, NodeState{URL: url, Mode: n.mode.String(), PendingTokens: n.pending, RunningJobs: n.running, QueuedJobs: len(n.queue), RunningTokens: n.runningTokens})
 	}
 	m.mu.Unlock()
 	sort.Slice(st.Nodes, func(i, j int) bool { return st.Nodes[i].URL < st.Nodes[j].URL })
@@ -663,6 +763,7 @@ func (m *Manager) State() State {
 	st.Jobs = m.jobsOK.Load() + m.jobsFailed.Load()
 	st.JobsFailed = m.jobsFailed.Load()
 	st.JobRetries = m.jobRetries.Load()
+	st.JobMoves = m.jobMoves.Load()
 	st.Conversions = m.conversions.Load()
 	st.Releases = m.releases.Load()
 	st.BypassFallbacks = m.fallbackNoNode.Load() + m.fallbackJobFailed.Load()

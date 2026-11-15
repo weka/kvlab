@@ -512,6 +512,11 @@ var (
 		Help: "Prefill jobs retried on the same node after it answered 429.",
 	}, []string{"pool"})
 
+	PrefillJobMoves = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "router_prefill_job_moves_total",
+		Help: "Queued prefill jobs moved to another prefill node that could start them at once.",
+	}, []string{"pool"})
+
 	PrefillQueuedJobs = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_prefill_queued_jobs",
 		Help: "Prefill jobs waiting for a slot under the node concurrency limit.",
@@ -619,7 +624,7 @@ func All() []prometheus.Collector {
 		CachePoolSize, CacheTreeRuns, CacheTailSet, CacheBlocksExpired, VLLMMetricsEndpoints,
 		RequestsShed, SaturationRejects, BackendCapExceeded, observedShadow,
 		PrefillRejections, PrefillJobs, PrefillConversions, PrefillReleases,
-		PrefillBypassFallbacks, PrefillJobRetries, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
+		PrefillBypassFallbacks, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds,
 	}
 }
@@ -859,6 +864,7 @@ type PrefillMetrics struct {
 	Conversions     prometheus.Counter
 	Releases        prometheus.Counter
 	JobRetries      prometheus.Counter
+	JobMoves        prometheus.Counter
 	Queued          prometheus.Gauge
 	FallbackNoNode  prometheus.Counter
 	FallbackJobFail prometheus.Counter
@@ -881,6 +887,7 @@ func ForPrefill(pool string) *PrefillMetrics {
 		Conversions:     PrefillConversions.WithLabelValues(pool),
 		Releases:        PrefillReleases.WithLabelValues(pool),
 		JobRetries:      PrefillJobRetries.WithLabelValues(pool),
+		JobMoves:        PrefillJobMoves.WithLabelValues(pool),
 		Queued:          PrefillQueuedJobs.WithLabelValues(pool),
 		FallbackNoNode:  PrefillBypassFallbacks.WithLabelValues(pool, "no_node"),
 		FallbackJobFail: PrefillBypassFallbacks.WithLabelValues(pool, "job_failed"),
