@@ -18,7 +18,8 @@ func TestValidateRouting(t *testing.T) {
 		{"--transient-fallback-threshold", func(o *Options) { o.TransientFallback = 0.05 }},
 		{"--cache-split-guard", func(o *Options) { o.SplitGuard = 0.3 }},
 		{"--prefill-split", func(o *Options) { o.PrefillSplit = true }},
-		{"--pd-prefill-backends", func(o *Options) { o.PDPrefillBackends = []string{"http://p:8000"} }},
+		{"--pd-prefill-soft-node-concurrency", func(o *Options) { o.PDPrefillSoftNodeConcurrency = 2 }},
+		{"--pd-decode-soft-node-concurrency", func(o *Options) { o.PDDecodeSoftNodeConcurrency = 2 }},
 	}
 	for _, c := range ladderOnly {
 		var cost, ladder Options

@@ -1,6 +1,7 @@
 package gateway_test
 
 import (
+	"github.com/weka/kvlab/router/internal/lease"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -48,8 +49,8 @@ func newPDDiscovered(t *testing.T, n int, prefill ...int) *pdDiscovered {
 	for _, i := range prefill {
 		pURLs = append(pURLs, f.urls[i])
 	}
-	p := &pool.Pool{Name: "default", Registry: f.reg, Flow: mustFlow(t, affinityCfg()),
-		PD: pd.New("default", pURLs), PDFlow: mustFlow(t, affinityCfg())}
+	p := &pool.Pool{Name: "default", Registry: f.reg, Flow: mustFlow(t, pdFlow()),
+		PD: pd.New("default", pURLs), PDFlow: mustFlow(t, pdFlow())}
 	tbl, err := routing.NewTable([]routing.Rule{{Pool: p}})
 	if err != nil {
 		t.Fatal(err)
@@ -171,5 +172,58 @@ func TestPDNoDecodeEndpointFailsPromptly(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Errorf("took %v", time.Since(start))
+	}
+}
+
+// The same scenarios as the ladder, with the default cost routing on both legs:
+// legs stay in their role's set, a failed prefill falls back to decode alone,
+// and a session keeps its P node and its D node.
+func TestPDUnderCostRouting(t *testing.T) {
+	for name, fn := range map[string]func(*testing.T){
+		"legs never cross node sets":       TestPDLegsNeverCrossNodeSets,
+		"per-leg stickiness":               TestPDAffinityKeepsASessionOnItsPAndDNodes,
+		"prefill failure falls back":       TestPDPrefillFailureFallsBackToDecodeWithoutParams,
+		"leg then params":                  TestPDRequestRunsPrefillLegThenDecodeLegWithItsParams,
+		"messages served on decode only":   TestPDMessagesAreServedOnDecodeNodesOnly,
+		"discovered endpoints arrive late": TestPDDiscoveredEndpointsArriveAfterStart,
+		"prefill leaves and returns":       TestPDDiscoveredPrefillLeavesAndReturns,
+		"no decode node":                   TestPDNoDecodeEndpointFailsPromptly,
+	} {
+		t.Run(name, func(t *testing.T) {
+			usePDCostRouting(t, 0)
+			fn(t)
+		})
+	}
+}
+
+// The per-role cap is a hard limit under cost routing: a P node at its cap is
+// sent nothing, the prefill leg waits for room, and runs once the node has it.
+func TestPDPerRoleCapIsHardUnderCostRouting(t *testing.T) {
+	usePDCostRouting(t, 1)
+	f := newPDFleet(t, 1, 1, "")
+	held := lease.Acquire(f.backend[0]) // the lone P node is at its cap of 1
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if status, body := f.post(t, "/v1/chat/completions", chatBody("hi", false)); status != http.StatusOK {
+			t.Errorf("status %d: %s", status, body)
+		}
+	}()
+	select {
+	case <-done:
+		t.Fatal("request finished while the only P node was at its cap")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if got := f.callsOf(func(c pdCall) bool { return f.isP(c.node) }); len(got) != 0 {
+		t.Fatalf("the P node at its cap received %+v", got)
+	}
+	held.Release()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("request never ran after the P node had room")
+	}
+	if n := len(f.calls); n != 2 {
+		t.Errorf("calls = %d, want a prefill leg and a decode leg", n)
 	}
 }

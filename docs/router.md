@@ -106,8 +106,9 @@ signals below, so these still apply under cost routing:
 instead, and is **required** by the settings only the ladder honours:
 `--soft-node-concurrency`, `--soft-ttft-split`, `--relative-ttft-split`,
 `--relative-decode-split`, `--transient-fallback-threshold`, a non-default
-`--cache-split-guard`, `--prefill-split` and `--pd-prefill-backends` (with its
-`--pd-*` bands). Setting one without `--no-cost-routing` stops the router at
+`--cache-split-guard`, `--prefill-split` and the `--pd-prefill-soft-node-concurrency`
+/ `--pd-decode-soft-node-concurrency` bands. `--pd-prefill-backends` works under
+either mode. Setting one without `--no-cost-routing` stops the router at
 startup, naming the flag. `--cost-routing` is accepted and does nothing.
 Everything below about splitting, the split guard and the soft band describes
 the ladder.
@@ -211,7 +212,7 @@ prefill node at all the request is resent to the backend that refused it, with
 the bypass. It needs a KV tier the nodes share; without one the prefill is
 wasted work.
 
-**Prefill/decode disaggregation (vanilla vLLM NIXL).** `--pd-prefill-backends=<urls>` (ladder only; needs `--no-cost-routing`)
+**Prefill/decode disaggregation (vanilla vLLM NIXL).** `--pd-prefill-backends=<urls>` (works under cost routing, the default, and the ladder)
 names the prefill (P) nodes by URL; every other backend is a decode (D) node.
 With a static `--backends` list the URLs must be members of it, or the router
 exits at startup. With `--backends=pods:<selector>` the members are not known at
@@ -241,6 +242,17 @@ fails, or answers without `kv_transfer_params`, sends the request to a D node
 alone, which recomputes (`router_pd_fallbacks_total`). `/v1/messages` carries no
 `kv_transfer_params` and is served on D nodes only. `/router-viz` shows each
 backend's role as its `mode` (`prefill` or `decode`).
+
+Under cost routing each leg picks the usable node of its own set with the lowest
+cost, over that set's own prefix tree. P leg: tokens of the prompt not held in the
+P tree, plus the node's in-flight prefill tokens and active context tokens. D leg:
+the same formula over the D tree, so a D node that already holds the conversation
+is charged only for the tokens its tree lacks, not the whole prompt (the missing blocks
+arrive by NIXL transfer; they are still counted at full weight as prefill load, a
+conservative simplification). A session therefore stays on its P node and its D
+node until the other nodes' extra load outweighs the tokens a move would re-send.
+Per-role `--pd-*-max-node-concurrency` caps are hard limits in both modes. The
+per-role *soft* bands are ladder-only.
 
 The two roles can run different concurrency bands:
 `--pd-prefill-soft-node-concurrency` / `--pd-prefill-max-node-concurrency` for the

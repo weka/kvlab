@@ -109,3 +109,12 @@ func TestRelativeThreadedIntoFlowConfig(t *testing.T) {
 		t.Errorf("startup summary missing relative signals: %s", s)
 	}
 }
+
+// P/D runs under the default cost routing; only its per-role soft bands need
+// the ladder.
+func TestPDAllowedUnderCostRouting(t *testing.T) {
+	o := Options{CostRouting: true, PDPrefillBackends: []string{"http://p:8000"}, PDPrefillMaxNodeConcurrency: 8}
+	if err := o.validateRouting(); err != nil {
+		t.Errorf("--pd-prefill-backends under cost routing: %v", err)
+	}
+}

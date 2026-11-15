@@ -362,7 +362,10 @@ func (o Options) validateRouting() error {
 		{"--transient-fallback-threshold", o.TransientFallback != 0},
 		{"--cache-split-guard", o.SplitGuard != 0 && o.SplitGuard != DefaultSplitGuard},
 		{"--prefill-split", o.PrefillSplit},
-		{"--pd-prefill-backends", len(o.PDPrefillBackends) > 0},
+		// The per-role soft limits are the ladder's soft band, which cost
+		// routing has no use for; the hard per-role caps are honoured by both.
+		{"--pd-prefill-soft-node-concurrency", o.PDPrefillSoftNodeConcurrency != 0},
+		{"--pd-decode-soft-node-concurrency", o.PDDecodeSoftNodeConcurrency != 0},
 	}
 	for _, l := range ladderOnly {
 		if l.set {

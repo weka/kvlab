@@ -15,6 +15,7 @@ import (
 	"github.com/weka/kvlab/router/internal/gateway"
 	"github.com/weka/kvlab/router/internal/mockvllm"
 	"github.com/weka/kvlab/router/internal/pd"
+	"github.com/weka/kvlab/router/internal/policy/affinity"
 	"github.com/weka/kvlab/router/internal/pool"
 	"github.com/weka/kvlab/router/internal/proxy"
 	"github.com/weka/kvlab/router/internal/registry"
@@ -37,6 +38,19 @@ func (c pdCall) isPrefillLeg() bool {
 	}
 	_ = json.Unmarshal(c.body["kv_transfer_params"], &kv)
 	return kv.RemoteDecode
+}
+
+// pdFlow is the flow config the fleets' P and D flows are built from. Tests
+// that run the same scenarios under cost routing set it with usePDCostRouting.
+var pdFlow = func() affinity.Config { return affinityCfg() }
+
+func usePDCostRouting(t *testing.T, nodeConcurrency int64) {
+	t.Helper()
+	old := pdFlow
+	pdFlow = func() affinity.Config {
+		return affinity.Config{CostRouting: true, NodeConcurrency: nodeConcurrency}
+	}
+	t.Cleanup(func() { pdFlow = old })
 }
 
 type pdFleet struct {
@@ -112,8 +126,8 @@ func newPDFleet(t *testing.T, nP, nD int, rewrite string, surface ...mockvllm.Su
 			pURLs = append(pURLs, ts.URL)
 		}
 	}
-	p := &pool.Pool{Name: "default", Registry: reg, Flow: mustFlow(t, affinityCfg()),
-		PD: pd.New("default", pURLs), PDFlow: mustFlow(t, affinityCfg())}
+	p := &pool.Pool{Name: "default", Registry: reg, Flow: mustFlow(t, pdFlow()),
+		PD: pd.New("default", pURLs), PDFlow: mustFlow(t, pdFlow())}
 	tbl, err := routing.NewTable([]routing.Rule{{Pool: p, RewriteModel: rewrite}})
 	if err != nil {
 		t.Fatal(err)
