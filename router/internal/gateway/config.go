@@ -181,6 +181,9 @@ type Target struct {
 	// PD, when set, runs every chat and completions request as a prefill leg on
 	// a P node and then a decode leg on a D node. Nil is ordinary routing.
 	PD *pd.Set
+	// SplitSelector, when set, is the flow that chooses the node for a
+	// prefill-split job, with its own prefix state; nil uses Selector.
+	SplitSelector proxy.Selector
 	// PrefillSelector is the flow that chooses among the P nodes.
 	PrefillSelector proxy.Selector
 }

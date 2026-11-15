@@ -141,6 +141,7 @@ func (r Rule) target() gateway.Target {
 		Split:                   r.Pool.Split,
 		PD:                      r.Pool.PD,
 		PrefillSelector:         pdSelector(r.Pool),
+		SplitSelector:           splitSelector(r.Pool),
 	}
 }
 
@@ -178,6 +179,13 @@ func NormalizePatterns(raw string) []string {
 
 // pdSelector is the flow for the prefill leg, nil without disaggregation. A nil
 // *affinity.Policy must not become a non-nil Selector.
+func splitSelector(p *pool.Pool) proxy.Selector {
+	if p.SplitFlow == nil {
+		return nil
+	}
+	return p.SplitFlow
+}
+
 func pdSelector(p *pool.Pool) proxy.Selector {
 	if p.PDFlow == nil {
 		return nil

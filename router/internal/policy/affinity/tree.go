@@ -250,6 +250,25 @@ func (t *tree) dropBackend(url string) {
 	t.slotMu.Unlock()
 }
 
+// forgetBackend clears a backend's marks from every run but keeps its slot, for
+// a backend that stays in the pool yet whose cache no longer holds what the
+// tree remembers (it changed role and ran other work).
+func (t *tree) forgetBackend(url string) {
+	s, ok := t.slot(url)
+	if !ok {
+		return
+	}
+	for i := range t.shards {
+		sh := &t.shards[i]
+		sh.mu.Lock()
+		for _, root := range sh.roots {
+			sh.clearSlot(root, s)
+		}
+		sh.evictOrphans()
+		sh.mu.Unlock()
+	}
+}
+
 // clearSlot removes one backend from every run in the subtree. Caller holds
 // the write lock.
 func (s *shard) clearSlot(r *run, slot int) {

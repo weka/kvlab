@@ -867,6 +867,9 @@ func (p *Policy) DropBackend(b *registry.Backend) {
 	p.tree.dropBackend(b.URL)
 }
 
+// Forget clears everything the flow remembers b holding, keeping b in the pool.
+func (p *Policy) Forget(b *registry.Backend) { p.tree.forgetBackend(b.URL) }
+
 // Flush discards the whole tree. Backs the same operational reset the older
 // cache policies expose.
 func (p *Policy) Flush() { p.tree.flush() }

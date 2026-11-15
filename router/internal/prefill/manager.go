@@ -83,6 +83,11 @@ type Config struct {
 	// ready instead of draining a node afresh. 0 releases at once.
 	ReleaseIdle time.Duration
 
+	// OnModeChange, when set, is told of every role change of a node, with the
+	// manager's lock held: it must be quick and must not call back into the
+	// manager.
+	OnModeChange func(b *registry.Backend, from, to Mode)
+
 	Clock    clock.Clock
 	PoolName string
 }
@@ -247,7 +252,7 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode):
 		chosen = leastLoaded(decode)
 		n := m.nodes[chosen.URL]
-		n.mode = Draining
+		m.setModeLocked(n, Draining)
 		m.conversions.Add(1)
 		m.m.Conversions.Inc()
 	case len(nonDecode) > 0:
@@ -357,7 +362,7 @@ func (m *Manager) WaitReady(ctx context.Context, j *Job) error {
 	for {
 		m.mu.Lock()
 		if j.n.mode == Draining && j.Backend.Inflight() == 0 {
-			j.n.mode = Prefill
+			m.setModeLocked(j.n, Prefill)
 			m.publishLocked(j.n)
 		}
 		if j.n.mode != Draining {
@@ -466,8 +471,17 @@ func (m *Manager) releaseIfIdleLocked(n *node) {
 	m.releaseLocked(n)
 }
 
+// setModeLocked is the only place a node's role changes.
+func (m *Manager) setModeLocked(n *node, to Mode) {
+	from := n.mode
+	n.mode = to
+	if from != to && m.cfg.OnModeChange != nil {
+		m.cfg.OnModeChange(n.b, from, to)
+	}
+}
+
 func (m *Manager) releaseLocked(n *node) {
-	n.mode = Decode
+	m.setModeLocked(n, Decode)
 	n.idleSince = time.Time{}
 	m.releases.Add(1)
 	m.m.Releases.Inc()

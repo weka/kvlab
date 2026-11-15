@@ -51,6 +51,14 @@ func (s *Server) splitAndServe(
 	m.CountJob(ok)
 	if !ok {
 		m.FallbackJobFailed()
+	} else if c, isC := target.SplitSelector.(policy.Committer); isC {
+		// The node now holds the prefix: remember it in the prefill flow, so a
+		// later job of the same conversation prefers it. Never in the decode
+		// flow, where the node is not a candidate and a mark would make the
+		// request's real holders look unavailable to the resend.
+		leg := *rr
+		leg.PolicyState = nil
+		c.Commit(job.Backend, &leg)
 	}
 	job.Done()
 
@@ -66,6 +74,9 @@ func (s *Server) prefillPicker(t Target, rr *policy.RoutingRequest, r *http.Requ
 	return func(eligible []*registry.Backend) (*registry.Backend, error) {
 		sel := *rr
 		sel.PolicyState = nil
+		if t.SplitSelector != nil {
+			return t.SplitSelector.Select(r.Context(), eligible, &sel)
+		}
 		return t.Selector.Select(r.Context(), eligible, &sel)
 	}
 }

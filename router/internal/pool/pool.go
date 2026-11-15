@@ -103,6 +103,11 @@ type Pool struct {
 	// PDFlow routes the prefill leg over the P nodes, with prefix state of its
 	// own. Flow routes the decode leg.
 	PDFlow *affinity.Policy
+	// SplitFlow is, under cost routing with the prefill split, the flow that
+	// routes prefill jobs over the prefill-mode nodes, with a prefix tree of its
+	// own. Flow keeps routing decode. Nil otherwise: the ladder's job pick uses
+	// Flow.
+	SplitFlow *affinity.Policy
 
 	checker *health.Checker
 	clk     clock.Clock
@@ -124,7 +129,8 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 	// one prefix tree shared by both roles would anchor a request at the deeper
 	// run the other role holds, and neither would see its own session as a hit.
 	var pflow *affinity.Policy
-	if len(cfg.PDPrefill) > 0 {
+	splitFlow := cfg.PrefillSplit != nil && cfg.Flow.CostRouting && len(cfg.PDPrefill) == 0
+	if len(cfg.PDPrefill) > 0 || splitFlow {
 		pc := cfg.Flow
 		if cfg.PDPrefillFlow != nil {
 			pc = *cfg.PDPrefillFlow
@@ -169,9 +175,26 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 		clk:      clk,
 	}
 
+	if splitFlow {
+		p.SplitFlow = pflow
+	}
 	if cfg.PrefillSplit != nil {
 		sc := *cfg.PrefillSplit
 		sc.PoolName, sc.Clock = cfg.Name, clk
+		if p.SplitFlow != nil {
+			// A node's marks only count while it is in the role that made them:
+			// leaving decode, its cache is about to be overwritten by prefill
+			// work; leaving prefill, by decode work. Forgetting at the change
+			// keeps either tree from crediting a node with KV it no longer holds.
+			sc.OnModeChange = func(b *registry.Backend, from, to prefill.Mode) {
+				if from == prefill.Decode {
+					p.Flow.Forget(b)
+				}
+				if to == prefill.Decode {
+					p.SplitFlow.Forget(b)
+				}
+			}
+		}
 		p.Split = prefill.New(sc)
 	}
 
@@ -240,6 +263,10 @@ func (p *Pool) Run(ctx context.Context) {
 	}
 	if p.PD != nil {
 		go p.watchPD(ctx)
+	}
+	if p.SplitFlow != nil {
+		go p.tick(ctx, sweepInterval(p.SplitFlow.TailTTL()), func() { p.SplitFlow.Sweep() })
+		go p.tick(ctx, gaugeInterval, p.SplitFlow.PublishGauges)
 	}
 	if p.Split != nil {
 		go p.Split.Run(ctx, func() []*registry.Backend { return p.Registry.Snapshot().Backends })

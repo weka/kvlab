@@ -191,6 +191,20 @@ never refuses, so a rejection cannot loop; if the shared KV tier lagged the
 prefill, the decode node recomputes the rest. With the flag off the `503`
 reaches the client unchanged.
 
+Under cost routing the prefill nodes are routed separately from the decode nodes,
+as with fixed P/D. Prefill jobs are placed by a flow of their own with its own
+prefix tree: among the nodes the manager offers (it still packs jobs onto the
+fullest prefill node first; the flow breaks ties), the one with the lowest cost
+wins, where cost is the prompt tokens that node's prefill tree does not hold plus
+its in-flight prefill and active tokens. After a job succeeds its prefix is
+recorded in the prefill tree only, never in the decode tree, so the decode resend
+(over the decode nodes, with the decode tree) is unaffected. A node's marks count
+only while it is in the role that made them: when a node leaves decode its decode
+marks are dropped, and when it returns to decode its prefill marks are dropped.
+`--prefill-release-idle` therefore also sets how long a node keeps its prefill
+prefixes. The ladder keeps choosing jobs with the shared flow. The resend is not
+discounted for the prefix now being loadable from the shared tier.
+
 A node is `decode` (normal), `draining` (no new decode routing; its running
 requests finish, and prefill jobs queue behind them), `prefill` (jobs only), and
 back to `decode` once it has no prefill job running or queued — at once, or
