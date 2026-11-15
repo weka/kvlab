@@ -325,3 +325,60 @@ func TestCostRoutingExcludesImbalancedBackend(t *testing.T) {
 		t.Errorf("routed to the imbalanced holder %s, want it excluded", got.URL)
 	}
 }
+
+// A prefix a finished prefill job left in the shared tier is held by every
+// candidate for the cost evaluation, so a non-holder pays only past the cut,
+// and a holder keeps its advantage only for what it holds beyond the cut.
+func TestCostRoutingPreloadedPrefixCreditsEveryCandidate(t *testing.T) {
+	p := newCostPolicy(t)
+	f := fleet(t, 3)
+	for _, b := range f {
+		p.AddBackend(b)
+	}
+	u := units(1, 2, 3, 4) // 1024 tokens
+	p.Commit(f[0], req(units(1, 2)))
+	// w0 holds 512 of the 1024. It carries 400 extra active tokens.
+	f[0].AddActiveTokens(400)
+
+	sel := func(preloaded int64) (*registry.Backend, int64) {
+		rr := req(u)
+		rr.PreloadedTokens = preloaded
+		got, err := p.Select(context.Background(), f, rr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got, rr.Prefill.Tokens
+	}
+
+	// No credit: w0's 512 held tokens beat the 400 extra load -> it wins.
+	if got, tok := sel(0); got != f[0] || tok != 512 {
+		t.Errorf("no credit: %s uncached %d, want w0 / 512", got.URL, tok)
+	}
+	// Cut at 512: w0's holding is no longer an advantage, w0's extra load is
+	// not worth it, so a non-holder wins and pays only the 512 past the cut.
+	if got, tok := sel(512); got == f[0] || tok != 512 {
+		t.Errorf("cut 512: %s uncached %d, want a non-holder / 512", got.URL, tok)
+	}
+	// Cut at 256 (inside w0's holding): w0 still has 256 tokens beyond the cut
+	// that a non-holder lacks (768 vs 512 uncached) but its 400 extra load
+	// outweighs that 256 advantage.
+	if got, tok := sel(256); got == f[0] || tok != 768 {
+		t.Errorf("cut 256: %s uncached %d, want a non-holder / 768", got.URL, tok)
+	}
+	// Cut at 256 with less extra load on w0: the holder's advantage past the
+	// cut (256) now wins, and it is charged only what it lacks (512).
+	f[0].AddActiveTokens(-300) // extra load 100
+	if got, tok := sel(256); got != f[0] || tok != 512 {
+		t.Errorf("cut 256, light load: %s uncached %d, want w0 / 512", got.URL, tok)
+	}
+	// The credit is never recorded: the tree still says only w0 holds anything.
+	for _, b := range f[1:] {
+		rr := req(u)
+		if _, err := p.Select(context.Background(), []*registry.Backend{b}, rr); err != nil {
+			t.Fatal(err)
+		}
+		if rr.Prefill.Tokens != 1024 {
+			t.Errorf("%s: credit leaked into the tree: uncached %d, want 1024", b.URL, rr.Prefill.Tokens)
+		}
+	}
+}

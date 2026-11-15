@@ -47,7 +47,7 @@ func (s *Server) splitAndServe(
 	if err := m.WaitReady(r.Context(), job); err != nil {
 		return proxy.Result{Err: err}
 	}
-	ok := s.runPrefillJob(r, m, job.Backend, rr, prefill.JobBody(body), auth)
+	ok := s.runPrefillJob(r, m, target, job.Backend, rr, prefill.JobBody(body), auth)
 	m.CountJob(ok)
 	if !ok {
 		m.FallbackJobFailed()
@@ -59,6 +59,14 @@ func (s *Server) splitAndServe(
 		leg := *rr
 		leg.PolicyState = nil
 		c.Commit(job.Backend, &leg)
+		// The prompt's KV, up to the tier's storage cut, can now be loaded by
+		// any decode node: the resend's cost counts it as held everywhere
+		// without marking it in the decode tree.
+		var total int64
+		for _, u := range rr.Units {
+			total += int64(u.Tokens)
+		}
+		rr.PreloadedTokens = m.StoreCut(total)
 	}
 	job.Done()
 
@@ -91,14 +99,27 @@ func (s *Server) prefillPicker(t Target, rr *policy.RoutingRequest, r *http.Requ
 // race lost: the job holds its slot and tries again after a short backoff, the
 // node's Retry-After when it sent one, until it is served or the caller leaves.
 // Only another failure ends the job unsuccessfully.
-func (s *Server) runPrefillJob(r *http.Request, m *prefill.Manager, b *registry.Backend,
+func (s *Server) runPrefillJob(r *http.Request, m *prefill.Manager, target Target, b *registry.Backend,
 	rr *policy.RoutingRequest, body []byte, auth proxy.Auth) bool {
 	job := *rr
 	job.PolicyState = nil
+	// The prefill flow, when there is one, learns of a node's refusals and
+	// acceptances like the fixed P/D flow does, so a refusing node is passed
+	// over for its TTL.
+	var outcome proxy.OnOutcome
+	if o, ok := target.SplitSelector.(policy.Observer); ok {
+		outcome = func(b *registry.Backend, status int) {
+			if status == http.StatusTooManyRequests {
+				o.OnRefused(b)
+			} else if status >= 200 && status < 500 {
+				o.OnAccepted(b)
+			}
+		}
+	}
 	for attempt := 0; ; attempt++ {
 		dw := &discardWriter{h: http.Header{}}
 		res := s.px.Serve(dw, r, []*registry.Backend{b}, policy.LeastOutstanding{},
-			s.dialect, &job, body, nil, nil, auth)
+			s.dialect, &job, body, nil, outcome, auth)
 		if res.Err == nil && !res.PrefillRejected && res.Status >= 200 && res.Status < 300 {
 			return true
 		}

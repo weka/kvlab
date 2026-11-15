@@ -55,6 +55,11 @@ func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path,
 		total += int64(pth.tokens(i))
 	}
 	held := p.tree.heldTokens(pth, slots)
+	if credit := min(rr.PreloadedTokens, total); credit > 0 {
+		for i := range held {
+			held[i] = max(held[i], credit)
+		}
+	}
 	var deepest int64
 	best, bestHeld := 0, int64(0)
 	var bestCost int64

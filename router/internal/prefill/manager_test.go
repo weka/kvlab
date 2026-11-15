@@ -700,3 +700,74 @@ func TestReleaseIdleStillReturnsAJoblessDrainingNodeAtOnce(t *testing.T) {
 		t.Errorf("mode = %v, want decode: a draining node serves nothing while it waits", got)
 	}
 }
+
+// With CostPick the picker chooses among every eligible node, not just the
+// fullest; nodes without room are still never offered. Without it the ladder's
+// fullest-first packing is unchanged.
+func TestCostPickOffersEveryEligibleNodeNotJustTheFullest(t *testing.T) {
+	setup := func(cost bool) (*fleet, *Job, *Job, *Job) {
+		f := newFleet(t, 6, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.5, CostPick: cost})
+		a, _ := f.m.Reserve(f.bs, 40, nil) // room for 60 more
+		b, _ := f.m.Reserve(f.bs, 90, nil) // room for 10
+		c, _ := f.m.Reserve(f.bs, 90, nil)
+		return f, a, b, c
+	}
+
+	// Ladder: node b/c are fullest with room for 5, a is not offered at all.
+	f, a, b, c := setup(false)
+	var offered []*registry.Backend
+	_, _ = f.m.Reserve(f.bs, 5, func(el []*registry.Backend) (*registry.Backend, error) {
+		offered = el
+		return el[0], nil
+	})
+	if len(offered) != 2 {
+		t.Errorf("ladder offered %d nodes, want the 2 fullest", len(offered))
+	}
+	_ = a
+
+	// Cost: all three have room for 5 and all are offered; the pick is the
+	// policy's, even a node that is not the fullest.
+	f, a, b, c = setup(true)
+	offered = nil
+	j, _ := f.m.Reserve(f.bs, 5, func(el []*registry.Backend) (*registry.Backend, error) {
+		offered = el
+		for _, e := range el {
+			if e == a.Backend {
+				return e, nil
+			}
+		}
+		return nil, errors.New("a not offered")
+	})
+	if len(offered) != 3 || j.Backend != a.Backend {
+		t.Errorf("cost pick offered %d nodes, job on %s; want all 3 and the policy's pick %s", len(offered), j.Backend.URL, a.Backend.URL)
+	}
+
+	// Budget still bounds eligibility: 45 fits only a.
+	offered = nil
+	_, _ = f.m.Reserve(f.bs, 45, func(el []*registry.Backend) (*registry.Backend, error) {
+		offered = el
+		return el[0], nil
+	})
+	if len(offered) != 1 || offered[0] != a.Backend {
+		t.Errorf("cost pick offered %v for a 45-token job, want only the node with room", offered)
+	}
+	_, _ = b, c
+
+	// A declining policy falls back to packing instead of refusing the job.
+	f, _, _, _ = setup(true)
+	if _, err := f.m.Reserve(f.bs, 5, func([]*registry.Backend) (*registry.Backend, error) {
+		return nil, errors.New("saturated")
+	}); err != nil {
+		t.Errorf("declining policy refused a job that fits: %v", err)
+	}
+}
+
+func TestStoreCut(t *testing.T) {
+	for _, c := range []struct{ unit, tokens, want int64 }{
+		{0, 5000, 5000}, {4096, 5000, 4096}, {4096, 4095, 0}, {4096, 8192, 8192},
+	} {
+		if got := New(Config{StoreUnitTokens: c.unit}).StoreCut(c.tokens); got != c.want {
+			t.Errorf("StoreCut(unit %d, %d) = %d, want %d", c.unit, c.tokens, got, c.want)
+		}
+	}
+}

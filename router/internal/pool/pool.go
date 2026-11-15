@@ -181,6 +181,7 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 	if cfg.PrefillSplit != nil {
 		sc := *cfg.PrefillSplit
 		sc.PoolName, sc.Clock = cfg.Name, clk
+		sc.CostPick = p.SplitFlow != nil
 		if p.SplitFlow != nil {
 			// A node's marks only count while it is in the role that made them:
 			// leaving decode, its cache is about to be overwritten by prefill

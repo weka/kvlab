@@ -193,17 +193,27 @@ reaches the client unchanged.
 
 Under cost routing the prefill nodes are routed separately from the decode nodes,
 as with fixed P/D. Prefill jobs are placed by a flow of their own with its own
-prefix tree: among the nodes the manager offers (it still packs jobs onto the
-fullest prefill node first; the flow breaks ties), the one with the lowest cost
-wins, where cost is the prompt tokens that node's prefill tree does not hold plus
+prefix tree: among the prefill nodes with budget room (and under the node
+concurrency bound) the one with the lowest cost wins, not the fullest node (the
+ladder still packs onto the fullest and uses the flow only to break ties), where cost is the prompt tokens that node's prefill tree does not hold plus
 its in-flight prefill and active tokens. After a job succeeds its prefix is
 recorded in the prefill tree only, never in the decode tree, so the decode resend
 (over the decode nodes, with the decode tree) is unaffected. A node's marks count
 only while it is in the role that made them: when a node leaves decode its decode
 marks are dropped, and when it returns to decode its prefill marks are dropped.
 `--prefill-release-idle` therefore also sets how long a node keeps its prefill
-prefixes. The ladder keeps choosing jobs with the shared flow. The resend is not
-discounted for the prefix now being loadable from the shared tier.
+prefixes. Conversion and release stay the manager's decisions (budget, fleet fraction,
+`--prefill-convert-after`, `--prefill-release-idle`); cost only chooses among the
+current prefill nodes and never converts one. The flow also hears of a prefill
+node's `429` refusals and later accepts, like the fixed P/D flow. The ladder keeps
+choosing jobs with the shared flow.
+
+After a successful job the decode resend is credited for what the job stored: the
+leading `floor(prompt / unit) * unit` tokens are treated as held by every decode
+node in that request's cost, and are not recorded in the decode tree. A
+non-holder pays only for tokens past the cut; a node whose decode tree holds more
+keeps an advantage only for what it holds beyond the cut. `--prefill-store-unit-tokens`
+(default 0 = the whole prompt) sets `unit`, the granularity of the shared KV tier.
 
 A node is `decode` (normal), `draining` (no new decode routing; its running
 requests finish, and prefill jobs queue behind them), `prefill` (jobs only), and

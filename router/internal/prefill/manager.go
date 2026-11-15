@@ -83,6 +83,16 @@ type Config struct {
 	// ready instead of draining a node afresh. 0 releases at once.
 	ReleaseIdle time.Duration
 
+	// StoreUnitTokens is the granularity the shared KV tier stores a prompt at:
+	// a finished job leaves floor(prompt / unit) * unit tokens loadable by any
+	// node. 0 means the whole prompt.
+	StoreUnitTokens int64
+	// CostPick lets the Picker choose among ALL eligible prefill nodes, instead
+	// of only breaking ties among the fullest. Set under cost routing, where the
+	// picker is the cost choice over the prefill flow's own tree; unset, jobs
+	// pack onto the fullest node (the ladder). Eligibility, conversion and
+	// release are the manager's either way.
+	CostPick bool
 	// OnModeChange, when set, is told of every role change of a node, with the
 	// manager's lock held: it must be quick and must not call back into the
 	// manager.
@@ -214,6 +224,15 @@ func (m *Manager) DecodeNodes(cands []*registry.Backend) []*registry.Backend {
 	return out
 }
 
+// StoreCut is how many leading tokens of a prompt of the given size a finished
+// job leaves in the shared tier.
+func (m *Manager) StoreCut(tokens int64) int64 {
+	if u := m.cfg.StoreUnitTokens; u > 0 {
+		return tokens / u * u
+	}
+	return tokens
+}
+
 // Reserve picks the node a prefill job of tokens runs on and charges it.
 //
 //  1. Among draining and prefill nodes with budget room, take the one with the
@@ -273,6 +292,13 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 }
 
 func (m *Manager) pickLocked(eligible []*registry.Backend, pick Picker) *registry.Backend {
+	if m.cfg.CostPick && pick != nil {
+		// A policy that declines (every node saturated by some signal) must not
+		// refuse work the budget says fits: fall through to packing.
+		if b, err := pick(eligible); err == nil && b != nil {
+			return b
+		}
+	}
 	var fullest []*registry.Backend
 	for _, b := range eligible {
 		switch p := m.nodes[b.URL].pending; {

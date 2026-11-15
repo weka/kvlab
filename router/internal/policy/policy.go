@@ -75,8 +75,13 @@ type RoutingRequest struct {
 	// Prefill is set by cost routing to the backend it selected and the request's
 	// uncached tokens there. The proxy charges the prefill-load gauge from it; nil
 	// means cost routing is off and nothing is charged.
-	Prefill  *PrefillEstimate
-	Deadline time.Time
+	Prefill *PrefillEstimate
+	// PreloadedTokens is a leading part of the prompt that any backend can load
+	// from a shared KV tier (a prefill job just stored it). Cost routing treats
+	// it as held by every candidate, without recording it anywhere: a holder
+	// keeps its advantage only for tokens past it. Zero means none.
+	PreloadedTokens int64
+	Deadline        time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

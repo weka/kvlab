@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/weka/kvlab/kvcache"
+	"github.com/weka/kvlab/router/internal/policy"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,13 +37,19 @@ type costSplitFleet struct {
 	pool    *pool.Pool
 	backend []*registry.Backend
 
+	// refuseFirstJob makes the first prefill job any node receives answer 429
+	// (Retry-After 1); refusedNode is that node.
+	refuseFirstJob atomic.Bool
+	refusedNode    atomic.Int32
+
 	mu    sync.Mutex
 	calls []call
 }
 
-func newCostSplitFleet(t *testing.T, n int) *costSplitFleet {
+func newCostSplitFleet(t *testing.T, n int, storeUnit int64) *costSplitFleet {
 	t.Helper()
 	f := &costSplitFleet{}
+	f.refusedNode.Store(-1)
 	tier := mockvllm.NewTier()
 	var cfgB []pool.Backend
 	for i := range n {
@@ -60,6 +70,12 @@ func newCostSplitFleet(t *testing.T, n int) *costSplitFleet {
 				f.calls = append(f.calls, call{node: node, path: r.URL.Path, maxTokens: doc.MaxTokens,
 					bypass: doc.XArgs["weka_prefill"] != nil})
 				f.mu.Unlock()
+				if doc.XArgs["weka_prefill"] != nil && doc.MaxTokens == 1 && f.refuseFirstJob.CompareAndSwap(true, false) {
+					f.refusedNode.Store(int32(node))
+					w.Header().Set("Retry-After", "1")
+					http.Error(w, "busy", http.StatusTooManyRequests)
+					return
+				}
 			}
 			h.ServeHTTP(w, r)
 		}))
@@ -71,7 +87,7 @@ func newCostSplitFleet(t *testing.T, n int) *costSplitFleet {
 		Flow: affinity.Config{CostRouting: true},
 		// A tiny budget makes a second concurrent job convert a second node;
 		// a long idle release keeps converted nodes in prefill mode.
-		PrefillSplit: &prefill.Config{NodeBudgetTokens: 1, ReleaseIdle: time.Hour},
+		PrefillSplit: &prefill.Config{NodeBudgetTokens: 1, ReleaseIdle: time.Hour, StoreUnitTokens: storeUnit},
 	}, clock.Real{}, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +177,7 @@ func (f *costSplitFleet) turn(t *testing.T, convo string, turn int) (jobNode, de
 // node that holds its prefix, chosen by the prefill flow's own tree; and its
 // decode resends keep going to one decode node, chosen by the decode tree.
 func TestSplitPrefillAndDecodeStickinessPerConversationUnderCostRouting(t *testing.T) {
-	f := newCostSplitFleet(t, 4)
+	f := newCostSplitFleet(t, 4, 0)
 	f.twoPrefillNodes(t)
 
 	jobs := map[string]map[int]bool{"X": {}, "Y": {}}
@@ -199,5 +215,74 @@ func TestSplitPrefillAndDecodeStickinessPerConversationUnderCostRouting(t *testi
 		if len(decodes[c]) != 1 {
 			t.Errorf("conversation %s moved between decode nodes: %v", c, decodes[c])
 		}
+	}
+}
+
+// After a successful job the prompt is loadable from the shared tier by every
+// decode node, so the resend is not steered to the decode node that happens to
+// hold the conversation's earlier turns: that holder, carrying extra load, loses
+// to a node with none. With a store cut of zero (a unit larger than any prompt)
+// nothing is loadable, the holder's advantage stands, and the resend stays.
+func TestSplitResendIsCreditedForThePrefixTheJobStored(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		storeUnit int64
+		moves     bool
+	}{
+		{"whole prompt stored", 0, true},
+		{"nothing stored", 1 << 40, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newCostSplitFleet(t, 4, c.storeUnit)
+			f.twoPrefillNodes(t)
+			_, d0 := f.turn(t, "X", 0)
+			if d0 < 0 {
+				t.Fatal("no decode resend on turn 0")
+			}
+			// The holder carries a little extra load: less than the thousands of
+			// tokens a non-holder would have to prefill, more than nothing.
+			f.backend[d0].AddActiveTokens(1000)
+			_, d1 := f.turn(t, "X", 1)
+			if moved := d1 != d0; moved != c.moves {
+				t.Errorf("turn 1 decoded on node %d after turn 0 on %d: moved=%v, want %v", d1, d0, moved, c.moves)
+			}
+		})
+	}
+}
+
+// The prefill flow hears of its nodes' refusals and acceptances, as the fixed
+// P/D flow does: a node that answers a job with 429 is marked refused for the
+// flow, and cleared once it serves the retry.
+func TestSplitPrefillFlowObservesRefusalsAndAcceptances(t *testing.T) {
+	f := newCostSplitFleet(t, 4, 0)
+	f.twoPrefillNodes(t)
+	f.refuseFirstJob.Store(true)
+	done := make(chan struct{})
+	go func() { defer close(done); f.turn(t, "X", 0) }()
+
+	var node int32 = -1
+	deadline := time.Now().Add(5 * time.Second)
+	for node < 0 && time.Now().Before(deadline) {
+		node = f.refusedNode.Load()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if node < 0 {
+		t.Fatal("no job was refused")
+	}
+	b := f.backend[node]
+	saturated := func() bool {
+		_, err := f.pool.SplitFlow.Select(context.Background(), []*registry.Backend{b}, &policy.RoutingRequest{
+			Model: "m", Units: []kvcache.Unit{{Hash: 9, Tokens: 10}}})
+		return errors.Is(err, policy.ErrAllBackendsSaturated)
+	}
+	for !saturated() {
+		if time.Now().After(deadline) {
+			t.Fatal("a refusing node was never marked refused in the prefill flow")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	<-done // the retry succeeds and the node is accepted again
+	if saturated() {
+		t.Error("the node still reads refused after it served the retry")
 	}
 }

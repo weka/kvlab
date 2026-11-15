@@ -179,6 +179,8 @@ type Options struct {
 	// ConvertAfter and ReleaseIdle; 0 converts and releases at once.
 	PrefillConvertAfter time.Duration
 	PrefillReleaseIdle  time.Duration
+	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
+	PrefillStoreUnitTokens int64
 	// AutoModel controls asking a pool what it serves when a route carries no
 	// explicit `as <model>`: "auto" (rewrite only when the pool serves exactly
 	// one model), "force", or "off". Empty means "auto".
@@ -315,6 +317,7 @@ func (o Options) prefillConfig() *prefill.Config {
 		MaxFleetFraction: o.PrefillMaxFleetFraction,
 		ConvertAfter:     o.PrefillConvertAfter,
 		ReleaseIdle:      o.PrefillReleaseIdle,
+		StoreUnitTokens:  o.PrefillStoreUnitTokens,
 	}
 }
 
