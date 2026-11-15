@@ -49,6 +49,17 @@ func lowestOther(usable []*registry.Backend, self *registry.Backend, f func(*reg
 // selectByCost returns the usable backend with the lowest prefill-plus-load cost
 // (see Config.CostRouting). Ties go to the fewest in-flight requests. It marks
 // the winner, so the tree records the copy a move creates.
+//
+// A prefill-only request (rr.PrefillOnly) is costed as its time to first
+// token: the node's queued uncached prefill tokens plus this request's own
+// uncached tokens there, both drained at the same node prefill rate. The
+// node's active context is left out. On a node that only runs prefill legs it
+// is the full prompt of every queued leg, cached part included, so it measures
+// queue length in prompts rather than in work: a difference of one queued leg
+// would outweigh a whole held prefix, and a conversation would leave the node
+// holding its prefix for one that must recompute all of it. Costed as time to
+// first token, a holder keeps the conversation until its queue is longer than
+// the alternative's by more than the prefix it holds.
 func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path, rr *policy.RoutingRequest) *registry.Backend {
 	var total int64
 	for i := 0; i < pth.len(); i++ {
@@ -65,7 +76,10 @@ func (p *Policy) selectByCost(usable []*registry.Backend, slots []int, pth path,
 	var bestCost int64
 	for i, c := range usable {
 		deepest = max(deepest, held[i])
-		cost := (total - held[i]) + c.PrefillTokens() + c.ActiveTokens()
+		cost := (total - held[i]) + c.PrefillTokens()
+		if !rr.PrefillOnly {
+			cost += c.ActiveTokens()
+		}
 		if i == 0 || cost < bestCost || (cost == bestCost && c.Inflight() < usable[best].Inflight()) {
 			best, bestCost, bestHeld = i, cost, held[i]
 		}

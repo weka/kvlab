@@ -81,7 +81,11 @@ type RoutingRequest struct {
 	// it as held by every candidate, without recording it anywhere: a holder
 	// keeps its advantage only for tokens past it. Zero means none.
 	PreloadedTokens int64
-	Deadline        time.Time
+	// PrefillOnly marks a request that ends at its first token: a P/D prefill
+	// leg. Its time on a node is the node's queued prefill work plus its own,
+	// so cost routing weighs only those and not the node's active context.
+	PrefillOnly bool
+	Deadline    time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

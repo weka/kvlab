@@ -268,13 +268,23 @@ alone, which recomputes (`router_pd_fallbacks_total`). `/v1/messages` carries no
 backend's role as its `mode` (`prefill` or `decode`).
 
 Under cost routing each leg picks the usable node of its own set with the lowest
-cost, over that set's own prefix tree. P leg: tokens of the prompt not held in the
-P tree, plus the node's in-flight prefill tokens and active context tokens. D leg:
-the same formula over the D tree, so a D node that already holds the conversation
-is charged only for the tokens its tree lacks, not the whole prompt (the missing blocks
-arrive by NIXL transfer; they are still counted at full weight as prefill load, a
-conservative simplification). A session therefore stays on its P node and its D
-node until the other nodes' extra load outweighs the tokens a move would re-send.
+cost, over that set's own prefix tree. P leg: its time to first token, in tokens
+— the prompt tokens not held in the P tree plus the node's in-flight (queued and
+running) uncached prefill tokens. The node's active context tokens are left out:
+on a P node they are the whole prompt of every queued leg, cached part included,
+so one extra queued leg would outweigh a whole held prefix and conversations
+would leave the node holding their prefix for one that recomputes all of it. A
+conversation therefore stays on its P node until that node's prefill queue is
+longer than another's by more than the prefix it holds. D leg: the aggregated
+formula over the D tree (tokens its tree lacks, plus in-flight prefill and active
+context tokens), so a D node that already holds the conversation is charged only
+for the tokens its tree lacks (the missing blocks arrive by NIXL transfer; they
+are still counted at full weight, a conservative simplification). With D nodes
+busy, active decode context dominates that cost, so the D leg mostly balances by
+decode load and keeps a conversation only while the nodes are close.
+`router_route_decisions_total{pool="<pool>:prefill",decision=~"cost_stay|cost_move"}`
+shows P-leg stickiness: `cost_move` is a P leg sent away from the node holding
+the deepest part of its prefix.
 Per-role `--pd-*-max-node-concurrency` caps are hard limits in both modes. The
 per-role *soft* bands are ladder-only.
 

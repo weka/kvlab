@@ -60,6 +60,7 @@ func (s *Server) runPDPrefill(
 	defer func() { m.PrefillSeconds.Observe(s.cfg.Clock.Now().Sub(start).Seconds()) }()
 
 	leg := *rr
+	leg.PrefillOnly = true
 	sel := target.PrefillSelector
 	var accepted proxy.OnAccepted
 	if c, ok := sel.(policy.Committer); ok {
