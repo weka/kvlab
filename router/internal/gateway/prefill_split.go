@@ -1,10 +1,17 @@
 package gateway
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"sync"
+	"syscall"
 	"time"
 
+	"github.com/weka/kvlab/router/internal/obs"
 	"github.com/weka/kvlab/router/internal/policy"
 	"github.com/weka/kvlab/router/internal/prefill"
 	"github.com/weka/kvlab/router/internal/proxy"
@@ -37,6 +44,7 @@ func (s *Server) splitAndServe(
 	// request's final one.
 	rr.PolicyState = nil
 
+	reservedAt := s.cfg.Clock.Now()
 	job, err := m.Reserve(s.healthy(target), rejected.PrefillTokens, s.prefillPicker(target, m, rr, r))
 	if err != nil {
 		m.FallbackNoNode()
@@ -45,10 +53,22 @@ func (s *Server) splitAndServe(
 	defer job.Done()
 
 	if err := m.WaitReady(r.Context(), job); err != nil {
+		// The caller left while the job waited for a slot: it never ran.
+		f := jobFailure{reason: "abandoned", err: err}
+		m.CountJobFailed(f.reason)
+		s.jobFails.log(r, s.cfg.Clock.Now(), f, job.Backend, rejected.PrefillTokens, s.cfg.Clock.Now().Sub(reservedAt), 0)
 		return proxy.Result{Err: err}
 	}
-	ok := s.runPrefillJob(r, m, target, job.Backend, rr, prefill.JobBody(body), auth)
-	m.CountJob(ok)
+	startedAt := s.cfg.Clock.Now()
+	f := s.runPrefillJob(r, m, target, job.Backend, rr, prefill.JobBody(body), auth)
+	ok := f.reason == ""
+	if ok {
+		m.CountJob(true)
+	} else {
+		m.CountJobFailed(f.reason)
+		now := s.cfg.Clock.Now()
+		s.jobFails.log(r, now, f, job.Backend, rejected.PrefillTokens, startedAt.Sub(reservedAt), now.Sub(startedAt))
+	}
 	if !ok {
 		m.FallbackJobFailed()
 	} else if c, isC := target.SplitSelector.(policy.Committer); isC {
@@ -115,9 +135,10 @@ type heldDepther interface {
 // A 429 means the node's own admission cap is below the router's view, or a
 // race lost: the job holds its slot and tries again after a short backoff, the
 // node's Retry-After when it sent one, until it is served or the caller leaves.
-// Only another failure ends the job unsuccessfully.
+// Only another failure ends the job unsuccessfully, and the returned failure
+// says which; its reason is empty on success.
 func (s *Server) runPrefillJob(r *http.Request, m *prefill.Manager, target Target, b *registry.Backend,
-	rr *policy.RoutingRequest, body []byte, auth proxy.Auth) bool {
+	rr *policy.RoutingRequest, body []byte, auth proxy.Auth) jobFailure {
 	job := *rr
 	job.PolicyState = nil
 	// The prefill flow, when there is one, learns of a node's refusals and
@@ -138,10 +159,10 @@ func (s *Server) runPrefillJob(r *http.Request, m *prefill.Manager, target Targe
 		res := s.px.Serve(dw, r, []*registry.Backend{b}, policy.LeastOutstanding{},
 			s.dialect, &job, body, nil, outcome, auth)
 		if res.Err == nil && !res.PrefillRejected && res.Status >= 200 && res.Status < 300 {
-			return true
+			return jobFailure{}
 		}
 		if res.Status != http.StatusTooManyRequests || res.Err != nil {
-			return false
+			return classifyJob(r, res)
 		}
 		m.CountJobRetry()
 		wait := backoffAt(attempt, time.Hour)
@@ -151,9 +172,85 @@ func (s *Server) runPrefillJob(r *http.Request, m *prefill.Manager, target Targe
 		select {
 		case <-s.cfg.Clock.After(wait):
 		case <-r.Context().Done():
-			return false
+			return jobFailure{reason: "client_cancelled", status: res.Status, err: r.Context().Err()}
 		}
 	}
+}
+
+// jobFailure is why a prefill job did not succeed. reason is one of
+// metrics.PrefillJobFailureReasons, empty for a job that succeeded.
+type jobFailure struct {
+	reason string
+	status int
+	err    error
+}
+
+// classifyJob names the failure of a finished job attempt. The caller's own
+// context decides client_cancelled first: the transport reports a cancelled
+// request as an ordinary error. timeout is the router's --request-timeout on
+// the attempt, which starts when the job is sent, not when it was reserved.
+func classifyJob(r *http.Request, res proxy.Result) jobFailure {
+	f := jobFailure{status: res.Status, err: res.Err}
+	var ne net.Error
+	switch {
+	case r.Context().Err() != nil:
+		f.reason = "client_cancelled"
+	case res.PrefillRejected:
+		f.reason = "rejected"
+	case res.Err != nil && (errors.Is(res.Err, context.DeadlineExceeded) || errors.As(res.Err, &ne) && ne.Timeout()):
+		f.reason = "timeout"
+	case res.Err != nil && (errors.As(res.Err, &ne) || errors.Is(res.Err, io.EOF) || errors.Is(res.Err, io.ErrUnexpectedEOF) || errors.Is(res.Err, syscall.ECONNRESET)):
+		f.reason = "transport"
+	case res.Err == nil && res.Status >= 500:
+		f.reason = "status_5xx"
+	case res.Err == nil && res.Status >= 400:
+		f.reason = "status_4xx"
+	default:
+		f.reason = "other"
+	}
+	return f
+}
+
+// jobFailLog writes one line per failed prefill job, at most one per reason
+// every jobFailLogEvery; a line says how many of that reason it stands for
+// since the last one, so a burst of failures is still accounted for.
+type jobFailLog struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+	skip map[string]int
+}
+
+const jobFailLogEvery = 10 * time.Second
+
+func (l *jobFailLog) log(r *http.Request, now time.Time, f jobFailure, b *registry.Backend, tokens int64, waited, ran time.Duration) {
+	l.mu.Lock()
+	if l.last == nil {
+		l.last, l.skip = map[string]time.Time{}, map[string]int{}
+	}
+	if last, ok := l.last[f.reason]; ok && now.Sub(last) < jobFailLogEvery {
+		l.skip[f.reason]++
+		l.mu.Unlock()
+		return
+	}
+	suppressed := l.skip[f.reason]
+	l.last[f.reason], l.skip[f.reason] = now, 0
+	l.mu.Unlock()
+
+	attrs := []any{"reason", f.reason, "tokens", tokens,
+		"waited", waited.Round(time.Millisecond), "ran", ran.Round(time.Millisecond)}
+	if b != nil {
+		attrs = append(attrs, "backend", b.URL)
+	}
+	if f.status != 0 {
+		attrs = append(attrs, "status", f.status)
+	}
+	if f.err != nil {
+		attrs = append(attrs, "error", f.err.Error())
+	}
+	if suppressed > 0 {
+		attrs = append(attrs, "suppressed_since_last", suppressed)
+	}
+	obs.Logger(r.Context()).Warn("prefill job failed", attrs...)
 }
 
 // maxJobRetryWait bounds a node's Retry-After, so one odd header cannot park a

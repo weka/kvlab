@@ -704,8 +704,14 @@ func (m *Manager) CountJob(ok bool) {
 		m.m.JobsOK.Inc()
 		return
 	}
+	m.CountJobFailed("other")
+}
+
+// CountJobFailed records a prefill job that did not succeed, and why: one of
+// metrics.PrefillJobFailureReasons.
+func (m *Manager) CountJobFailed(reason string) {
 	m.jobsFailed.Add(1)
-	m.m.JobsFailed.Inc()
+	m.m.JobFailed(reason)
 }
 
 // FallbackNoNode records a rejected request served with the bypass because no

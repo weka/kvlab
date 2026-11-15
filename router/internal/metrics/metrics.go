@@ -14,6 +14,7 @@ package metrics
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -489,8 +490,8 @@ var (
 
 	PrefillJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_jobs_total",
-		Help: "Prefill jobs run on a prefill node, by outcome: ok or failed.",
-	}, []string{"pool", "outcome"})
+		Help: "Prefill jobs, by outcome (ok or failed) and, for failed, reason: timeout, client_cancelled, abandoned, status_4xx, status_5xx, transport, rejected or other. An ok job has no reason.",
+	}, []string{"pool", "outcome", "reason"})
 
 	PrefillConversions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_conversions_total",
@@ -858,9 +859,10 @@ type PrefillMetrics struct {
 	nodeMode *prometheus.GaugeVec
 	pending  *prometheus.GaugeVec
 
-	Rejections      prometheus.Counter
-	JobsOK          prometheus.Counter
-	JobsFailed      prometheus.Counter
+	Rejections prometheus.Counter
+	JobsOK     prometheus.Counter
+	// jobsFailed is by reason, one of PrefillJobFailureReasons.
+	jobsFailed      *prometheus.CounterVec
 	Conversions     prometheus.Counter
 	Releases        prometheus.Counter
 	JobRetries      prometheus.Counter
@@ -877,13 +879,16 @@ func ForPrefill(pool string) *PrefillMetrics {
 		PrefillNodes.WithLabelValues(pool, m)
 	}
 	lbl := prometheus.Labels{"pool": pool}
+	for _, r := range PrefillJobFailureReasons {
+		PrefillJobs.WithLabelValues(pool, "failed", r)
+	}
 	return &PrefillMetrics{
 		pool:            pool,
 		nodeMode:        PrefillNodeMode.MustCurryWith(lbl),
 		pending:         PrefillPendingTokens.MustCurryWith(lbl),
 		Rejections:      PrefillRejections.WithLabelValues(pool),
-		JobsOK:          PrefillJobs.WithLabelValues(pool, "ok"),
-		JobsFailed:      PrefillJobs.WithLabelValues(pool, "failed"),
+		JobsOK:          PrefillJobs.WithLabelValues(pool, "ok", ""),
+		jobsFailed:      PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "failed"}),
 		Conversions:     PrefillConversions.WithLabelValues(pool),
 		Releases:        PrefillReleases.WithLabelValues(pool),
 		JobRetries:      PrefillJobRetries.WithLabelValues(pool),
@@ -899,6 +904,21 @@ func ForPrefill(pool string) *PrefillMetrics {
 func (m *PrefillMetrics) SetNode(backend string, mode int, pending int64) {
 	m.nodeMode.WithLabelValues(backend).Set(float64(mode))
 	m.pending.WithLabelValues(backend).Set(float64(pending))
+}
+
+// PrefillJobFailureReasons is the closed enum of router_prefill_jobs_total's
+// reason label on a failed job.
+var PrefillJobFailureReasons = []string{
+	"timeout", "client_cancelled", "abandoned", "status_4xx", "status_5xx", "transport", "rejected", "other",
+}
+
+// JobFailed counts a failed prefill job; a reason outside the enum counts as
+// other.
+func (m *PrefillMetrics) JobFailed(reason string) {
+	if !slices.Contains(PrefillJobFailureReasons, reason) {
+		reason = "other"
+	}
+	m.jobsFailed.WithLabelValues(reason).Inc()
 }
 
 // DropNode removes a departed backend's series.

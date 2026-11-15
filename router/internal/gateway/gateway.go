@@ -34,6 +34,8 @@ type Server struct {
 	dialect dialect.Dialect
 	apiKey  []byte
 	sem     chan struct{}
+	// jobFails rate-limits the log line of a failed prefill job.
+	jobFails jobFailLog
 
 	handler http.Handler
 }
