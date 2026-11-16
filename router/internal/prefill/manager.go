@@ -13,11 +13,15 @@
 // no job running or queued (after Config.ReleaseIdle, when set). Which nodes are
 // prefill nodes is therefore the router's decision, made from traffic, with
 // nothing configured per node.
+//
+// With Config.PD set the same manager runs the elastic prefill (P) pool of
+// prefill/decode disaggregation; see elastic.go.
 package prefill
 
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand/v2"
 	"sort"
 	"sync"
@@ -40,6 +44,10 @@ const (
 	Draining
 	// Prefill runs prefill jobs only.
 	Prefill
+	// Converting exists only under Config.PD: a decode node just moved into
+	// the P set. It takes prefill legs at once, and no new decode work, while
+	// the decodes it was already running finish; then it is Prefill.
+	Converting
 )
 
 func (m Mode) String() string { return metrics.PrefillModes[m] }
@@ -98,6 +106,25 @@ type Config struct {
 	// manager.
 	OnModeChange func(b *registry.Backend, from, to Mode)
 
+	// PD runs the manager as the elastic P pool of prefill/decode
+	// disaggregation: every request's prefill leg is a job, a converted node
+	// is Converting rather than Draining, a node in the P set is never a
+	// decode candidate, and Step drives conversions and releases between
+	// jobs. The fields below apply only with PD set.
+	PD bool
+	// Floor names the P nodes, by URL, that are always prefill.
+	Floor []string
+	// MinPrefill is the fewest nodes the P set holds: decode nodes are
+	// converted to reach it, and a converted node is not released below it.
+	MinPrefill int
+	// ReleaseBelow releases a converted node once the P set's pending tokens
+	// have stayed at or below this fraction of the budget the set would have
+	// without it, for ReleaseIdle. 0 releases idle nodes only.
+	ReleaseBelow float64
+	// Log, when set, gets a line for every conversion and release, with its
+	// reason and the load that caused it.
+	Log *slog.Logger
+
 	Clock    clock.Clock
 	PoolName string
 }
@@ -137,6 +164,9 @@ type node struct {
 	// within it); idleSince when a prefill node last ran out of jobs (zero
 	// while it has any).
 	overSince, idleSince time.Time
+	// floor is a Config.Floor node; convertedAt when it last left decode.
+	floor       bool
+	convertedAt time.Time
 }
 
 // Manager owns the node modes for one pool.
@@ -146,6 +176,10 @@ type Manager struct {
 
 	mu    sync.Mutex
 	nodes map[string]*node
+	// floor is Config.Floor, normalised; lowSince is when the P set last fell
+	// to the ReleaseBelow watermark (zero while above it).
+	floor    map[string]bool
+	lowSince time.Time
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
@@ -155,7 +189,16 @@ type Manager struct {
 // New builds a manager for one pool.
 func New(cfg Config) *Manager {
 	cfg = cfg.withDefaults()
-	return &Manager{cfg: cfg, m: metrics.ForPrefill(cfg.PoolName), nodes: map[string]*node{}}
+	m := &Manager{cfg: cfg, nodes: map[string]*node{}, floor: map[string]bool{}}
+	if cfg.PD {
+		m.m = metrics.ForPDElastic(cfg.PoolName)
+		for _, u := range cfg.Floor {
+			m.floor[normalize(u)] = true
+		}
+	} else {
+		m.m = metrics.ForPrefill(cfg.PoolName)
+	}
+	return m
 }
 
 // Job is a charge against a prefill node, released with Done.
@@ -188,6 +231,7 @@ func (j *Job) Done() {
 			return
 		}
 		m.trackBudgetLocked(j.n)
+		m.promoteLocked(j.n)
 		m.releaseIfIdleLocked(j.n)
 		m.publishLocked(j.n)
 		m.spreadLocked()
@@ -210,7 +254,13 @@ func (m *Manager) nodeLocked(b *registry.Backend) *node {
 	n := m.nodes[b.URL]
 	if n == nil {
 		n = &node{b: b}
+		if m.floor[normalize(b.URL)] {
+			n.floor, n.mode = true, Prefill
+		}
 		m.nodes[b.URL] = n
+		if n.floor {
+			m.publishLocked(n)
+		}
 	}
 	n.b = b
 	return n
@@ -230,19 +280,31 @@ func (m *Manager) ModeOf(b *registry.Backend) Mode {
 // draining or prefill. When that would leave nothing — the decode nodes have
 // all gone unhealthy — it returns cands unchanged, since a request served on a
 // prefill node beats one refused.
+//
+// Under Config.PD there is no such fallback: a node in the P set never takes a
+// decode leg, and an empty result is the caller's 503.
 func (m *Manager) DecodeNodes(cands []*registry.Backend) []*registry.Backend {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]*registry.Backend, 0, len(cands))
 	for _, b := range cands {
-		if n := m.nodes[b.URL]; n == nil || n.mode == Decode {
+		if !m.inPrefillLocked(b) {
 			out = append(out, b)
 		}
 	}
-	if len(out) == 0 {
+	if len(out) == 0 && !m.cfg.PD {
 		return cands
 	}
 	return out
+}
+
+// inPrefillLocked reports whether b is out of decode routing: a node in any
+// mode but Decode, or a floor node the manager has not met yet.
+func (m *Manager) inPrefillLocked(b *registry.Backend) bool {
+	if n := m.nodes[b.URL]; n != nil {
+		return n.mode != Decode
+	}
+	return m.floor[normalize(b.URL)]
 }
 
 // StoreCut is how many leading tokens of a prompt of the given size a finished
@@ -271,6 +333,9 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	tokens = max(tokens, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.cfg.PD {
+		m.ensureMinLocked(cands)
+	}
 
 	var decode, nonDecode, eligible []*registry.Backend
 	for _, b := range cands {
@@ -290,11 +355,8 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	case len(eligible) > 0:
 		chosen = m.pickLocked(eligible, pick)
 	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode):
-		chosen = leastLoaded(decode)
-		n := m.nodes[chosen.URL]
-		m.setModeLocked(n, Draining)
-		m.conversions.Add(1)
-		m.m.Conversions.Inc()
+		chosen = m.leastLoadedLocked(decode)
+		m.convertLocked(m.nodes[chosen.URL], "over_budget", len(cands))
 	case len(nonDecode) > 0:
 		chosen = m.leastPendingLocked(nonDecode)
 	default:
@@ -366,10 +428,23 @@ func (m *Manager) leastPendingLocked(bs []*registry.Backend) *registry.Backend {
 	return best
 }
 
-func leastLoaded(bs []*registry.Backend) *registry.Backend {
+// leastLoadedLocked is the decode node to convert. Under Config.PD that is the
+// one with the least decode load by cost routing's own measure (in-flight
+// prefill plus active context tokens), in-flight count breaking ties: its
+// decodes finish soonest and it holds the least KV that D legs would lose.
+func (m *Manager) leastLoadedLocked(bs []*registry.Backend) *registry.Backend {
+	if m.cfg.PD {
+		return leastBy(bs, func(b *registry.Backend) float64 {
+			return float64(b.PrefillTokens()+b.ActiveTokens()) + float64(b.Inflight())/1e6
+		})
+	}
+	return leastBy(bs, (*registry.Backend).NormalizedLoad)
+}
+
+func leastBy(bs []*registry.Backend, load func(*registry.Backend) float64) *registry.Backend {
 	best, ties := bs[0], 1
 	for _, b := range bs[1:] {
-		switch l, bl := b.NormalizedLoad(), best.NormalizedLoad(); {
+		switch l, bl := load(b), load(best); {
 		case l < bl:
 			best, ties = b, 1
 		case l == bl:
@@ -491,7 +566,10 @@ func (m *Manager) canRunLocked(n *node, j *Job) bool {
 	if n.mode == Draining {
 		return false
 	}
-	if limit := m.cfg.NodeConcurrency; limit > 0 && (int64(n.running) >= limit || n.b.Inflight() >= limit) {
+	// Under PD the limit is on prefill legs alone: a converting node's
+	// decodes from before its conversion would otherwise keep it from taking
+	// the legs it was converted for.
+	if limit := m.cfg.NodeConcurrency; limit > 0 && (int64(n.running) >= limit || !m.cfg.PD && n.b.Inflight() >= limit) {
 		return false
 	}
 	return n.running == 0 || n.runningTokens+j.tokens <= m.cfg.NodeBudgetTokens
@@ -530,7 +608,7 @@ func (m *Manager) moveOneLocked() bool {
 			continue // about to start where it is
 		}
 		for _, n := range m.nodes {
-			if n != s.n && n.mode == Prefill && len(n.queue) == 0 && m.canRunLocked(n, head) {
+			if n != s.n && (n.mode == Prefill || n.mode == Converting) && len(n.queue) == 0 && m.canRunLocked(n, head) {
 				m.moveLocked(head, s.n, n)
 				return true
 			}
@@ -577,6 +655,7 @@ func (m *Manager) publishQueuedLocked() {
 		q += len(n.queue)
 	}
 	m.m.Queued.Set(float64(q))
+	m.publishCountsLocked()
 }
 
 // CountJobRetry records a prefill job retried after its node answered 429.
@@ -596,13 +675,19 @@ func (m *Manager) releaseIfIdleLocked(n *node) {
 	if n.mode == Decode || n.pending != 0 || n.running != 0 || len(n.queue) != 0 {
 		return
 	}
-	if n.mode == Prefill && m.cfg.ReleaseIdle > 0 {
+	if m.cfg.PD && n.floor {
+		return
+	}
+	if (n.mode == Prefill || n.mode == Converting) && m.cfg.ReleaseIdle > 0 {
 		if n.idleSince.IsZero() {
 			n.idleSince = m.cfg.Clock.Now()
 		}
 		return
 	}
-	m.releaseLocked(n)
+	if m.cfg.PD && !m.mayReleaseLocked() {
+		return
+	}
+	m.releaseLocked(n, "idle")
 }
 
 // setModeLocked is the only place a node's role changes.
@@ -614,22 +699,59 @@ func (m *Manager) setModeLocked(n *node, to Mode) {
 	}
 }
 
-func (m *Manager) releaseLocked(n *node) {
+func (m *Manager) releaseLocked(n *node, reason string) {
+	from := n.mode
 	m.setModeLocked(n, Decode)
+	idle := n.idleSince
 	n.idleSince = time.Time{}
 	m.releases.Add(1)
-	m.m.Releases.Inc()
+	m.m.Release(reason)
 	m.publishLocked(n)
+	if m.cfg.Log != nil {
+		attrs := append([]any{"backend", n.b.URL, "reason", reason, "from", from.String(),
+			"node_pending_tokens", n.pending, "node_running_jobs", n.running}, m.loadAttrsLocked(0)...)
+		if !idle.IsZero() {
+			attrs = append(attrs, "idle_for", m.cfg.Clock.Now().Sub(idle).Round(time.Millisecond))
+		}
+		m.cfg.Log.Info("prefill node released to decode", attrs...)
+	}
+}
+
+// convertLocked moves a decode node into prefill service: Draining under the
+// prefill split, Converting under PD.
+func (m *Manager) convertLocked(n *node, reason string, fleet int) {
+	to := Draining
+	if m.cfg.PD {
+		to = Converting
+	}
+	m.setModeLocked(n, to)
+	n.convertedAt = m.cfg.Clock.Now()
+	n.idleSince = time.Time{}
+	m.conversions.Add(1)
+	m.m.Conversion(reason)
+	m.publishLocked(n)
+	if m.cfg.Log != nil {
+		attrs := append([]any{"backend", n.b.URL, "reason", reason, "to", to.String(),
+			"node_inflight", n.b.Inflight(), "node_active_tokens", n.b.ActiveTokens()}, m.loadAttrsLocked(fleet)...)
+		m.cfg.Log.Info("decode node converted to prefill", attrs...)
+	}
 }
 
 // releaseExpired returns to decode every prefill node idle for ReleaseIdle.
 func (m *Manager) releaseExpired() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.releaseExpiredLocked()
+}
+
+func (m *Manager) releaseExpiredLocked() {
 	now := m.cfg.Clock.Now()
 	for _, n := range m.nodes {
-		if n.mode == Prefill && !n.idleSince.IsZero() && now.Sub(n.idleSince) >= m.cfg.ReleaseIdle {
-			m.releaseLocked(n)
+		if (n.mode == Prefill || n.mode == Converting) && !n.idleSince.IsZero() && now.Sub(n.idleSince) >= m.cfg.ReleaseIdle {
+			if m.cfg.PD && (n.floor || !m.mayReleaseLocked()) {
+				continue
+			}
+			m.releaseLocked(n, "idle")
 		}
 	}
 }
@@ -661,7 +783,12 @@ func (m *Manager) Run(ctx context.Context, known func() []*registry.Backend) {
 	t := m.cfg.Clock.NewTicker(pruneEvery)
 	defer t.Stop()
 	var release <-chan time.Time
-	if m.cfg.ReleaseIdle > 0 {
+	switch {
+	case m.cfg.PD:
+		r := m.cfg.Clock.NewTicker(m.stepEvery())
+		defer r.Stop()
+		release = r.C()
+	case m.cfg.ReleaseIdle > 0:
 		r := m.cfg.Clock.NewTicker(min(max(m.cfg.ReleaseIdle/4, 100*time.Millisecond), time.Second))
 		defer r.Stop()
 		release = r.C()
@@ -673,7 +800,11 @@ func (m *Manager) Run(ctx context.Context, known func() []*registry.Backend) {
 		case <-t.C():
 			m.Prune(known())
 		case <-release:
-			m.releaseExpired()
+			if m.cfg.PD {
+				m.Step(available(known()))
+			} else {
+				m.releaseExpired()
+			}
 		}
 	}
 }
@@ -684,11 +815,15 @@ func (m *Manager) publishLocked(n *node) {
 }
 
 func (m *Manager) publishCountsLocked() {
-	var counts [3]int
+	var counts [4]int
+	var queued, running int64
 	for _, n := range m.nodes {
 		counts[n.mode]++
+		running += n.runningTokens
+		queued += n.pending - n.runningTokens
 	}
 	m.m.SetModeCounts(counts)
+	m.m.SetQueueTokens(queued, running)
 }
 
 // CountRejection records a large_prefill_rejected answer the router absorbed.
