@@ -8,6 +8,7 @@ import (
 
 	"github.com/weka/kvlab/router/internal/pd"
 	"github.com/weka/kvlab/router/internal/policy"
+	"github.com/weka/kvlab/router/internal/prefill"
 	"github.com/weka/kvlab/router/internal/proxy"
 	"github.com/weka/kvlab/router/internal/registry"
 )
@@ -51,6 +52,11 @@ func (s *Server) pdServe(
 // waited out and retried, like a prefill-split job: the leg holds its place
 // until it is served, --retry-time-limit runs out when that is set, or the
 // caller leaves.
+//
+// With an elastic P set the leg is a job of the set's manager instead: it is
+// charged against a P node's budget, waits in the router while the set is
+// full (which is what drives a conversion), and is then sent to the node the
+// manager placed it on.
 func (s *Server) runPDPrefill(
 	r *http.Request, target Target, rr *policy.RoutingRequest, body []byte,
 	outcome proxy.OnOutcome, auth proxy.Auth,
@@ -79,8 +85,26 @@ func (s *Server) runPDPrefill(
 	pbody := pd.PrefillBody(body)
 	deadline := start.Add(s.cfg.RetryTimeLimit)
 
+	cands := func() []*registry.Backend { return set.PrefillNodes(s.healthy(target)) }
+	if mgr := set.Elastic; mgr != nil {
+		job, err := mgr.Reserve(s.healthy(target), s.pdLegTokens(target, rr), s.pdPicker(target, rr, r))
+		if err != nil {
+			m.FallbackNoNode.Inc()
+			return nil, false
+		}
+		defer job.Done()
+		if mgr.WaitReady(r.Context(), job) != nil {
+			return nil, false // the caller left; its decode leg ends with it
+		}
+		// The manager chose the node, and bounds its prefill legs itself: the
+		// flow's own signals would read a converting node's earlier decodes
+		// as prefill saturation.
+		only := []*registry.Backend{job.Backend}
+		cands, sel = func() []*registry.Backend { return only }, policy.LeastOutstanding{}
+	}
+
 	for attempt := 0; ; attempt++ {
-		cands := set.PrefillNodes(s.healthy(target))
+		cands := cands()
 		if len(cands) == 0 {
 			m.FallbackNoNode.Inc()
 			return nil, false
@@ -117,6 +141,33 @@ func (s *Server) runPDPrefill(
 		}
 		m.LegOK.Inc()
 		return params, true
+	}
+}
+
+// pdLegTokens is what a prefill leg is charged against the elastic P set's
+// budget: the prompt less the deepest prefix any P node is recorded holding,
+// since a leg is placed where its prefix is unless that node's queue says
+// otherwise.
+func (s *Server) pdLegTokens(t Target, rr *policy.RoutingRequest) int64 {
+	var total int64
+	for _, u := range rr.Units {
+		total += int64(u.Tokens)
+	}
+	if h, ok := t.PrefillSelector.(heldDepther); ok {
+		total -= h.HeldDepth(rr)
+	}
+	return max(total, 1)
+}
+
+// pdPicker chooses among the elastic P set's nodes with budget room by the P
+// flow, costing each by the leg tokens the manager has pending there (queued
+// in the router and running).
+func (s *Server) pdPicker(t Target, rr *policy.RoutingRequest, r *http.Request) prefill.Picker {
+	return func(eligible []*registry.Backend, queued func(*registry.Backend) int64) (*registry.Backend, error) {
+		sel := *rr
+		sel.PolicyState = nil
+		sel.PrefillOnly, sel.PrefillQueue = true, queued
+		return t.PrefillSelector.Select(r.Context(), eligible, &sel)
 	}
 }
 

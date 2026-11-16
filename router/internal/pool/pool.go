@@ -85,6 +85,11 @@ type Config struct {
 	// Flow, so the P nodes can run a concurrency band of their own. Nil copies
 	// Flow.
 	PDPrefillFlow *affinity.Config
+	// PDElastic, when set, makes the P set elastic: PDPrefill is its floor,
+	// and this configures the manager that converts decode nodes into it and
+	// releases them. Its PD, Floor, PoolName, Clock and CostPick are filled in
+	// here.
+	PDElastic *prefill.Config
 
 	// OnCircuitTransition, when set, is attached to every backend as it joins,
 	// so an operator can tell an overload from an outage.
@@ -129,8 +134,9 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 	// one prefix tree shared by both roles would anchor a request at the deeper
 	// run the other role holds, and neither would see its own session as a hit.
 	var pflow *affinity.Policy
-	splitFlow := cfg.PrefillSplit != nil && cfg.Flow.CostRouting && len(cfg.PDPrefill) == 0
-	if len(cfg.PDPrefill) > 0 || splitFlow {
+	pdOn := len(cfg.PDPrefill) > 0 || cfg.PDElastic != nil
+	splitFlow := cfg.PrefillSplit != nil && cfg.Flow.CostRouting && !pdOn
+	if pdOn || splitFlow {
 		pc := cfg.Flow
 		if cfg.PDPrefillFlow != nil {
 			pc = *cfg.PDPrefillFlow
@@ -199,12 +205,33 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 		p.Split = prefill.New(sc)
 	}
 
-	if len(cfg.PDPrefill) > 0 {
+	if pdOn {
 		if cfg.PrefillSplit != nil {
 			return nil, fmt.Errorf("pool %q: prefill/decode disaggregation and the prefill split are mutually exclusive", cfg.Name)
 		}
 		p.PD = pd.New(cfg.Name, cfg.PDPrefill)
 		p.PDFlow = pflow
+		if cfg.PDElastic != nil {
+			ec := *cfg.PDElastic
+			ec.PD, ec.Floor = true, cfg.PDPrefill
+			ec.PoolName, ec.Clock = cfg.Name, clk
+			ec.CostPick = true
+			if ec.Log == nil {
+				ec.Log = p.log
+			}
+			// A node's marks count only in the role that made them, as for
+			// the prefill split: joining the P set its decode KV is about to
+			// be overwritten by prefill work, and leaving it the reverse.
+			ec.OnModeChange = func(b *registry.Backend, from, to prefill.Mode) {
+				if from == prefill.Decode {
+					p.Flow.Forget(b)
+				}
+				if to == prefill.Decode {
+					pflow.Forget(b)
+				}
+			}
+			p.PD.Elastic = prefill.New(ec)
+		}
 	}
 
 	for _, b := range cfg.Backends {
@@ -264,6 +291,9 @@ func (p *Pool) Run(ctx context.Context) {
 	}
 	if p.PD != nil {
 		go p.watchPD(ctx)
+	}
+	if p.PD != nil && p.PD.Elastic != nil {
+		go p.PD.Elastic.Run(ctx, func() []*registry.Backend { return p.Registry.Snapshot().Backends })
 	}
 	if p.SplitFlow != nil {
 		go p.tick(ctx, sweepInterval(p.SplitFlow.TailTTL()), func() { p.SplitFlow.Sweep() })

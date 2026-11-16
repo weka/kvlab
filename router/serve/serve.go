@@ -181,6 +181,18 @@ type Options struct {
 	PrefillReleaseIdle  time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
+	// PDElastic makes the P set elastic (--pd-elastic): PDPrefillBackends is
+	// its floor, and decode nodes are converted into it and released by the
+	// prefill budget, PrefillMaxFleetFraction, PrefillConvertAfter and
+	// PrefillReleaseIdle (zero durations take DefaultPDConvertAfter and
+	// DefaultPDReleaseIdle). Exclusive with PrefillSplit.
+	PDElastic bool
+	// PDPrefillMin is --pd-prefill-min: the fewest nodes the elastic P set
+	// holds, floor included.
+	PDPrefillMin int
+	// PrefillReleaseBelow is --prefill-release-below; 0 releases idle nodes
+	// only.
+	PrefillReleaseBelow float64
 	// MoveWeight is --move-cost-weight: affinity.Config.MoveWeight. 0 is the
 	// default.
 	MoveWeight float64
@@ -293,11 +305,48 @@ func (o Options) flowConfig() affinity.Config {
 	}
 }
 
+// pdOn reports whether requests are served as P/D legs: with a static P set,
+// an elastic one, or both (the static set is then the elastic one's floor).
+func (o Options) pdOn() bool { return len(o.PDPrefillBackends) > 0 || o.PDElastic }
+
+// The elastic P set's hold times when --prefill-convert-after and
+// --prefill-release-idle are left at 0. Converting or releasing at once would
+// flap a node with every burst; these are long enough to ride out a burst and
+// short against a conversion's payoff.
+const (
+	DefaultPDConvertAfter = 15 * time.Second
+	DefaultPDReleaseIdle  = 60 * time.Second
+)
+
+// pdElasticConfig is the elastic P set's manager, nil without --pd-elastic or
+// for a route the router does not route within.
+func (o Options) pdElasticConfig(transparent bool) *prefill.Config {
+	if !o.PDElastic || transparent {
+		return nil
+	}
+	_, prefillFlow := o.roleFlowConfigs()
+	or := func(d, def time.Duration) time.Duration {
+		if d > 0 {
+			return d
+		}
+		return def
+	}
+	return &prefill.Config{
+		NodeConcurrency:  prefillFlow.NodeConcurrency,
+		NodeBudgetTokens: o.PrefillNodeBudgetTokens,
+		MaxFleetFraction: o.PrefillMaxFleetFraction,
+		ConvertAfter:     or(o.PrefillConvertAfter, DefaultPDConvertAfter),
+		ReleaseIdle:      or(o.PrefillReleaseIdle, DefaultPDReleaseIdle),
+		MinPrefill:       o.PDPrefillMin,
+		ReleaseBelow:     o.PrefillReleaseBelow,
+	}
+}
+
 // roleFlowConfigs are the decode and prefill flows under P/D: the global flow
 // with each role's band overrides applied. Without P/D both are the global flow.
 func (o Options) roleFlowConfigs() (decode, prefillFlow affinity.Config) {
 	decode, prefillFlow = o.flowConfig(), o.flowConfig()
-	if len(o.PDPrefillBackends) == 0 {
+	if !o.pdOn() {
 		return decode, prefillFlow
 	}
 	override := func(c *affinity.Config, soft, max int64) {
@@ -411,11 +460,19 @@ func (o Options) validatePD() error {
 		switch {
 		case b.v < 0:
 			return fmt.Errorf("router: %s must not be negative", b.flag)
-		case b.v > 0 && len(o.PDPrefillBackends) == 0:
-			return fmt.Errorf("router: %s needs --pd-prefill-backends", b.flag)
+		case b.v > 0 && !o.pdOn():
+			return fmt.Errorf("router: %s needs --pd-prefill-backends or --pd-elastic", b.flag)
 		}
 	}
-	if len(o.PDPrefillBackends) == 0 {
+	switch {
+	case o.PDPrefillMin < 0:
+		return errors.New("router: --pd-prefill-min must not be negative")
+	case o.PDPrefillMin > 0 && !o.PDElastic:
+		return errors.New("router: --pd-prefill-min needs --pd-elastic")
+	case o.PrefillReleaseBelow < 0 || o.PrefillReleaseBelow >= 1:
+		return errors.New("router: --prefill-release-below must be in [0, 1)")
+	}
+	if !o.pdOn() {
 		return nil
 	}
 	decode, prefillFlow := o.roleFlowConfigs()
@@ -439,7 +496,7 @@ func (o Options) validatePD() error {
 		}
 	}
 	if o.PrefillSplit {
-		return errors.New("router: --pd-prefill-backends and --prefill-split are mutually exclusive")
+		return errors.New("router: --pd-prefill-backends / --pd-elastic and --prefill-split are mutually exclusive")
 	}
 	for _, p := range o.PDPrefillBackends {
 		found := false
@@ -639,6 +696,7 @@ func Handler(ctx context.Context, opts Options) (http.Handler, error) {
 			DrainDeadline:   opts.DrainDeadline,
 			PrefillSplit:    opts.prefillConfig(),
 			PDPrefill:       opts.pdPrefillFor(rt),
+			PDElastic:       opts.pdElasticConfig(transparent),
 		}, clk, log)
 		if err != nil {
 			return nil, err
@@ -979,6 +1037,15 @@ type pdSource struct {
 }
 
 func (s pdSource) Snapshot(opts viz.SnapshotOptions) viz.Snapshot {
+	if s.set.Elastic != nil {
+		// The elastic set's roles change at run time; show them, with the
+		// manager's pending tokens and counters, as for the prefill split.
+		snap := splitSource{inner: s.inner, m: s.set.Elastic}.Snapshot(opts)
+		for i := range snap.Backends {
+			snap.Backends[i].Mode = s.set.Role(&registry.Backend{URL: snap.Backends[i].URL})
+		}
+		return snap
+	}
 	snap := s.inner.Snapshot(opts)
 	for i := range snap.Backends {
 		snap.Backends[i].Mode = s.set.Role(&registry.Backend{URL: snap.Backends[i].URL})
@@ -1243,7 +1310,7 @@ func poolName(patterns string, i int) string {
 // roles may run different concurrency bands.
 func (o Options) signalsLog() string {
 	decode, prefillFlow := o.roleFlowConfigs()
-	if len(o.PDPrefillBackends) == 0 {
+	if !o.pdOn() {
 		return signalSummary(decode)
 	}
 	return fmt.Sprintf("prefill=[%s] decode=[%s]", signalSummary(prefillFlow), signalSummary(decode))

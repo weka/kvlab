@@ -118,3 +118,49 @@ func TestPDAllowedUnderCostRouting(t *testing.T) {
 		t.Errorf("--pd-prefill-backends under cost routing: %v", err)
 	}
 }
+
+func TestValidatePDElastic(t *testing.T) {
+	routes := []Route{{Patterns: "*", Endpoints: []string{"http://p:8000", "http://d1:8000", "http://d2:8000"}}}
+	cases := []struct {
+		name string
+		o    Options
+		want string
+	}{
+		{"elastic alone", Options{Routes: routes, PDElastic: true, PDPrefillMin: 1}, ""},
+		{"elastic with a floor", Options{Routes: routes, PDElastic: true, PDPrefillBackends: []string{"http://p:8000"}}, ""},
+		{"elastic band without a static set", Options{Routes: routes, PDElastic: true, PDPrefillMaxNodeConcurrency: 8}, ""},
+		{"min without elastic", Options{Routes: routes, PDPrefillMin: 2}, "needs --pd-elastic"},
+		{"negative min", Options{Routes: routes, PDElastic: true, PDPrefillMin: -1}, "must not be negative"},
+		{"release-below out of range", Options{Routes: routes, PDElastic: true, PrefillReleaseBelow: 1}, "[0, 1)"},
+		{"with prefill split", Options{Routes: routes, PDElastic: true, PrefillSplit: true}, "mutually exclusive"},
+	}
+	for _, c := range cases {
+		err := c.o.validatePD()
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: err = %v, want %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestPDElasticConfigDefaultsAndRoles(t *testing.T) {
+	if (Options{}).pdElasticConfig(false) != nil {
+		t.Error("elastic config without --pd-elastic")
+	}
+	o := Options{PDElastic: true, PDPrefillMin: 2, PrefillReleaseBelow: 0.4, NodeConcurrency: 64, PDPrefillMaxNodeConcurrency: 8}
+	if o.pdElasticConfig(true) != nil {
+		t.Error("elastic config for a transparent route")
+	}
+	c := o.pdElasticConfig(false)
+	if c.ConvertAfter != DefaultPDConvertAfter || c.ReleaseIdle != DefaultPDReleaseIdle {
+		t.Errorf("hold times %v/%v, want the elastic defaults", c.ConvertAfter, c.ReleaseIdle)
+	}
+	if c.MinPrefill != 2 || c.ReleaseBelow != 0.4 || c.NodeConcurrency != 8 {
+		t.Errorf("config = %+v, want min 2, release-below 0.4, the prefill band's concurrency 8", c)
+	}
+	if !strings.HasPrefix(o.signalsLog(), "prefill=[") {
+		t.Errorf("signals log %q is not per role under --pd-elastic", o.signalsLog())
+	}
+}

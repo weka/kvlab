@@ -6,6 +6,10 @@
 // engine answers with kv_transfer_params naming where it is. The request itself
 // then goes to a D node carrying those params, which pulls the blocks it does
 // not already hold and streams the answer.
+//
+// With Elastic set the P set is not static: the configured prefill URLs are
+// its floor, and the prefill manager converts decode nodes into it and
+// releases them back as the prefill load demands (see prefill/elastic.go).
 package pd
 
 import (
@@ -13,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/weka/kvlab/router/internal/metrics"
+	"github.com/weka/kvlab/router/internal/prefill"
 	"github.com/weka/kvlab/router/internal/registry"
 )
 
@@ -20,6 +25,9 @@ import (
 type Set struct {
 	prefill map[string]struct{}
 	M       *metrics.PDMetrics
+	// Elastic, when set, owns the P set: the URLs above are only its floor,
+	// and every prefill leg is a job charged against its budget.
+	Elastic *prefill.Manager
 }
 
 // New builds a set from the prefill backends' URLs.
@@ -36,12 +44,25 @@ func Normalize(u string) string { return strings.TrimRight(strings.TrimSpace(u),
 
 // IsPrefill reports whether b is a P node.
 func (s *Set) IsPrefill(b *registry.Backend) bool {
+	if s.Elastic != nil {
+		return s.Elastic.IsPrefill(b)
+	}
 	_, ok := s.prefill[Normalize(b.URL)]
 	return ok
 }
 
-// Role is b's role, for display: "prefill" or "decode".
+// Role is b's role, for display: "prefill" or "decode", or under Elastic also
+// "converting".
 func (s *Set) Role(b *registry.Backend) string {
+	if s.Elastic != nil {
+		if m := s.Elastic.ModeOf(b); m != prefill.Decode {
+			return m.String()
+		}
+		if s.Elastic.IsPrefill(b) {
+			return prefill.Prefill.String() // a floor node not met yet
+		}
+		return prefill.Decode.String()
+	}
 	if s.IsPrefill(b) {
 		return "prefill"
 	}
@@ -50,11 +71,18 @@ func (s *Set) Role(b *registry.Backend) string {
 
 // PrefillNodes keeps the P nodes of cands.
 func (s *Set) PrefillNodes(cands []*registry.Backend) []*registry.Backend {
+	if s.Elastic != nil {
+		return s.Elastic.PrefillNodes(cands)
+	}
 	return s.filter(cands, true)
 }
 
-// DecodeNodes keeps the D nodes of cands.
+// DecodeNodes keeps the D nodes of cands. A node in the P set, converting
+// included, is never one.
 func (s *Set) DecodeNodes(cands []*registry.Backend) []*registry.Backend {
+	if s.Elastic != nil {
+		return s.Elastic.DecodeNodes(cands)
+	}
 	return s.filter(cands, false)
 }
 
