@@ -50,6 +50,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	script, err := s.scriptFor(r, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "malformed "+ScriptHeader+": "+err.Error())
+		return
+	}
+	if script != nil && script.ErrorStatus != 0 {
+		writeError(w, script.ErrorStatus, "BadRequestError", script.ErrorMessage)
+		return
+	}
+
 	s.recordKVTransfer(req.KVTransfer)
 	units := s.engine.Tokenize(string(req.promptBytes()))
 	release, res, ok := s.admitOrReject(w, units, req.bypassesPrefillReject())
@@ -61,6 +71,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	maxTok := s.engine.MaxTokensOrDefault(req.MaxTokens)
 	work := s.engine.PrefillWork(res)
 	modelID := s.engine.Config().ModelID
+
+	if script != nil {
+		s.serveScript(w, r, req, script, units, res, work)
+		return
+	}
 
 	if req.Stream {
 		s.streamChat(w, r, req, modelID, units, res, maxTok, work)

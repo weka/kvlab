@@ -142,6 +142,11 @@ type Config struct {
 	// request carrying vllm_xargs.weka_prefill is never refused. 0 is off.
 	PrefillRejectTokens int
 
+	// Agentic makes a chat request that offers tools get a tool-using reply
+	// instead of synthetic tokens: see agenticScript. Off by default, because
+	// captured benchmark traffic carries tools too and must keep its replies.
+	Agentic bool
+
 	// DefaultMaxTokens is the completion length used when a request omits
 	// max_tokens (or sends <= 0).
 	DefaultMaxTokens int

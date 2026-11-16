@@ -85,6 +85,7 @@ func run(args []string) error {
 	outputKVMultiplier := fs.Float64("output-kv-multiplier", 1.0, "models real vLLM writing decode KV into the same pool as prompt KV: on completion, ceil(output_tokens*multiplier/block-size-tokens) blocks are appended to the request's own chain, occupying capacity and evictable like prompt blocks. 0 disables this (outputs stay invisible to the cache, the historical behavior)")
 	prefillRejectTokens := fs.Int("prefill-reject-tokens", 0, "refuse a request whose recompute (prompt tokens in neither the local cache nor the shared tier) exceeds this with HTTP 503 with X-Weka-Prefill-Reject and error type large_prefill_rejected, as the engine's WEKA_PREFILL_REJECT_TOKENS does; a request carrying vllm_xargs.weka_prefill is never refused. 0 = off. Drives the router's --prefill-split offline")
 	externalKVTPS := fs.Float64("external-kv-tps", 0, "tokens/sec for prompt tokens read from a FLEET-SHARED KV tier (LMCache over WEKA), and the switch that creates one: 0 (the default) gives independent per-instance caches, where prefilling on one instance does nothing for another. Set it and every instance in this process reads and writes one shared trie, so a block computed anywhere is loadable everywhere at this rate — between --cached-input-tps (local HBM) and --cold-input-tps (recompute). This is what the router's --prefill-split depends on, and turning it off is how you measure that dependency")
+	agentic := fs.Bool("agentic", false, "answer a chat request that offers tools like a tool-using assistant: call the first tool (arguments built from its schema) unless the last message is a tool result, then reply in text; reasoning when chat_template_kwargs enables thinking. For driving an agent client (the router's --anthropic-api mode) through whole loops. Requests without tools, and any request carrying an "+mockvllm.ScriptHeader+" script, are unaffected")
 	logLevel := fs.String("log-level", "info", "debug, info, warn, or error")
 	surface := fs.String("surface", "vllm", "which HTTP surface to expose: 'vllm' (OpenAI routes + /health + /metrics), "+
 		"'anthropic' (a vLLM fronted with /v1/messages, still serving vllm: metrics — the case that must not be "+
@@ -123,6 +124,7 @@ func run(args []string) error {
 		BlockCapacity:       *blockCapacity,
 		MaxConcurrency:      *maxConcurrency,
 		PrefillRejectTokens: *prefillRejectTokens,
+		Agentic:             *agentic,
 		BaseLatency:         *baseLatency,
 		ColdInputTPS:        *coldInputTPS,
 		CachedInputTPS:      *cachedInputTPS,

@@ -64,8 +64,11 @@ type chatCompletionRequest struct {
 	StreamOptions *streamOptions  `json:"stream_options"`
 	MaxTokens     int             `json:"max_tokens"`
 	Tools         json.RawMessage `json:"tools"`
-	VLLMXArgs     xargs           `json:"vllm_xargs"`
-	KVTransfer    json.RawMessage `json:"kv_transfer_params"`
+	// ChatTemplateKwargs is read only for the reasoning switch (thinking /
+	// enable_thinking) a scripted reply honours.
+	ChatTemplateKwargs map[string]any  `json:"chat_template_kwargs"`
+	VLLMXArgs          xargs           `json:"vllm_xargs"`
+	KVTransfer         json.RawMessage `json:"kv_transfer_params"`
 }
 
 func (r *chatCompletionRequest) bypassesPrefillReject() bool {
