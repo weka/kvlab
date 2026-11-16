@@ -11,6 +11,9 @@ mock-vllm fleet (N instances)  <--  kvlab router serve  <--  kvlab benchmark aut
 See [calibration.md](calibration.md) for tuning the mock's latency/tokenizer rates to
 match a real fleet, and [replay-notes.md](replay-notes.md) for replay-v3 file mechanics
 and recent correctness fixes.
+For the Anthropic Messages translation mode (`--anthropic-api`, Claude Code on an
+OpenAI-only fleet) and the mock's scripted replies (`X-Mock-Script`, `--agentic`),
+see [anthropic-api.md](anthropic-api.md).
 
 ## Validated Standard Recipe (routing-improvement work)
 

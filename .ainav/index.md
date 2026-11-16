@@ -31,6 +31,7 @@
 | Topic | File | Description |
 |-------|------|--------------|
 | Router mock-testing | [router-testing/](router-testing/index.md) | End-to-end: build the router + mock fleet, run a replay benchmark against it |
+| Anthropic translation | [router-testing/anthropic-api.md](router-testing/anthropic-api.md) | `--anthropic-api`: Anthropic Messages ⇄ Chat Completions; mock scripts; Claude Code e2e |
 | Live KV map (`/router-viz`) | [viz/](viz/index.md) | The router's live prefix-tree visualization on the metrics listener |
 | Architecture | [architecture/](architecture/index.md) | `kvcache`, `router/internal/policy/affinity`, `router/internal/mockvllm`, `router/hack` fences |
 
@@ -41,7 +42,7 @@
 | `kvcache/` | Shared prefix-cache trie engine (stdlib-only leaf). Used by the benchmark and the mock vLLM; NOT by the router, which owns its own shared tree. |
 | `router/serve/` | The router entrypoint (`kvlab router serve`); the only part of `router/` visible outside it |
 | `router/cmd/mock-vllm/` | GPU-less mock vLLM server binary entrypoint |
-| `router/internal/` | Router packages: `gateway` (HTTP surface), `policy`/`policy/affinity` (the one routing flow + its signals), `registry`/`lease` (backend state, in-flight leases), `proxy` (upstream forwarding), `dialect/openai` (wire format), `mockvllm` (mock engine), `viz` (`/router-viz`), `hack` (architectural fence tests) |
+| `router/internal/` | Router packages: `gateway` (HTTP surface), `anthropicapi` (Messages API translation mode), `policy`/`policy/affinity` (the one routing flow + its signals), `registry`/`lease` (backend state, in-flight leases), `proxy` (upstream forwarding), `dialect/openai` (wire format), `mockvllm` (mock engine), `viz` (`/router-viz`), `hack` (architectural fence tests) |
 | `benchmark/` | Benchmark and replay engine (`kvlab benchmark auto`, router-replay mode) |
 | `cli/` | go-flags command trees for `benchmark`, `router`, `eval` |
 | `llm/` | Raw LLM client layer, dynamic model-spec parsing, mock servers for tests |

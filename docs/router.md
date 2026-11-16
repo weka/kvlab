@@ -683,6 +683,67 @@ captures and log lines carry that user. See *Per-user path prefixes* below.
 Add `--metrics-listen` to get the probes (`/liveness`, `/readiness`), `/metrics`
 and `/router-viz`; see *Probes are on the metrics listener* above.
 
+This needs an upstream that serves `/v1/messages` itself. One that speaks only
+Chat Completions — vLLM's Rust frontend, for one, answers `501` — needs the
+translation mode below.
+
+## Use case 5 — Anthropic clients on an OpenAI-only fleet (`--anthropic-api`)
+
+`--anthropic-api` makes the router serve the Anthropic Messages API itself, by
+translating each request to the backends' `/v1/chat/completions` and the response
+back. Claude Code works through it end to end — multi-turn tool use, streaming,
+thinking — against a model that is not Claude.
+
+```bash
+kvlab router serve \
+  --listen 127.0.0.1:8080 \
+  --route '* => http://vllm-host:8000 using /path/to/backend.key' \
+  --anthropic-api \
+  --anthropic-model-map '*=deepseek-ai/DeepSeek-V4.1-Flash'
+
+ANTHROPIC_BASE_URL=http://127.0.0.1:8080 ANTHROPIC_AUTH_TOKEN=dummy \
+ANTHROPIC_MODEL=claude-sonnet-4-5 ANTHROPIC_SMALL_FAST_MODEL=claude-haiku-4-5 claude
+```
+
+A translated request is handed to the ordinary routing handler as a
+`/v1/chat/completions` request, so it is authorised, prefix-affinity routed,
+retried, queued and measured exactly like native chat traffic. Off (the default),
+`/v1/messages` is proxied untranslated as before.
+
+| Flag | Meaning |
+|---|---|
+| `--anthropic-api` | Turn the mode on: `POST /v1/messages` and `/v1/messages/count_tokens` (and `/<user>/v1/messages...` with `--user-prefix`) are translated. |
+| `--anthropic-model-map '<pattern>=<model>'` | Rewrite the client's model before routing. Pattern = comma-separated case-insensitive substrings or `*`; first match wins; repeatable. Claude Code sends a main and a small/fast model name — `'*=<backend model>'` maps both. Unmatched names go as sent (a route's `as <model>` or auto-model may still rewrite them; auto-model does not run on a single passive upstream, so map explicitly there). Responses echo the client's name. |
+| `--anthropic-thinking request\|always\|never` | When backend reasoning (`reasoning_content` / `reasoning`) is returned as `thinking` blocks. `request` (default): only if the request enabled thinking, as Anthropic does. Otherwise it is dropped. |
+| `--anthropic-thinking-kwarg <key>` | `chat_template_kwargs` key set to the request's thinking on/off (`enabled`/`adaptive` → true, `disabled` → false); repeatable; default `thinking` (DeepSeek). A request without `thinking` leaves the backend's default. Empty sends none. |
+| `--anthropic-max-tokens-cap N` | Clamp `max_tokens`. Claude Code asks for 32k output tokens on every call; a backend whose context cannot fit prompt + that refuses the request. 0 = as sent. |
+| `--anthropic-debug-dir DIR` | Append every exchange — Anthropic request, translated request, raw backend response, translated response — to `DIR/anthropic-exchanges.jsonl`. Bodies only, never headers; contains full prompts. The way to tell a translation bug from model behaviour. |
+
+**Credentials.** The client's `x-api-key` / `Authorization` authenticates to the
+router (`--api-key`) and goes no further; the backend gets its route's own
+credential (`using <file>`), or none.
+
+### What is translated
+
+| Feature | Support |
+|---|---|
+| Streaming | Full event sequence: `message_start`, `ping`, `content_block_start`/`_delta`/`_stop` (`text_delta`, `thinking_delta` + `signature_delta`, `input_json_delta`), `message_delta` (stop_reason, usage), `message_stop`. Blocks are strictly sequential; interleaved parallel tool-call fragments are buffered and each call emitted whole, in order. Pings every 10s of silence (hidden reasoning). A backend stream that ends without a finish reason ends in an `error` event, never a `message_stop`. A client disconnect cancels the backend request. |
+| Non-streaming | Full message. A non-streamed backend answer to a streamed request is replayed as events. |
+| Tools | `tools` → functions (`input_schema` → `parameters`); `tool_choice` auto/any(→required)/tool/none; `disable_parallel_tool_use` → `parallel_tool_calls:false`; `tool_use` ↔ `tool_calls` (ids round-trip); `tool_result` (string or blocks, `is_error` → `Error: ` prefix) → `role=tool`. Parallel calls supported. Server tools (web search, code execution, ...) are dropped: an OpenAI backend cannot run them. |
+| Thinking | See the flags. History `thinking` blocks are dropped (their signatures mean nothing to the backend; reasoning templates strip prior reasoning anyway). Emitted thinking blocks carry an empty signature. |
+| Images | `base64` and `url` sources → `image_url` parts; images inside a `tool_result` follow in the next user turn (a tool message carries text only). Needs a multimodal backend. |
+| Documents | Text sources become text; PDFs and file references are replaced by a note saying so. |
+| System | String or blocks; `cache_control` ignored (the backend's prefix cache needs no hint). |
+| Sampling | `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` → `stop`, `metadata.user_id` → `user`. |
+| Stop reasons | `stop` → `end_turn`, or `stop_sequence` (+ the sequence) when vLLM's `stop_reason` names one of the request's; `length` → `max_tokens`; `tool_calls` → `tool_use`; `content_filter` → `refusal`. |
+| Usage | `input_tokens` = prompt − cached, `cache_read_input_tokens` = cached, `output_tokens`; `cache_creation_input_tokens` is 0. `message_start` carries an estimate; `message_delta` the real numbers. |
+| Errors | Anthropic envelope with the type for the status (`invalid_request_error`, `authentication_error`, `not_found_error`, `rate_limit_error`, `overloaded_error` for 503/529, `api_error`). A backend context-length refusal is reworded `prompt is too long: ...`, which Claude Code acts on by compacting. |
+| `count_tokens` | The backend's `/tokenize` when the pool routes it; otherwise the router's byte estimate of the translated prompt. |
+| Ignored, never refused | `anthropic-version`, `anthropic-beta` (not forwarded), `context_management`, `service_tier`, `container`, `mcp_servers`, `citations`, unknown block types. |
+
+**Not translated:** Batches, Files and Models API endpoints; prompt-caching
+semantics (`cache_control` TTLs); server tools; `redacted_thinking` content.
+
 ---
 
 ## What is published
@@ -1072,4 +1133,9 @@ fatal will see throughput collapse under load; the kvlab replay client backs off
 See [`.ainav/router-testing/`](../.ainav/router-testing/index.md). `mock-vllm`
 is a GPU-less vLLM with three surfaces (`--surface vllm|anthropic|hosted`) so
 every deployment shape above can be exercised offline, including a vLLM fronted
-with an Anthropic API.
+with an Anthropic API. For the translation mode, a chat request can carry an
+`X-Mock-Script` header scripting the reply (reasoning, text, streamed and
+interleaved tool calls, finish/stop reasons, a cut-off stream, an error), and
+`mock-vllm --agentic` answers tool-offering requests like a tool-using
+assistant so a client can run whole loops — see
+[`.ainav/router-testing/anthropic-api.md`](../.ainav/router-testing/anthropic-api.md).
