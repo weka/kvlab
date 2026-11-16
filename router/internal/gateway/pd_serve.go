@@ -89,7 +89,8 @@ func (s *Server) runPDPrefill(
 	cands := func() []*registry.Backend { return set.PrefillNodes(s.healthy(target)) }
 	mgr := set.Dynamic
 	if mgr != nil {
-		job, err := mgr.Reserve(s.healthy(target), s.pdLegTokens(target, rr), s.pdPicker(target, rr, r))
+		tokens, stored := s.pdLegTokens(target, mgr, rr)
+		job, err := mgr.Reserve(s.healthy(target), tokens, s.pdPicker(target, rr, r, stored))
 		if err != nil {
 			m.FallbackNoNode.Inc()
 			mgr.FallbackNoNode()
@@ -164,28 +165,49 @@ func (s *Server) runPDPrefill(
 }
 
 // pdLegTokens is what a prefill leg is charged against a P node's budget
-// under dynamic P/D: the prompt less the deepest prefix any P node is recorded holding,
-// since a leg is placed where its prefix is unless that node's queue says
-// otherwise.
-func (s *Server) pdLegTokens(t Target, rr *policy.RoutingRequest) int64 {
+// under dynamic P/D, and the prefix the shared KV tier is credited with.
+//
+// Every earlier leg stored its prompt to the tier, and the tier serves it to
+// any node, so a P node's work on a prompt the fleet has prefilled before is
+// a load, not a recompute. The router knows such a prompt by either flow's
+// prefix tree: the P tree records each leg's prompt on its P node, the D tree
+// the same prompt on the decode node that served it, and the D tree keeps it
+// when the P node's marks are gone (its tail TTL, or a release back to
+// decode). The deeper of the two, cut to --prefill-store-unit-tokens, is
+// credited as stored, as for the reject mode's jobs; the P tree's own depth is
+// a local hit and is credited whole.
+func (s *Server) pdLegTokens(t Target, m *prefill.Manager, rr *policy.RoutingRequest) (tokens, stored int64) {
 	var total int64
 	for _, u := range rr.Units {
 		total += int64(u.Tokens)
 	}
+	var local, seen int64
 	if h, ok := t.PrefillSelector.(heldDepther); ok {
-		total -= h.HeldDepth(rr)
+		local = h.HeldDepth(rr)
 	}
-	return max(total, 1)
+	seen = local
+	if h, ok := t.Selector.(heldDepther); ok {
+		seen = max(seen, h.HeldDepth(rr))
+	}
+	stored = m.StoreCut(seen)
+	return pdLegCharge(total, local, stored), stored
+}
+
+// pdLegCharge is a leg's budget charge: the prompt less what a P node already
+// holds or can load from the tier, at least one token.
+func pdLegCharge(total, local, stored int64) int64 {
+	return max(total-max(local, stored), 1)
 }
 
 // pdPicker chooses among the dynamic P set's nodes with budget room by the P
 // flow, costing each by the leg tokens the manager has pending there (queued
-// in the router and running).
-func (s *Server) pdPicker(t Target, rr *policy.RoutingRequest, r *http.Request) prefill.Picker {
+// in the router and running), with the tier's stored prefix credited to every
+// node.
+func (s *Server) pdPicker(t Target, rr *policy.RoutingRequest, r *http.Request, stored int64) prefill.Picker {
 	return func(eligible []*registry.Backend, queued func(*registry.Backend) int64) (*registry.Backend, error) {
 		sel := *rr
 		sel.PolicyState = nil
-		sel.PrefillOnly, sel.PrefillQueue = true, queued
+		sel.PrefillOnly, sel.PrefillQueue, sel.PreloadedTokens = true, queued, stored
 		return t.PrefillSelector.Select(r.Context(), eligible, &sel)
 	}
 }

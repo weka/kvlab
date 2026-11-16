@@ -40,6 +40,7 @@ type dynFleet struct {
 	pool    string // unique per fleet, so metric reads are this fleet's alone
 	set     *pd.Set
 	mgr     *prefill.Manager
+	pflow   *affinity.Policy
 	backend []*registry.Backend
 	// failP makes P legs answer 500.
 	failP atomic.Bool
@@ -135,6 +136,7 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 		}
 	}
 	f.mgr = prefill.New(cfg)
+	f.pflow = pflow
 	f.set = pd.New(f.pool, floor)
 	f.set.Dynamic = f.mgr
 	p := &pool.Pool{Name: f.pool, Registry: reg, Flow: dflow, PD: f.set, PDFlow: pflow}
@@ -332,4 +334,57 @@ func TestPDDynamicSurgeDrainsIntoPrefillAndIdleReleases(t *testing.T) {
 	f.mu.Lock()
 	t.Logf("conversions %v, peak P set %d, P legs by node %v", conv, peak.Load(), f.pLegsOn)
 	f.mu.Unlock()
+}
+
+func (f *dynFleet) postMessages(t *testing.T, msgs []map[string]any) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"model": "m", "max_tokens": 2, "messages": msgs})
+	resp, err := http.Post(f.srv.URL+"/v1/chat/completions", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("status %d: %s", resp.StatusCode, body)
+	}
+}
+
+// A leg is charged what its P node must compute, not what it can load: a
+// prompt the fleet prefilled before is in the shared tier, so once the P
+// tree has forgotten it (its tail TTL, or the node's release) the D tree's
+// record still credits it, and the next turn is charged its new tokens only.
+func TestPDDynamicLegChargeCreditsThePrefixTheTierHolds(t *testing.T) {
+	f := newDynFleet(t, 3, prefill.Config{MaxFleetFraction: 0.5},
+		mockvllm.Config{DefaultMaxTokens: 2, BaseLatency: 400 * time.Millisecond})
+	history := []map[string]any{{"role": "user", "content": "shared " + strings.Repeat("context ", 5_000)}}
+	f.postMessages(t, history)
+	f.pflow.Forget(f.backend[0]) // the P tree no longer knows the prefix
+
+	turn := append(history,
+		map[string]any{"role": "assistant", "content": "ok"},
+		map[string]any{"role": "user", "content": "next question " + strings.Repeat("why ", 50)})
+	done := make(chan struct{})
+	go func() { defer close(done); f.postMessages(t, turn) }()
+	time.Sleep(200 * time.Millisecond) // the leg is in flight on the floor node
+	charged := testutil.ToFloat64(metrics.PrefillPendingTokens.WithLabelValues(f.pool, f.backend[0].URL))
+	<-done
+	if charged <= 0 || charged > 1_000 {
+		t.Errorf("turn 2 charged %v tokens, want only its new tokens (~100), not the ~10k prompt", charged)
+	}
+}
+
+func TestPDLegChargeIsThePromptLessWhatIsHeldOrStored(t *testing.T) {
+	for _, c := range []struct{ total, local, stored, want int64 }{
+		{10_000, 0, 0, 10_000},      // nothing known: the whole prompt
+		{10_000, 9_000, 0, 1_000},   // P tree holds it
+		{10_000, 0, 8_192, 1_808},   // tier holds it, cut to the store unit
+		{10_000, 9_500, 8_192, 500}, // the deeper credit wins
+		{10_000, 10_000, 0, 1},      // at least one token
+	} {
+		if got := gateway.PDLegCharge(c.total, c.local, c.stored); got != c.want {
+			t.Errorf("charge(%d, local %d, stored %d) = %d, want %d", c.total, c.local, c.stored, got, c.want)
+		}
+	}
 }

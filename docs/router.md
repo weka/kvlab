@@ -351,8 +351,17 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
   `kv_transfer_params.do_remote_decode`. It then goes to a decode node with the
   returned `kv_transfer_params`, which pulls the KV over NIXL. No `503`, no store,
   no resend.
-- Each prefill leg is a prefill job of the split's manager. It is charged its
-  prompt less the deepest prefix any prefill node is recorded holding.
+- Each prefill leg is a prefill job of the split's manager. It is charged what a
+  prefill node must compute: the prompt less the larger of two credits.
+  - The deepest prefix a prefill node holds locally.
+  - What the shared KV tier holds: the deepest prefix either the prefill or the
+    decode tree has recorded, since every earlier leg stored its prompt there,
+    cut to `--prefill-store-unit-tokens`.
+
+  The same tier credit is applied to every prefill node in the leg's placement
+  cost. The trees forget a prefix after `--cache-tail-ttl`, so with turns further
+  apart than that a leg is charged its whole prompt; raise it, which costs only
+  router memory.
   Conversion, drain, release and placement are the split's, unchanged:
   - Budget: `--prefill-node-budget-tokens`.
   - Drain: `--prefill-convert-after`.
