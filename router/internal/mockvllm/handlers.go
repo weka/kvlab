@@ -67,6 +67,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if remotePrefill(req.KVTransfer) {
+		res = s.engine.RemotePrefilled(res)
+	}
 
 	maxTok := s.engine.MaxTokensOrDefault(req.MaxTokens)
 	work := s.engine.PrefillWork(res)
@@ -127,6 +130,9 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if remotePrefill(req.KVTransfer) {
+		res = s.engine.RemotePrefilled(res)
+	}
 
 	maxTok := s.engine.MaxTokensOrDefault(req.MaxTokens)
 	work := s.engine.PrefillWork(res)

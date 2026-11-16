@@ -342,6 +342,23 @@ func (e *Engine) Admit(units []kvcache.Unit) (release func(), res Residency, ok 
 	}, res, true
 }
 
+// RemotePrefilled is res for a decode leg of P/D disaggregation (a request
+// whose kv_transfer_params carry do_remote_prefill): every prompt token not
+// in the local cache arrives by KV transfer from the prefill node instead of
+// being recomputed, as on an engine with pd_boundary=token. Those tokens are
+// External, so PrefillWork charges them at ExternalInputTPS (free when that is
+// 0) and the metrics count them as external_kv_transfer.
+func (e *Engine) RemotePrefilled(res Residency) Residency {
+	pulled := res.Total - res.Local - res.External
+	if pulled <= 0 {
+		return res
+	}
+	res.External += pulled
+	e.externalToks.Add(int64(pulled))
+	e.cachedToks.Add(int64(pulled))
+	return res
+}
+
 // RejectsPrefill reports whether a request must be refused for recomputing too
 // much, and how many tokens it would recompute. It reads the cache without
 // recording the request, so a refusal leaves no trace in it.

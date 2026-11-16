@@ -71,6 +71,15 @@ func (s *Server) recordKVTransfer(raw json.RawMessage) {
 // kvTransferAnswer is what a NIXL prefill leg (do_remote_decode) gets back:
 // params a decode node would use to pull the blocks. Any other request gets
 // none.
+// remotePrefill reports whether a request is the decode leg of P/D: its
+// kv_transfer_params name a prefill node holding its KV.
+func remotePrefill(req json.RawMessage) bool {
+	var in struct {
+		RemotePrefill bool `json:"do_remote_prefill"`
+	}
+	return json.Unmarshal(req, &in) == nil && in.RemotePrefill
+}
+
 func (s *Server) kvTransferAnswer(req json.RawMessage) json.RawMessage {
 	var in struct {
 		RemoteDecode bool `json:"do_remote_decode"`
