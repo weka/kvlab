@@ -242,6 +242,10 @@ type Options struct {
 	StreamBufferBytes  int
 	DrainDeadline      time.Duration
 
+	// Anthropic, when set, serves the Anthropic Messages API by translating it
+	// to Chat Completions in front of an OpenAI-only fleet.
+	Anthropic *AnthropicOptions
+
 	// Capture, when set, records every proxied exchange. The router's original
 	// job — capture traffic for later replay — survives the merge by wrapping
 	// the routing gateway rather than being wired through it.
@@ -741,7 +745,15 @@ func Handler(ctx context.Context, opts Options) (http.Handler, error) {
 	}
 	gw := gateway.New(gwCfg, tbl, px, d)
 
-	handler := captureMiddleware(opts.Capture, gw)
+	var inner http.Handler = gw
+	if opts.Anthropic != nil {
+		ah, err := opts.Anthropic.middleware(opts, gw, log)
+		if err != nil {
+			return nil, err
+		}
+		inner = ah
+	}
+	handler := captureMiddleware(opts.Capture, inner)
 
 	// Per-backend series (in-flight, requests) are derived from the live pool
 	// snapshots at scrape time and dropped after a backend has been down for

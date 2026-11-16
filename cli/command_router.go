@@ -109,8 +109,16 @@ type RouterServeCommand struct {
 	NoBackendMetrics    bool          `long:"no-backend-metrics" description:"Engine-neutral alias of --no-vllm-metrics. The aggregator covers vLLM and SGLang backends alike; either flag turns it off."`
 	BackendMetricsEvery time.Duration `long:"backend-metrics-interval" description:"Engine-neutral alias of --vllm-metrics-interval; when set it wins."`
 	BackendMetricsNames []string      `long:"backend-metrics-name" description:"Engine-neutral alias of --vllm-metrics-name; repeatable, and combined with it. Default: vllm:prompt_tokens_by_source_total, sglang:cached_tokens_total and sglang:prompt_tokens_total (request-level counters only — never add per-rank gauges)."`
-	LogLevel            string        `long:"log-level" default:"info" description:"debug, info, warn or error."`
-	LogFormat           string        `long:"log-format" choice:"json" choice:"text" default:"json" description:"Log output format."`
+	// --- Anthropic Messages API translation.
+	AnthropicAPI      bool     `long:"anthropic-api" description:"Serve the Anthropic Messages API (POST /v1/messages, /v1/messages/count_tokens) by translating to the backends' /v1/chat/completions and back: system, text/image/tool_use/tool_result blocks, tools and tool_choice, stop sequences, sampling params, thinking, streaming (SSE) and errors. Lets an Anthropic client such as Claude Code use an OpenAI-only fleet. Translated requests are routed exactly like chat completions. Off by default; with it off /v1/messages is proxied untranslated."`
+	AnthropicModelMap []string `long:"anthropic-model-map" description:"With --anthropic-api: '<pattern>=<model>' rewrites a client model name before routing. Pattern is comma-separated case-insensitive substrings or '*'; first match wins; repeatable. E.g. '*=my-org/my-model' maps every Claude model name Claude Code sends (main and small/fast) to the backend's. Unmatched names are forwarded as sent (a route's 'as <model>' or --auto-model may still rewrite them). Responses echo the client's name."`
+	AnthropicThinking string   `long:"anthropic-thinking" choice:"request" choice:"always" choice:"never" default:"request" description:"With --anthropic-api: when the backend's reasoning (reasoning_content / reasoning) is returned as thinking blocks. 'request' (default): only when the request enabled thinking, as Anthropic does; 'always'; 'never'. Reasoning not returned is dropped."`
+	AnthropicThinkKw  []string `long:"anthropic-thinking-kwarg" default:"thinking" description:"With --anthropic-api: chat_template_kwargs key set true/false from the request's thinking (enabled/adaptive vs disabled); repeatable. 'thinking' is DeepSeek's switch, 'enable_thinking' Qwen's. A request without thinking leaves the backend's default. Pass an empty value to send none."`
+	AnthropicMaxTok   int      `long:"anthropic-max-tokens-cap" description:"With --anthropic-api: clamp the client's max_tokens to this. Claude Code asks for 32k+ output tokens on every request, which a backend whose context cannot fit prompt+max_tokens rejects. 0 = forward as sent."`
+	AnthropicDebugDir string   `long:"anthropic-debug-dir" description:"With --anthropic-api: append every exchange in both formats (Anthropic request, translated OpenAI request, raw backend response, translated response) to <dir>/anthropic-exchanges.jsonl. Bodies only, never headers. For diagnosing translation vs model behaviour; contains full prompts."`
+
+	LogLevel  string `long:"log-level" default:"info" description:"debug, info, warn or error."`
+	LogFormat string `long:"log-format" choice:"json" choice:"text" default:"json" description:"Log output format."`
 }
 
 type routeRule struct {
@@ -303,6 +311,7 @@ func (c *RouterServeCommand) Execute(args []string) error {
 		UpstreamCredential:           c.UpstreamCred,
 		DrainDeadline:                c.DrainTimeout,
 		Capture:                      hook,
+		Anthropic:                    c.anthropicOptions(),
 		LogLevel:                     c.LogLevel,
 		LogFormat:                    c.LogFormat,
 	})
@@ -877,4 +886,24 @@ func (c *RouterServeCommand) metricsInterval() time.Duration {
 		return c.BackendMetricsEvery
 	}
 	return c.VLLMMetricsEvery
+}
+
+// anthropicOptions is nil unless --anthropic-api is set.
+func (c *RouterServeCommand) anthropicOptions() *serve.AnthropicOptions {
+	if !c.AnthropicAPI {
+		return nil
+	}
+	var kw []string
+	for _, k := range c.AnthropicThinkKw {
+		if k = strings.TrimSpace(k); k != "" {
+			kw = append(kw, k)
+		}
+	}
+	return &serve.AnthropicOptions{
+		ModelMap:       c.AnthropicModelMap,
+		ThinkingKwargs: kw,
+		Thinking:       c.AnthropicThinking,
+		MaxTokensCap:   c.AnthropicMaxTok,
+		DebugDir:       c.AnthropicDebugDir,
+	}
 }
