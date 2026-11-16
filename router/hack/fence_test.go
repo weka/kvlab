@@ -245,13 +245,10 @@ func TestNoDeadMetrics(t *testing.T) {
 	// still fails.
 	//
 	// ForPrefill is the same indirection for the prefill split's collectors,
-	// and is held to the same condition, as are ForPD for disaggregation's and
-	// ForPDElastic for the elastic P set's; forPrefillManager is the part the
-	// last two share.
+	// and is held to the same condition, as is ForPD for disaggregation's.
 	resolver := funcBody(string(src), "func ForPool(") + funcBody(string(src), "func ForPrefill(") +
-		funcBody(string(src), "func ForPD(") + funcBody(string(src), "func ForPDElastic(") +
-		funcBody(string(src), "func forPrefillManager(")
-	resolverUsed, prefillResolverUsed, pdResolverUsed, elasticResolverUsed := false, false, false, false
+		funcBody(string(src), "func ForPD(")
+	resolverUsed, prefillResolverUsed, pdResolverUsed := false, false, false
 	for _, rel := range goFiles(t, root, false) {
 		if strings.HasPrefix(filepath.ToSlash(rel), "internal/metrics/") {
 			continue
@@ -262,8 +259,7 @@ func TestNoDeadMetrics(t *testing.T) {
 		}
 		resolverUsed = resolverUsed || strings.Contains(string(b), "metrics.ForPool")
 		prefillResolverUsed = prefillResolverUsed || strings.Contains(string(b), "metrics.ForPrefill")
-		pdResolverUsed = pdResolverUsed || strings.Contains(string(b), "metrics.ForPD(")
-		elasticResolverUsed = elasticResolverUsed || strings.Contains(string(b), "metrics.ForPDElastic(")
+		pdResolverUsed = pdResolverUsed || strings.Contains(string(b), "metrics.ForPD")
 	}
 	if !resolverUsed {
 		t.Error("metrics.ForPool is never called, so every per-pool collector is dead")
@@ -274,9 +270,6 @@ func TestNoDeadMetrics(t *testing.T) {
 
 	if !pdResolverUsed {
 		t.Error("metrics.ForPD is never called, so every disaggregation collector is dead")
-	}
-	if !elasticResolverUsed {
-		t.Error("metrics.ForPDElastic is never called, so every elastic P/D collector is dead")
 	}
 
 	for _, name := range declared {

@@ -30,30 +30,38 @@ import (
 	"github.com/weka/kvlab/router/internal/routing"
 )
 
-// These run the real mock engine behind the real gateway with an elastic P
-// set (--pd-elastic): node 0 is the floor, the rest start as D nodes, and the
-// manager converts and releases them as the prefill legs' load demands.
+// These run the real mock engine behind the real gateway in dynamic vanilla
+// P/D (--prefill-split --prefill-split-mode=pd): node 0 is the floor, the rest
+// start as decode nodes, and the prefill split's manager drains them into
+// prefill and releases them as the prefill legs' load demands.
 
-type elasticFleet struct {
+type dynFleet struct {
 	srv     *httptest.Server
+	pool    string // unique per fleet, so metric reads are this fleet's alone
 	set     *pd.Set
 	mgr     *prefill.Manager
 	backend []*registry.Backend
+	// failP makes P legs answer 500.
+	failP atomic.Bool
 
 	mu sync.Mutex
-	// joined is when each node last joined the P set (zero while decode).
+	// joined is when each node last left decode (zero while decode).
 	joined    map[string]time.Time
 	pLegsOn   map[int]int
 	dLegsOn   map[int]int
+	legs      map[string][]string // request id -> "P"/"D" in arrival order
 	violation []string
-	dNoParams atomic.Int64
+	dNoParams int
 }
 
-const elasticGrace = 50 * time.Millisecond
+// dynGrace is how long after a node leaves decode a D leg may still arrive
+// there: one chosen just before the conversion is one of the decodes the
+// drain waits for.
+const dynGrace = 50 * time.Millisecond
 
-func newElasticFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *elasticFleet {
+func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *dynFleet {
 	t.Helper()
-	f := &elasticFleet{joined: map[string]time.Time{}, pLegsOn: map[int]int{}, dLegsOn: map[int]int{}}
+	f := &dynFleet{pool: fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()), joined: map[string]time.Time{}, pLegsOn: map[int]int{}, dLegsOn: map[int]int{}, legs: map[string][]string{}}
 	reg := registry.New(registry.Options{})
 	var floor []string
 	for i := range n {
@@ -71,22 +79,27 @@ func newElasticFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Confi
 				var body map[string]json.RawMessage
 				_ = json.Unmarshal(raw, &body)
 				c := pdCall{node: node, body: body}
+				id := r.Header.Get("X-Request-Id")
 				f.mu.Lock()
 				if c.isPrefillLeg() {
 					f.pLegsOn[node]++
+					f.legs[id] = append(f.legs[id], "P")
 				} else {
 					f.dLegsOn[node]++
+					f.legs[id] = append(f.legs[id], "D")
 					if _, has := body["kv_transfer_params"]; !has {
-						f.dNoParams.Add(1)
+						f.dNoParams++
 					}
-					// A D leg chosen just before its node joined the P set is
-					// one of the decodes a converting node finishes; one that
-					// arrives well after is a placement on a P node.
-					if j := f.joined[url]; !j.IsZero() && time.Since(j) > elasticGrace {
-						f.violation = append(f.violation, fmt.Sprintf("D leg on node %d, %v after it joined the P set", node, time.Since(j)))
+					if j := f.joined[url]; !j.IsZero() && time.Since(j) > dynGrace {
+						f.violation = append(f.violation, fmt.Sprintf("D leg on node %d, %v after it left decode", node, time.Since(j)))
 					}
 				}
+				fail := c.isPrefillLeg() && f.failP.Load()
 				f.mu.Unlock()
+				if fail {
+					http.Error(w, "boom", http.StatusInternalServerError)
+					return
+				}
 			}
 			h.ServeHTTP(w, r)
 		}))
@@ -106,7 +119,7 @@ func newElasticFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Confi
 	flow := affinity.Config{CostRouting: true}
 	dflow, pflow := mustFlow(t, flow), mustFlow(t, flow)
 	cfg.PD, cfg.Floor, cfg.CostPick = true, floor, true
-	cfg.PoolName = t.Name()
+	cfg.PoolName = f.pool
 	cfg.OnModeChange = func(b *registry.Backend, from, to prefill.Mode) {
 		// Called under the manager's lock; f.mu is never held while calling
 		// into the manager.
@@ -122,9 +135,9 @@ func newElasticFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Confi
 		}
 	}
 	f.mgr = prefill.New(cfg)
-	f.set = pd.New(t.Name(), floor)
-	f.set.Elastic = f.mgr
-	p := &pool.Pool{Name: t.Name(), Registry: reg, Flow: dflow, PD: f.set, PDFlow: pflow}
+	f.set = pd.New(f.pool, floor)
+	f.set.Dynamic = f.mgr
+	p := &pool.Pool{Name: f.pool, Registry: reg, Flow: dflow, PD: f.set, PDFlow: pflow}
 	tbl, err := routing.NewTable([]routing.Rule{{Pool: p}})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +149,7 @@ func newElasticFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Confi
 	return f
 }
 
-func (f *elasticFleet) inP() (n int) {
+func (f *dynFleet) inP() (n int) {
 	for _, b := range f.backend {
 		if f.set.IsPrefill(b) {
 			n++
@@ -145,7 +158,7 @@ func (f *elasticFleet) inP() (n int) {
 	return n
 }
 
-func (f *elasticFleet) post(t *testing.T, content string) {
+func (f *dynFleet) post(t *testing.T, content string) {
 	t.Helper()
 	resp, err := http.Post(f.srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(chatBody(content, false)))
 	if err != nil {
@@ -159,26 +172,28 @@ func (f *elasticFleet) post(t *testing.T, content string) {
 	}
 }
 
-func (f *elasticFleet) checkNoDecodeOnP(t *testing.T) {
+// check asserts every request ran a P leg then a D leg, carrying params when
+// wantParams, and that no D leg landed on a node out of decode.
+func (f *dynFleet) check(t *testing.T, wantParams bool) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, v := range f.violation {
 		t.Error(v)
 	}
-	if n := f.dNoParams.Load(); n != 0 {
-		t.Errorf("%d decode legs went without kv_transfer_params (prefill fell back)", n)
+	for id, seq := range f.legs {
+		if strings.Join(seq, "") != "PD" {
+			t.Errorf("request %s legs %v, want a P leg then a D leg", id, seq)
+		}
+	}
+	if wantParams && f.dNoParams != 0 {
+		t.Errorf("%d D legs without kv_transfer_params", f.dNoParams)
 	}
 }
 
-func TestPDElasticMinimumServesPrefillOnConvertedNodeAndNoDecodeThere(t *testing.T) {
-	f := newElasticFleet(t, 4, prefill.Config{MinPrefill: 2, MaxFleetFraction: 0.5,
-		NodeBudgetTokens: 1}, mockvllm.Config{DefaultMaxTokens: 2})
-	f.mgr.Step(f.backend)
-	if n := f.inP(); n != 2 {
-		t.Fatalf("P set = %d, want the minimum 2", n)
-	}
-	// Concurrent, so the floor is busy and legs go to the converted node too.
+func TestPDDynamicEveryRequestRunsAPLegThenADLegWithItsParams(t *testing.T) {
+	f := newDynFleet(t, 4, prefill.Config{NodeBudgetTokens: 1, MaxFleetFraction: 0.5},
+		mockvllm.Config{DefaultMaxTokens: 2})
 	for batch := range 4 {
 		var wg sync.WaitGroup
 		for i := range 5 {
@@ -190,40 +205,56 @@ func TestPDElasticMinimumServesPrefillOnConvertedNodeAndNoDecodeThere(t *testing
 		}
 		wg.Wait()
 	}
+	f.check(t, true)
 	f.mu.Lock()
-	dLegs, pLegs := maps.Clone(f.dLegsOn), maps.Clone(f.pLegsOn)
+	n := len(f.legs)
+	dLegs := maps.Clone(f.dLegsOn)
 	f.mu.Unlock()
-	for node, n := range dLegs {
-		if f.set.IsPrefill(f.backend[node]) {
-			t.Errorf("%d D legs on P node %d", n, node)
-		}
+	if n != 20 {
+		t.Errorf("%d requests seen, want 20", n)
 	}
-	converted := 0
-	for node, n := range pLegs {
-		if !f.set.IsPrefill(f.backend[node]) {
-			t.Errorf("%d P legs on D node %d", n, node)
-		}
-		if node != 0 && n > 0 {
-			converted++
-		}
+	if c := dLegs[0]; c != 0 {
+		t.Errorf("%d D legs on the floor node", c)
 	}
-	if converted != 1 {
-		t.Errorf("P legs on %d converted nodes, want the 1 converted to reach the minimum (by node: %v)", converted, pLegs)
+	if !f.set.IsPrefill(f.backend[0]) {
+		t.Error("the floor node left the P set")
 	}
-	f.checkNoDecodeOnP(t)
+	if ok := testutil.ToFloat64(metrics.PrefillJobs.WithLabelValues(f.pool, "ok", "")); ok != 20 {
+		t.Errorf("router_prefill_jobs_total{outcome=ok} = %v, want 20 (one per request)", ok)
+	}
+}
+
+func TestPDDynamicFailedPLegFallsBackToDecodeAlone(t *testing.T) {
+	f := newDynFleet(t, 3, prefill.Config{}, mockvllm.Config{DefaultMaxTokens: 2})
+	f.failP.Store(true)
+	for i := range 3 {
+		f.post(t, fmt.Sprintf("q%d %s", i, strings.Repeat("y", 2000)))
+	}
+	f.check(t, false)
+	f.mu.Lock()
+	noParams := f.dNoParams
+	f.mu.Unlock()
+	if noParams != 3 {
+		t.Errorf("%d D legs went without params, want all 3 (recompute)", noParams)
+	}
+	if got := testutil.ToFloat64(metrics.PrefillJobs.WithLabelValues(f.pool, "failed", "status_5xx")); got != 3 {
+		t.Errorf("router_prefill_jobs_total{failed,status_5xx} = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(metrics.PDFallbacks.WithLabelValues(f.pool, "prefill_failed")); got != 3 {
+		t.Errorf("router_pd_fallbacks_total{prefill_failed} = %v, want 3", got)
+	}
 }
 
 // The workbench scenario: a quiet start served by the floor alone, a late
-// surge that holds the P set over budget and converts decode nodes up to the
-// ceiling, and an idle period after which they all return to decode.
-func TestPDElasticSurgeConvertsAndIdleReleases(t *testing.T) {
+// surge that holds the prefill nodes over budget and drains decode nodes into
+// prefill up to the cap, and an idle period after which they return to decode.
+func TestPDDynamicSurgeDrainsIntoPrefillAndIdleReleases(t *testing.T) {
 	const nodes = 6
-	f := newElasticFleet(t, nodes, prefill.Config{
+	f := newDynFleet(t, nodes, prefill.Config{
 		NodeBudgetTokens: 30_000, // about one leg at a time per P node
 		MaxFleetFraction: 0.5,    // at most 3 P nodes
 		ConvertAfter:     150 * time.Millisecond,
 		ReleaseIdle:      400 * time.Millisecond,
-		ReleaseBelow:     0.5,
 	}, mockvllm.Config{DefaultMaxTokens: 2, ColdInputTPS: 400_000, OutputTPS: 2_000})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -231,17 +262,16 @@ func TestPDElasticSurgeConvertsAndIdleReleases(t *testing.T) {
 
 	prompt := func(i int) string { return fmt.Sprintf("session %d %s", i, strings.Repeat("lorem ipsum ", 7_000)) }
 
-	// Quiet: one at a time, the floor keeps up.
-	for i := range 5 {
+	for i := range 5 { // quiet: the floor keeps up
 		f.post(t, prompt(i))
 	}
 	if n := f.inP(); n != 1 {
 		t.Fatalf("P set = %d after quiet traffic, want the floor alone", n)
 	}
 
-	// Surge: far more concurrent prefill than the floor's budget.
+	// Surge: arrivals every 5ms, each leg ~50ms of prefill on one node.
 	var wg sync.WaitGroup
-	peak := atomic.Int64{}
+	var peak atomic.Int64
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -255,35 +285,33 @@ func TestPDElasticSurgeConvertsAndIdleReleases(t *testing.T) {
 			}
 		}
 	}()
-	for i := range 60 {
+	for i := range 80 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			f.post(t, prompt(100+i))
 		}()
+		time.Sleep(5 * time.Millisecond)
 	}
 	wg.Wait()
 	close(stop)
-	conv := testutil.ToFloat64(metrics.PDConversions.WithLabelValues(t.Name(), "over_budget"))
-	if conv < 1 || peak.Load() < 2 {
-		t.Fatalf("surge converted %v nodes (peak P set %d), want conversions", conv, peak.Load())
-	}
-	if p := peak.Load(); p > nodes/2 {
-		t.Errorf("peak P set %d over the ceiling %d", p, nodes/2)
+	conv := testutil.ToFloat64(metrics.PrefillConversions.WithLabelValues(f.pool))
+	if conv < 2 || peak.Load() != nodes/2 {
+		t.Fatalf("surge drained %v nodes into prefill (peak P set %d), want the cap %d", conv, peak.Load(), nodes/2)
 	}
 	f.mu.Lock()
-	onConverted := 0
+	onDrained := 0
 	for node, n := range f.pLegsOn {
 		if node != 0 {
-			onConverted += n
+			onDrained += n
 		}
 	}
 	f.mu.Unlock()
-	if onConverted == 0 {
-		t.Error("no prefill leg ran on a converted node")
+	if onDrained == 0 {
+		t.Error("no P leg ran on a drained node")
 	}
 
-	// Idle: every converted node returns to decode.
+	// Idle: every drained node returns to decode.
 	deadline := time.Now().Add(5 * time.Second)
 	for f.inP() > 1 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
@@ -291,20 +319,17 @@ func TestPDElasticSurgeConvertsAndIdleReleases(t *testing.T) {
 	if n := f.inP(); n != 1 {
 		t.Fatalf("P set = %d after the idle period, want the floor alone", n)
 	}
-	rel := testutil.ToFloat64(metrics.PDReleases.WithLabelValues(t.Name(), "idle")) +
-		testutil.ToFloat64(metrics.PDReleases.WithLabelValues(t.Name(), "low_water"))
-	if rel != conv {
+	if rel := testutil.ToFloat64(metrics.PrefillReleases.WithLabelValues(f.pool)); rel != conv {
 		t.Errorf("releases %v, want one per conversion (%v)", rel, conv)
 	}
-	// The released nodes are decode candidates again.
 	if got := len(f.set.DecodeNodes(f.backend)); got != nodes-1 {
 		t.Errorf("decode candidates = %d after the release, want %d", got, nodes-1)
 	}
 	for i := range 5 {
 		f.post(t, prompt(1000+i))
 	}
-	f.checkNoDecodeOnP(t)
+	f.check(t, true)
 	f.mu.Lock()
-	t.Logf("conversions %v, releases %v, peak P set %d, prefill legs by node %v", conv, rel, peak.Load(), f.pLegsOn)
+	t.Logf("conversions %v, peak P set %d, P legs by node %v", conv, peak.Load(), f.pLegsOn)
 	f.mu.Unlock()
 }

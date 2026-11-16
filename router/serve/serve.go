@@ -181,18 +181,9 @@ type Options struct {
 	PrefillReleaseIdle  time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
-	// PDElastic makes the P set elastic (--pd-elastic): PDPrefillBackends is
-	// its floor, and decode nodes are converted into it and released by the
-	// prefill budget, PrefillMaxFleetFraction, PrefillConvertAfter and
-	// PrefillReleaseIdle (zero durations take DefaultPDConvertAfter and
-	// DefaultPDReleaseIdle). Exclusive with PrefillSplit.
-	PDElastic bool
-	// PDPrefillMin is --pd-prefill-min: the fewest nodes the elastic P set
-	// holds, floor included.
-	PDPrefillMin int
-	// PrefillReleaseBelow is --prefill-release-below; 0 releases idle nodes
-	// only.
-	PrefillReleaseBelow float64
+	// PrefillSplitMode is --prefill-split-mode: PrefillSplitReject (the
+	// default; "" is the same) or PrefillSplitPD.
+	PrefillSplitMode string
 	// MoveWeight is --move-cost-weight: affinity.Config.MoveWeight. 0 is the
 	// default.
 	MoveWeight float64
@@ -307,39 +298,32 @@ func (o Options) flowConfig() affinity.Config {
 
 // pdOn reports whether requests are served as P/D legs: with a static P set,
 // an elastic one, or both (the static set is then the elastic one's floor).
-func (o Options) pdOn() bool { return len(o.PDPrefillBackends) > 0 || o.PDElastic }
+func (o Options) pdOn() bool { return len(o.PDPrefillBackends) > 0 || o.dynamicPD() }
 
-// The elastic P set's hold times when --prefill-convert-after and
-// --prefill-release-idle are left at 0. Converting or releasing at once would
-// flap a node with every burst; these are long enough to ride out a burst and
-// short against a conversion's payoff.
+// The --prefill-split-mode values. reject moves only prefills a backend
+// refuses, handing them off through the shared KV tier; pd makes every
+// request's prefill leg a job and hands it off over NIXL (dynamic vanilla P/D).
 const (
-	DefaultPDConvertAfter = 15 * time.Second
-	DefaultPDReleaseIdle  = 60 * time.Second
+	PrefillSplitReject = "reject"
+	PrefillSplitPD     = "pd"
 )
 
-// pdElasticConfig is the elastic P set's manager, nil without --pd-elastic or
-// for a route the router does not route within.
-func (o Options) pdElasticConfig(transparent bool) *prefill.Config {
-	if !o.PDElastic || transparent {
+// dynamicPD reports whether the prefill split runs as dynamic vanilla P/D.
+func (o Options) dynamicPD() bool {
+	return o.PrefillSplit && o.PrefillSplitMode == PrefillSplitPD
+}
+
+// pdDynamicConfig is the prefill split's manager configured for dynamic P/D,
+// nil without it or for a route the router does not route within. Its node
+// concurrency is the P flow's band: the limit a P node's legs run under.
+func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
+	if !o.dynamicPD() || transparent {
 		return nil
 	}
 	_, prefillFlow := o.roleFlowConfigs()
-	or := func(d, def time.Duration) time.Duration {
-		if d > 0 {
-			return d
-		}
-		return def
-	}
-	return &prefill.Config{
-		NodeConcurrency:  prefillFlow.NodeConcurrency,
-		NodeBudgetTokens: o.PrefillNodeBudgetTokens,
-		MaxFleetFraction: o.PrefillMaxFleetFraction,
-		ConvertAfter:     or(o.PrefillConvertAfter, DefaultPDConvertAfter),
-		ReleaseIdle:      or(o.PrefillReleaseIdle, DefaultPDReleaseIdle),
-		MinPrefill:       o.PDPrefillMin,
-		ReleaseBelow:     o.PrefillReleaseBelow,
-	}
+	c := o.splitConfig()
+	c.NodeConcurrency = prefillFlow.NodeConcurrency
+	return &c
 }
 
 // roleFlowConfigs are the decode and prefill flows under P/D: the global flow
@@ -365,10 +349,16 @@ func (o Options) roleFlowConfigs() (decode, prefillFlow affinity.Config) {
 // prefillConfig is nil with the split off, which is what leaves a backend's
 // large-prefill refusal reaching the caller unchanged.
 func (o Options) prefillConfig() *prefill.Config {
-	if !o.PrefillSplit {
+	if !o.PrefillSplit || o.dynamicPD() {
 		return nil
 	}
-	return &prefill.Config{
+	c := o.splitConfig()
+	return &c
+}
+
+// splitConfig is the prefill split's flags, common to both modes.
+func (o Options) splitConfig() prefill.Config {
+	return prefill.Config{
 		NodeConcurrency:  o.NodeConcurrency,
 		NodeBudgetTokens: o.PrefillNodeBudgetTokens,
 		MaxFleetFraction: o.PrefillMaxFleetFraction,
@@ -461,16 +451,17 @@ func (o Options) validatePD() error {
 		case b.v < 0:
 			return fmt.Errorf("router: %s must not be negative", b.flag)
 		case b.v > 0 && !o.pdOn():
-			return fmt.Errorf("router: %s needs --pd-prefill-backends or --pd-elastic", b.flag)
+			return fmt.Errorf("router: %s needs --pd-prefill-backends or --prefill-split-mode=pd", b.flag)
 		}
 	}
-	switch {
-	case o.PDPrefillMin < 0:
-		return errors.New("router: --pd-prefill-min must not be negative")
-	case o.PDPrefillMin > 0 && !o.PDElastic:
-		return errors.New("router: --pd-prefill-min needs --pd-elastic")
-	case o.PrefillReleaseBelow < 0 || o.PrefillReleaseBelow >= 1:
-		return errors.New("router: --prefill-release-below must be in [0, 1)")
+	switch o.PrefillSplitMode {
+	case "", PrefillSplitReject:
+	case PrefillSplitPD:
+		if !o.PrefillSplit {
+			return errors.New("router: --prefill-split-mode=pd needs --prefill-split")
+		}
+	default:
+		return fmt.Errorf("router: --prefill-split-mode %q: want %s or %s", o.PrefillSplitMode, PrefillSplitReject, PrefillSplitPD)
 	}
 	if !o.pdOn() {
 		return nil
@@ -495,8 +486,8 @@ func (o Options) validatePD() error {
 				r.role, r.c.SoftNodeConcurrency, r.c.NodeConcurrency)
 		}
 	}
-	if o.PrefillSplit {
-		return errors.New("router: --pd-prefill-backends / --pd-elastic and --prefill-split are mutually exclusive")
+	if o.PrefillSplit && !o.dynamicPD() {
+		return errors.New("router: --pd-prefill-backends and --prefill-split are mutually exclusive unless --prefill-split-mode=pd")
 	}
 	for _, p := range o.PDPrefillBackends {
 		found := false
@@ -696,7 +687,7 @@ func Handler(ctx context.Context, opts Options) (http.Handler, error) {
 			DrainDeadline:   opts.DrainDeadline,
 			PrefillSplit:    opts.prefillConfig(),
 			PDPrefill:       opts.pdPrefillFor(rt),
-			PDElastic:       opts.pdElasticConfig(transparent),
+			PDDynamic:       opts.pdDynamicConfig(transparent),
 		}, clk, log)
 		if err != nil {
 			return nil, err
@@ -1037,10 +1028,10 @@ type pdSource struct {
 }
 
 func (s pdSource) Snapshot(opts viz.SnapshotOptions) viz.Snapshot {
-	if s.set.Elastic != nil {
-		// The elastic set's roles change at run time; show them, with the
+	if s.set.Dynamic != nil {
+		// The dynamic P set's roles change at run time; show them, with the
 		// manager's pending tokens and counters, as for the prefill split.
-		snap := splitSource{inner: s.inner, m: s.set.Elastic}.Snapshot(opts)
+		snap := splitSource{inner: s.inner, m: s.set.Dynamic}.Snapshot(opts)
 		for i := range snap.Backends {
 			snap.Backends[i].Mode = s.set.Role(&registry.Backend{URL: snap.Backends[i].URL})
 		}

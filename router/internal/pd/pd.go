@@ -7,9 +7,10 @@
 // then goes to a D node carrying those params, which pulls the blocks it does
 // not already hold and streams the answer.
 //
-// With Elastic set the P set is not static: the configured prefill URLs are
-// its floor, and the prefill manager converts decode nodes into it and
-// releases them back as the prefill load demands (see prefill/elastic.go).
+// With Dynamic set the P set is not static: it is the prefill manager's
+// nodes out of decode mode. The configured prefill URLs are its floor, and the
+// manager drains decode nodes into it and releases them back as the prefill
+// load demands, as for the prefill split (see prefill/pdmode.go).
 package pd
 
 import (
@@ -25,9 +26,10 @@ import (
 type Set struct {
 	prefill map[string]struct{}
 	M       *metrics.PDMetrics
-	// Elastic, when set, owns the P set: the URLs above are only its floor,
-	// and every prefill leg is a job charged against its budget.
-	Elastic *prefill.Manager
+	// Dynamic, when set, owns the P set: the URLs above are only its floor,
+	// and every prefill leg is a job of the manager, charged against its
+	// budget.
+	Dynamic *prefill.Manager
 }
 
 // New builds a set from the prefill backends' URLs.
@@ -44,21 +46,21 @@ func Normalize(u string) string { return strings.TrimRight(strings.TrimSpace(u),
 
 // IsPrefill reports whether b is a P node.
 func (s *Set) IsPrefill(b *registry.Backend) bool {
-	if s.Elastic != nil {
-		return s.Elastic.IsPrefill(b)
+	if s.Dynamic != nil {
+		return s.Dynamic.IsPrefill(b)
 	}
 	_, ok := s.prefill[Normalize(b.URL)]
 	return ok
 }
 
-// Role is b's role, for display: "prefill" or "decode", or under Elastic also
-// "converting".
+// Role is b's role, for display: "prefill" or "decode", or under Dynamic also
+// "draining".
 func (s *Set) Role(b *registry.Backend) string {
-	if s.Elastic != nil {
-		if m := s.Elastic.ModeOf(b); m != prefill.Decode {
+	if s.Dynamic != nil {
+		if m := s.Dynamic.ModeOf(b); m != prefill.Decode {
 			return m.String()
 		}
-		if s.Elastic.IsPrefill(b) {
+		if s.Dynamic.IsPrefill(b) {
 			return prefill.Prefill.String() // a floor node not met yet
 		}
 		return prefill.Decode.String()
@@ -71,17 +73,17 @@ func (s *Set) Role(b *registry.Backend) string {
 
 // PrefillNodes keeps the P nodes of cands.
 func (s *Set) PrefillNodes(cands []*registry.Backend) []*registry.Backend {
-	if s.Elastic != nil {
-		return s.Elastic.PrefillNodes(cands)
+	if s.Dynamic != nil {
+		return s.Dynamic.PrefillNodes(cands)
 	}
 	return s.filter(cands, true)
 }
 
-// DecodeNodes keeps the D nodes of cands. A node in the P set, converting
+// DecodeNodes keeps the D nodes of cands. A node in the P set, draining
 // included, is never one.
 func (s *Set) DecodeNodes(cands []*registry.Backend) []*registry.Backend {
-	if s.Elastic != nil {
-		return s.Elastic.DecodeNodes(cands)
+	if s.Dynamic != nil {
+		return s.Dynamic.DecodeNodes(cands)
 	}
 	return s.filter(cands, false)
 }

@@ -3,6 +3,7 @@ package serve
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidatePD(t *testing.T) {
@@ -119,20 +120,21 @@ func TestPDAllowedUnderCostRouting(t *testing.T) {
 	}
 }
 
-func TestValidatePDElastic(t *testing.T) {
+func TestValidatePDDynamicMode(t *testing.T) {
 	routes := []Route{{Patterns: "*", Endpoints: []string{"http://p:8000", "http://d1:8000", "http://d2:8000"}}}
+	floor := []string{"http://p:8000"}
 	cases := []struct {
 		name string
 		o    Options
 		want string
 	}{
-		{"elastic alone", Options{Routes: routes, PDElastic: true, PDPrefillMin: 1}, ""},
-		{"elastic with a floor", Options{Routes: routes, PDElastic: true, PDPrefillBackends: []string{"http://p:8000"}}, ""},
-		{"elastic band without a static set", Options{Routes: routes, PDElastic: true, PDPrefillMaxNodeConcurrency: 8}, ""},
-		{"min without elastic", Options{Routes: routes, PDPrefillMin: 2}, "needs --pd-elastic"},
-		{"negative min", Options{Routes: routes, PDElastic: true, PDPrefillMin: -1}, "must not be negative"},
-		{"release-below out of range", Options{Routes: routes, PDElastic: true, PrefillReleaseBelow: 1}, "[0, 1)"},
-		{"with prefill split", Options{Routes: routes, PDElastic: true, PrefillSplit: true}, "mutually exclusive"},
+		{"split, reject mode", Options{Routes: routes, PrefillSplit: true}, ""},
+		{"split, pd mode", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: PrefillSplitPD}, ""},
+		{"pd mode with a floor", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: PrefillSplitPD, PDPrefillBackends: floor}, ""},
+		{"pd mode band without a static set", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: PrefillSplitPD, PDPrefillMaxNodeConcurrency: 8}, ""},
+		{"floor with reject mode", Options{Routes: routes, PrefillSplit: true, PDPrefillBackends: floor}, "unless --prefill-split-mode=pd"},
+		{"pd mode without the split", Options{Routes: routes, PrefillSplitMode: PrefillSplitPD}, "needs --prefill-split"},
+		{"unknown mode", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: "both"}, "want reject or pd"},
 	}
 	for _, c := range cases {
 		err := c.o.validatePD()
@@ -145,22 +147,28 @@ func TestValidatePDElastic(t *testing.T) {
 	}
 }
 
-func TestPDElasticConfigDefaultsAndRoles(t *testing.T) {
-	if (Options{}).pdElasticConfig(false) != nil {
-		t.Error("elastic config without --pd-elastic")
+// Both modes take the same split flags; pd mode replaces the reject mode's
+// manager and runs its legs under the P flow's concurrency band.
+func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
+	split := Options{PrefillSplit: true, PrefillNodeBudgetTokens: 500_000, PrefillMaxFleetFraction: 0.4,
+		PrefillConvertAfter: 20 * time.Second, PrefillReleaseIdle: 90 * time.Second, NodeConcurrency: 64}
+	if split.pdDynamicConfig(false) != nil || split.prefillConfig() == nil {
+		t.Fatal("reject mode must build the split's manager only")
 	}
-	o := Options{PDElastic: true, PDPrefillMin: 2, PrefillReleaseBelow: 0.4, NodeConcurrency: 64, PDPrefillMaxNodeConcurrency: 8}
-	if o.pdElasticConfig(true) != nil {
-		t.Error("elastic config for a transparent route")
+	o := split
+	o.PrefillSplitMode, o.PDPrefillMaxNodeConcurrency = PrefillSplitPD, 8
+	if o.prefillConfig() != nil {
+		t.Error("pd mode also built the reject mode's manager")
 	}
-	c := o.pdElasticConfig(false)
-	if c.ConvertAfter != DefaultPDConvertAfter || c.ReleaseIdle != DefaultPDReleaseIdle {
-		t.Errorf("hold times %v/%v, want the elastic defaults", c.ConvertAfter, c.ReleaseIdle)
+	if o.pdDynamicConfig(true) != nil {
+		t.Error("pd mode manager for a transparent route")
 	}
-	if c.MinPrefill != 2 || c.ReleaseBelow != 0.4 || c.NodeConcurrency != 8 {
-		t.Errorf("config = %+v, want min 2, release-below 0.4, the prefill band's concurrency 8", c)
+	c := o.pdDynamicConfig(false)
+	if c.NodeBudgetTokens != 500_000 || c.MaxFleetFraction != 0.4 || c.ConvertAfter != 20*time.Second ||
+		c.ReleaseIdle != 90*time.Second || c.NodeConcurrency != 8 {
+		t.Errorf("config = %+v, want the split flags and the prefill band's concurrency 8", c)
 	}
 	if !strings.HasPrefix(o.signalsLog(), "prefill=[") {
-		t.Errorf("signals log %q is not per role under --pd-elastic", o.signalsLog())
+		t.Errorf("signals log %q is not per role in pd mode", o.signalsLog())
 	}
 }

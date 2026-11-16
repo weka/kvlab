@@ -53,10 +53,11 @@ func (s *Server) pdServe(
 // until it is served, --retry-time-limit runs out when that is set, or the
 // caller leaves.
 //
-// With an elastic P set the leg is a job of the set's manager instead: it is
-// charged against a P node's budget, waits in the router while the set is
-// full (which is what drives a conversion), and is then sent to the node the
-// manager placed it on.
+// Under dynamic P/D the leg is a job of the prefill split's manager instead:
+// charged against a P node's budget, it waits in the router while every P node
+// is full (which is what drains another decode node into prefill), then goes to
+// the node the manager placed it on, once that node has finished draining. It
+// is counted as a prefill job as well as a leg.
 func (s *Server) runPDPrefill(
 	r *http.Request, target Target, rr *policy.RoutingRequest, body []byte,
 	outcome proxy.OnOutcome, auth proxy.Auth,
@@ -86,21 +87,33 @@ func (s *Server) runPDPrefill(
 	deadline := start.Add(s.cfg.RetryTimeLimit)
 
 	cands := func() []*registry.Backend { return set.PrefillNodes(s.healthy(target)) }
-	if mgr := set.Elastic; mgr != nil {
+	mgr := set.Dynamic
+	if mgr != nil {
 		job, err := mgr.Reserve(s.healthy(target), s.pdLegTokens(target, rr), s.pdPicker(target, rr, r))
 		if err != nil {
 			m.FallbackNoNode.Inc()
+			mgr.FallbackNoNode()
 			return nil, false
 		}
 		defer job.Done()
-		if mgr.WaitReady(r.Context(), job) != nil {
+		if err := mgr.WaitReady(r.Context(), job); err != nil {
+			mgr.CountJobCancelled("abandoned")
 			return nil, false // the caller left; its decode leg ends with it
 		}
-		// The manager chose the node, and bounds its prefill legs itself: the
-		// flow's own signals would read a converting node's earlier decodes
-		// as prefill saturation.
+		// The manager chose the node and bounds its legs (budget, and
+		// --max-node-concurrency when set): the leg goes there alone.
 		only := []*registry.Backend{job.Backend}
 		cands, sel = func() []*registry.Backend { return only }, policy.LeastOutstanding{}
+	}
+	jobFailed := func(reason string, cancelled bool) {
+		switch {
+		case mgr == nil:
+		case cancelled:
+			mgr.CountJobCancelled(reason)
+		default:
+			mgr.CountJobFailed(reason)
+			mgr.FallbackJobFailed()
+		}
 	}
 
 	for attempt := 0; ; attempt++ {
@@ -131,21 +144,27 @@ func (s *Server) runPDPrefill(
 		if res.Err != nil || res.Status < 200 || res.Status >= 300 {
 			m.LegFailed.Inc()
 			m.FallbackFailed.Inc()
+			f := classifyJob(r, res)
+			jobFailed(f.reason, f.cancelled)
 			return nil, false
 		}
 		params, ok := pd.ParseParams(cw.buf.Bytes())
 		if !ok {
 			m.LegNoParams.Inc()
 			m.FallbackNoParams.Inc()
+			jobFailed("other", false)
 			return nil, false
 		}
 		m.LegOK.Inc()
+		if mgr != nil {
+			mgr.CountJob(true)
+		}
 		return params, true
 	}
 }
 
-// pdLegTokens is what a prefill leg is charged against the elastic P set's
-// budget: the prompt less the deepest prefix any P node is recorded holding,
+// pdLegTokens is what a prefill leg is charged against a P node's budget
+// under dynamic P/D: the prompt less the deepest prefix any P node is recorded holding,
 // since a leg is placed where its prefix is unless that node's queue says
 // otherwise.
 func (s *Server) pdLegTokens(t Target, rr *policy.RoutingRequest) int64 {
@@ -159,7 +178,7 @@ func (s *Server) pdLegTokens(t Target, rr *policy.RoutingRequest) int64 {
 	return max(total, 1)
 }
 
-// pdPicker chooses among the elastic P set's nodes with budget room by the P
+// pdPicker chooses among the dynamic P set's nodes with budget room by the P
 // flow, costing each by the leg tokens the manager has pending there (queued
 // in the router and running).
 func (s *Server) pdPicker(t Target, rr *policy.RoutingRequest, r *http.Request) prefill.Picker {

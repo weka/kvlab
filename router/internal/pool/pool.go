@@ -85,11 +85,11 @@ type Config struct {
 	// Flow, so the P nodes can run a concurrency band of their own. Nil copies
 	// Flow.
 	PDPrefillFlow *affinity.Config
-	// PDElastic, when set, makes the P set elastic: PDPrefill is its floor,
-	// and this configures the manager that converts decode nodes into it and
-	// releases them. Its PD, Floor, PoolName, Clock and CostPick are filled in
-	// here.
-	PDElastic *prefill.Config
+	// PDDynamic, when set, is dynamic vanilla P/D: the prefill split's
+	// manager owns the P set, with PDPrefill as its floor, and every request's
+	// prefill leg is one of its jobs. Its PD, Floor, PoolName, Clock, CostPick
+	// and OnModeChange are filled in here.
+	PDDynamic *prefill.Config
 
 	// OnCircuitTransition, when set, is attached to every backend as it joins,
 	// so an operator can tell an overload from an outage.
@@ -134,7 +134,7 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 	// one prefix tree shared by both roles would anchor a request at the deeper
 	// run the other role holds, and neither would see its own session as a hit.
 	var pflow *affinity.Policy
-	pdOn := len(cfg.PDPrefill) > 0 || cfg.PDElastic != nil
+	pdOn := len(cfg.PDPrefill) > 0 || cfg.PDDynamic != nil
 	splitFlow := cfg.PrefillSplit != nil && cfg.Flow.CostRouting && !pdOn
 	if pdOn || splitFlow {
 		pc := cfg.Flow
@@ -211,11 +211,11 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 		}
 		p.PD = pd.New(cfg.Name, cfg.PDPrefill)
 		p.PDFlow = pflow
-		if cfg.PDElastic != nil {
-			ec := *cfg.PDElastic
+		if cfg.PDDynamic != nil {
+			ec := *cfg.PDDynamic
 			ec.PD, ec.Floor = true, cfg.PDPrefill
 			ec.PoolName, ec.Clock = cfg.Name, clk
-			ec.CostPick = true
+			ec.CostPick = cfg.Flow.CostRouting
 			if ec.Log == nil {
 				ec.Log = p.log
 			}
@@ -230,7 +230,7 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 					pflow.Forget(b)
 				}
 			}
-			p.PD.Elastic = prefill.New(ec)
+			p.PD.Dynamic = prefill.New(ec)
 		}
 	}
 
@@ -292,8 +292,8 @@ func (p *Pool) Run(ctx context.Context) {
 	if p.PD != nil {
 		go p.watchPD(ctx)
 	}
-	if p.PD != nil && p.PD.Elastic != nil {
-		go p.PD.Elastic.Run(ctx, func() []*registry.Backend { return p.Registry.Snapshot().Backends })
+	if p.PD != nil && p.PD.Dynamic != nil {
+		go p.PD.Dynamic.Run(ctx, func() []*registry.Backend { return p.Registry.Snapshot().Backends })
 	}
 	if p.SplitFlow != nil {
 		go p.tick(ctx, sweepInterval(p.SplitFlow.TailTTL()), func() { p.SplitFlow.Sweep() })

@@ -535,7 +535,7 @@ var (
 
 	PrefillNodeMode = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_prefill_node_mode",
-		Help: "Prefill-split or elastic P/D mode per backend: 0 decode, 1 draining, 2 prefill, 3 converting.",
+		Help: "Prefill-split mode per backend: 0 decode, 1 draining, 2 prefill.",
 	}, []string{"pool", "backend"})
 
 	PrefillPendingTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -585,24 +585,6 @@ var (
 		Help:    "Wall time of each prefill/decode leg, including retries; the decode leg runs to the end of its response.",
 		Buckets: prometheus.ExponentialBuckets(0.01, 2, 14),
 	}, []string{"pool", "leg"})
-
-	// The elastic prefill pool (--pd-elastic).
-	PDPrefillNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "router_pd_prefill_nodes",
-		Help: "Backends by elastic P/D role (--pd-elastic): prefill (in the P set, floor or converted), converting (in the P set while decodes from before its conversion finish) or decode.",
-	}, []string{"pool", "mode"})
-	PDConversions = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "router_pd_prefill_conversions_total",
-		Help: "Decode nodes moved into the P set (--pd-elastic), by reason: min (below --pd-prefill-min) or over_budget (the P set over --prefill-node-budget-tokens for --prefill-convert-after).",
-	}, []string{"pool", "reason"})
-	PDReleases = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "router_pd_prefill_releases_total",
-		Help: "Converted P nodes returned to decode (--pd-elastic), by reason: idle (no prefill leg for --prefill-release-idle) or low_water (the P set under --prefill-release-below of the budget left without the node, for --prefill-release-idle).",
-	}, []string{"pool", "reason"})
-	PDPrefillQueueTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "router_pd_prefill_queue_tokens",
-		Help: "Prefill-leg tokens on the P set (--pd-elastic): queued in the router waiting for budget room, or running on a P node. Their sum is what --prefill-node-budget-tokens bounds per node.",
-	}, []string{"pool", "state"})
 )
 
 // PDMetrics is one pool's disaggregation collectors, resolved once.
@@ -650,7 +632,6 @@ func All() []prometheus.Collector {
 		PrefillRejections, PrefillJobs, PrefillConversions, PrefillReleases,
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds,
-		PDPrefillNodes, PDConversions, PDReleases, PDPrefillQueueTokens,
 	}
 }
 
@@ -871,23 +852,11 @@ func (m *PoolMetrics) Decision(tier string) { m.decisions.WithLabelValues(tier).
 // Signal counts one signal judging a backend unable to take more work.
 func (m *PoolMetrics) Signal(name string) { m.signals.WithLabelValues(name).Inc() }
 
-// PrefillModes is the closed enum of prefill-manager node modes, in the order of
-// router_prefill_node_mode's values. converting occurs only under --pd-elastic.
-var PrefillModes = []string{"decode", "draining", "prefill", "converting"}
+// PrefillModes is the closed enum of prefill-split node modes, in the order of
+// router_prefill_node_mode's values.
+var PrefillModes = []string{"decode", "draining", "prefill"}
 
-// PDPrefillModes is the closed enum of router_pd_prefill_nodes' mode label.
-var PDPrefillModes = []string{"prefill", "decode", "converting"}
-
-// PDConversionReasons and PDReleaseReasons are the closed enums of the reason
-// label on the elastic P/D conversion and release counters.
-var (
-	PDConversionReasons = []string{"min", "over_budget"}
-	PDReleaseReasons    = []string{"idle", "low_water"}
-)
-
-// PrefillMetrics is one pool's prefill-manager collectors, resolved once: the
-// prefill split's, or the elastic P/D pool's (ForPDElastic), which publish
-// their node counts, conversions and releases under router_pd_* names.
+// PrefillMetrics is one pool's prefill-split collectors, resolved once.
 type PrefillMetrics struct {
 	pool string
 
@@ -895,21 +864,13 @@ type PrefillMetrics struct {
 	nodeMode *prometheus.GaugeVec
 	pending  *prometheus.GaugeVec
 
-	// nodes counts backends by mode; modes[i] is the label of mode i, empty
-	// for a mode this flavour does not publish.
-	nodes *prometheus.GaugeVec
-	modes []string
-	// conversions and releases carry a reason label when reasoned.
-	conversions, releases *prometheus.CounterVec
-	reasoned              bool
-	// queueTokens is set for the elastic P/D pool only.
-	queueTokens *prometheus.GaugeVec
-
 	Rejections prometheus.Counter
 	JobsOK     prometheus.Counter
 	// jobsFailed and jobsCancelled are by reason, one of
 	// PrefillJobFailureReasons and PrefillJobCancelReasons.
 	jobsFailed, jobsCancelled *prometheus.CounterVec
+	Conversions               prometheus.Counter
+	Releases                  prometheus.Counter
 	JobRetries                prometheus.Counter
 	JobMoves                  prometheus.Counter
 	Queued                    prometheus.Gauge
@@ -921,48 +882,9 @@ type PrefillMetrics struct {
 // ForPrefill resolves the prefill-split collectors for a pool, creating every
 // closed-enum series at 0.
 func ForPrefill(pool string) *PrefillMetrics {
-	m := forPrefillManager(pool)
-	m.nodes = PrefillNodes.MustCurryWith(prometheus.Labels{"pool": pool})
-	m.modes = []string{"decode", "draining", "prefill", ""}
-	m.conversions = PrefillConversions.MustCurryWith(prometheus.Labels{"pool": pool})
-	m.releases = PrefillReleases.MustCurryWith(prometheus.Labels{"pool": pool})
-	m.conversions.WithLabelValues()
-	m.releases.WithLabelValues()
-	m.warmModes()
-	return m
-}
-
-// ForPDElastic resolves the collectors of an elastic P/D prefill pool
-// (--pd-elastic), creating every closed-enum series at 0.
-func ForPDElastic(pool string) *PrefillMetrics {
-	lbl := prometheus.Labels{"pool": pool}
-	m := forPrefillManager(pool)
-	m.nodes = PDPrefillNodes.MustCurryWith(lbl)
-	m.modes = []string{"decode", "", "prefill", "converting"}
-	m.conversions = PDConversions.MustCurryWith(lbl)
-	m.releases = PDReleases.MustCurryWith(lbl)
-	m.reasoned = true
-	for _, r := range PDConversionReasons {
-		m.conversions.WithLabelValues(r)
+	for _, m := range PrefillModes {
+		PrefillNodes.WithLabelValues(pool, m)
 	}
-	for _, r := range PDReleaseReasons {
-		m.releases.WithLabelValues(r)
-	}
-	m.queueTokens = PDPrefillQueueTokens.MustCurryWith(lbl)
-	m.SetQueueTokens(0, 0)
-	m.warmModes()
-	return m
-}
-
-func (m *PrefillMetrics) warmModes() {
-	for _, l := range m.modes {
-		if l != "" {
-			m.nodes.WithLabelValues(l)
-		}
-	}
-}
-
-func forPrefillManager(pool string) *PrefillMetrics {
 	lbl := prometheus.Labels{"pool": pool}
 	for _, r := range PrefillJobFailureReasons {
 		PrefillJobs.WithLabelValues(pool, "failed", r)
@@ -978,6 +900,8 @@ func forPrefillManager(pool string) *PrefillMetrics {
 		JobsOK:          PrefillJobs.WithLabelValues(pool, "ok", ""),
 		jobsFailed:      PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "failed"}),
 		jobsCancelled:   PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "cancelled"}),
+		Conversions:     PrefillConversions.WithLabelValues(pool),
+		Releases:        PrefillReleases.WithLabelValues(pool),
 		JobRetries:      PrefillJobRetries.WithLabelValues(pool),
 		JobMoves:        PrefillJobMoves.WithLabelValues(pool),
 		Queued:          PrefillQueuedJobs.WithLabelValues(pool),
@@ -985,32 +909,6 @@ func forPrefillManager(pool string) *PrefillMetrics {
 		FallbackJobFail: PrefillBypassFallbacks.WithLabelValues(pool, "job_failed"),
 		FallbackSkipped: PrefillFallbacksSkipped.WithLabelValues(pool),
 	}
-}
-
-// Conversion counts a node moved into prefill service, for reason (one of
-// PDConversionReasons; ignored by the prefill split's unlabelled counter).
-func (m *PrefillMetrics) Conversion(reason string) { m.reasonInc(m.conversions, reason) }
-
-// Release counts a node returned to decode, for reason (one of
-// PDReleaseReasons; ignored by the prefill split's unlabelled counter).
-func (m *PrefillMetrics) Release(reason string) { m.reasonInc(m.releases, reason) }
-
-func (m *PrefillMetrics) reasonInc(v *prometheus.CounterVec, reason string) {
-	if m.reasoned {
-		v.WithLabelValues(reason).Inc()
-		return
-	}
-	v.WithLabelValues().Inc()
-}
-
-// SetQueueTokens publishes the elastic P/D pool's prefill-leg tokens queued in
-// the router and running on P nodes. A no-op for the prefill split.
-func (m *PrefillMetrics) SetQueueTokens(queued, running int64) {
-	if m.queueTokens == nil {
-		return
-	}
-	m.queueTokens.WithLabelValues("queued").Set(float64(queued))
-	m.queueTokens.WithLabelValues("running").Set(float64(running))
 }
 
 // SetNode publishes one backend's mode (an index into PrefillModes) and its
@@ -1055,12 +953,9 @@ func (m *PrefillMetrics) DropNode(backend string) {
 	m.pending.DeleteLabelValues(backend)
 }
 
-// SetModeCounts publishes how many backends are in each mode, indexed as
-// PrefillModes.
-func (m *PrefillMetrics) SetModeCounts(counts [4]int) {
+// SetModeCounts publishes how many backends are in each mode.
+func (m *PrefillMetrics) SetModeCounts(counts [3]int) {
 	for i, n := range counts {
-		if l := m.modes[i]; l != "" {
-			m.nodes.WithLabelValues(l).Set(float64(n))
-		}
+		PrefillNodes.WithLabelValues(m.pool, PrefillModes[i]).Set(float64(n))
 	}
 }
