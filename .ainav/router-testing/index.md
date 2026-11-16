@@ -364,3 +364,25 @@ zero. That instance reported `generation_tokens_total` 120 (6 x 20),
 `prefix_cache_queries_total` 96 (6 x 16 blocks) and `prefix_cache_hits_total` 80
 (5 of 6 requests hitting the shared prefix; the first is cold). The router's
 aggregated totals matched the sum exactly.
+
+## Elastic P/D on the mock fleet
+
+`--pd-elastic` runs on the plain mock fleet: a D leg (kv_transfer_params with
+`do_remote_prefill`) takes its prompt by "KV transfer" (free unless
+`--external-kv-tps` is set), so prefill load lands on the P set only. A burst of
+long unique prompts shows conversions; going quiet shows releases:
+
+```bash
+/tmp/mock-vllm --instances 6 --base-port 9001 --model-id m --cold-input-tps 400000 --output-tps 2000
+/tmp/kvlab-local router serve --listen :8080 --metrics-listen 127.0.0.1:29000 \
+  --backends 'http://127.0.0.1:9001|...|http://127.0.0.1:9006' \
+  --pd-elastic --pd-prefill-backends http://127.0.0.1:9001 \
+  --prefill-node-budget-tokens 30000 --prefill-convert-after 200ms --prefill-release-idle 1s
+# 80 concurrent ~20k-token prompts: 2 conversions (ceiling 3), then 2 idle releases
+curl -s 127.0.0.1:29000/metrics | grep -E '^router_pd_prefill_(nodes|conversions|releases|queue)'
+```
+
+Readiness-gate on a real completion, not only `/v1/models`: requests sent before
+the backends' first health probes pass get `503 no_healthy_backends`.
+`TestPDElasticSurgeConvertsAndIdleReleases` (router/internal/gateway) is the same
+scenario as a test.
