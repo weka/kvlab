@@ -180,6 +180,9 @@ type Manager struct {
 	// to the ReleaseBelow watermark (zero while above it).
 	floor    map[string]bool
 	lowSince time.Time
+	// overSince is, under PD, when the P set as a whole last went over its
+	// budget (zero while within it).
+	overSince time.Time
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
@@ -354,7 +357,7 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	switch {
 	case len(eligible) > 0:
 		chosen = m.pickLocked(eligible, pick)
-	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode):
+	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode, tokens):
 		chosen = m.leastLoadedLocked(decode)
 		m.convertLocked(m.nodes[chosen.URL], "over_budget", len(cands))
 	case len(nonDecode) > 0:
@@ -467,7 +470,15 @@ func (m *Manager) canConvertLocked(fleet, nonDecode, decode int) bool {
 // overflowedLongEnoughLocked applies ConvertAfter: with no prefill node yet,
 // or the least-loaded one over budget for at least that long, a decode node
 // may be drained.
-func (m *Manager) overflowedLongEnoughLocked(nonDecode []*registry.Backend) bool {
+//
+// Under PD the test is on the set as a whole: its pending tokens, with the
+// new job's, over the budget of all its nodes, for that long. Legs queue on one node and move to
+// another only once it can start them, so the least-loaded node can sit at
+// its budget while the set holds far more than it can run.
+func (m *Manager) overflowedLongEnoughLocked(nonDecode []*registry.Backend, tokens int64) bool {
+	if m.cfg.PD {
+		return m.setOverflowedLocked(nonDecode, tokens)
+	}
 	if m.cfg.ConvertAfter <= 0 || len(nonDecode) == 0 {
 		return true
 	}
@@ -476,6 +487,9 @@ func (m *Manager) overflowedLongEnoughLocked(nonDecode []*registry.Backend) bool
 }
 
 func (m *Manager) trackBudgetLocked(n *node) {
+	if m.cfg.PD {
+		m.trackSetLocked(0)
+	}
 	switch {
 	case n.pending <= m.cfg.NodeBudgetTokens:
 		n.overSince = time.Time{}
@@ -726,6 +740,9 @@ func (m *Manager) convertLocked(n *node, reason string, fleet int) {
 	}
 	m.setModeLocked(n, to)
 	n.convertedAt = m.cfg.Clock.Now()
+	if !m.overSince.IsZero() {
+		m.overSince = n.convertedAt
+	}
 	n.idleSince = time.Time{}
 	m.conversions.Add(1)
 	m.m.Conversion(reason)

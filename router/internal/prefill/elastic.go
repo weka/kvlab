@@ -142,21 +142,49 @@ func without(bs []*registry.Backend, x *registry.Backend) []*registry.Backend {
 // convertIfOverLocked converts a decode node when legs are waiting in the
 // router and the P set has been over budget for ConvertAfter: the same rule
 // Reserve applies to a new leg, applied to legs already queued, which then
-// spread onto the new node.
+// spread onto the new node. The overflow clock restarts at each conversion,
+// so the next one needs a full ConvertAfter of its own.
 func (m *Manager) convertIfOverLocked(cands []*registry.Backend) {
 	if !m.cfg.PD || m.queuedJobsLocked() == 0 {
 		return
 	}
 	nonDecode, decode := m.countsLocked(cands)
-	if len(nonDecode) == 0 || !m.canConvertLocked(len(cands), len(nonDecode), len(decode)) || !m.overflowedLongEnoughLocked(nonDecode) {
+	if len(nonDecode) == 0 || !m.setOverflowedLocked(nonDecode, 0) || !m.canConvertLocked(len(cands), len(nonDecode), len(decode)) {
 		return
 	}
-	for _, b := range nonDecode {
-		if n := m.nodes[b.URL]; n.pending == 0 || n.pending < m.cfg.NodeBudgetTokens {
-			return // a node with room: the queue will drain onto it
+	m.convertLocked(m.nodes[m.leastLoadedLocked(decode).URL], "over_budget", len(cands))
+}
+
+// trackSetLocked keeps the P set's overflow clock: overSince is when its
+// pending tokens last went over the budget of all its healthy nodes, extra
+// counted as pending (a leg being placed). It runs on every change of a
+// node's pending tokens, so the clock starts when the overflow does.
+func (m *Manager) trackSetLocked(extra int64) (over bool) {
+	pending, k := extra, int64(0)
+	for _, n := range m.nodes {
+		if n.mode != Decode && n.b.Available() {
+			pending += n.pending
+			k++
 		}
 	}
-	m.convertLocked(m.nodes[m.leastLoadedLocked(decode).URL], "over_budget", len(cands))
+	if pending <= k*m.cfg.NodeBudgetTokens {
+		m.overSince = time.Time{}
+		return false
+	}
+	if m.overSince.IsZero() {
+		m.overSince = m.cfg.Clock.Now()
+	}
+	return true
+}
+
+// setOverflowedLocked reports whether the P set, with extra tokens more, has
+// been over its budget for ConvertAfter. With no P node at all a leg may
+// convert at once.
+func (m *Manager) setOverflowedLocked(nonDecode []*registry.Backend, extra int64) bool {
+	if len(nonDecode) == 0 {
+		return true
+	}
+	return m.trackSetLocked(extra) && m.cfg.Clock.Now().Sub(m.overSince) >= m.cfg.ConvertAfter
 }
 
 func (m *Manager) queuedJobsLocked() (q int) {
