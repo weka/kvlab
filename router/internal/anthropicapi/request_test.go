@@ -274,7 +274,7 @@ func TestInvalidRequestsAreRefused(t *testing.T) {
 		"not json":          `{`,
 		"no model":          `{"max_tokens":1,"messages":[{"role":"user","content":"x"}]}`,
 		"no messages":       `{"model":"m","max_tokens":1,"messages":[]}`,
-		"bad role":          `{"model":"m","max_tokens":1,"messages":[{"role":"system","content":"x"}]}`,
+		"bad role":          `{"model":"m","max_tokens":1,"messages":[{"role":"tool","content":"x"}]}`,
 		"bad content":       `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":5}]}`,
 		"tool_use no id":    `{"model":"m","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"f","input":{}}]}]}`,
 		"result no id":      `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"tool_result","content":"x"}]}]}`,
@@ -291,4 +291,14 @@ func TestInvalidRequestsAreRefused(t *testing.T) {
 			t.Errorf("%s: err = %v, want a RequestError", name, err)
 		}
 	}
+}
+
+// Claude Code's subagents send system-role turns inside messages.
+func TestSystemRoleMessagesBecomeSystemMessages(t *testing.T) {
+	out, _ := translate(t, Config{}, `{"model":"m","max_tokens":1,"system":"top","messages":[
+	  {"role":"user","content":"task"},
+	  {"role":"system","content":[{"type":"text","text":"reminder"}]},
+	  {"role":"user","content":"go"}]}`)
+	jsonEq(t, messages(t, out), `[{"role":"system","content":"top"},{"role":"user","content":"task"},
+	  {"role":"system","content":"reminder"},{"role":"user","content":"go"}]`)
 }

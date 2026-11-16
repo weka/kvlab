@@ -122,8 +122,16 @@ func toOpenAI(raw []byte, cfg *Config) (*translated, error) {
 				return nil, err
 			}
 			out.Messages = append(out.Messages, msg)
+		case "system":
+			// Claude Code puts system-role turns inside messages (its subagents
+			// do, for one); Chat Completions takes a system message anywhere.
+			text, err := systemText(m.Content)
+			if err != nil {
+				return nil, badRequest("messages.%d.content: %v", i, err)
+			}
+			out.Messages = append(out.Messages, oaMessage{Role: "system", Content: text})
 		default:
-			return nil, badRequest("messages.%d.role: must be \"user\" or \"assistant\", got %q", i, m.Role)
+			return nil, badRequest("messages.%d.role: must be \"user\", \"assistant\" or \"system\", got %q", i, m.Role)
 		}
 	}
 

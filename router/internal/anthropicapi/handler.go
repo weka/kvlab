@@ -88,6 +88,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var re *RequestError
 		if errors.As(err, &re) {
+			// Logged: a refusal here is either a broken client or a shape the
+			// translation does not know yet, and only the second is ours to fix.
+			h.cfg.Log.Warn("anthropic request refused", "err", re.Msg)
+			if h.debug != nil {
+				h.debug.record(raw, nil, http.StatusBadRequest, nil, errorJSON(http.StatusBadRequest, re.Msg), h.cfg.Log)
+			}
 			writeError(w, http.StatusBadRequest, re.Msg)
 			return
 		}
