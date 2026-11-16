@@ -274,8 +274,8 @@ as a warning (and logged again when it returns), never an exit. Until a P node i
 live, requests fall back to a D node alone; with no live D node a request is
 answered `503` at once ("no healthy decode backend is available (only prefill
 nodes are live)" when only P nodes are up). Selecting the P pool by its own label
-selector is not supported. It replaces vLLM's round-robin toy proxy and is exclusive with
-`--prefill-split`. Every `/v1/chat/completions` and `/v1/completions` request goes
+selector is not supported. It replaces vLLM's round-robin toy proxy. With `--prefill-split` it needs
+`--prefill-split-mode=pd`, where it names the dynamic P set's floor (below). Every `/v1/chat/completions` and `/v1/completions` request goes
 to a P node first, as a copy with `max_tokens=1`, `stream=false`, no
 `stream_options` and `kv_transfer_params={"do_remote_decode": true, ...}`. The
 `kv_transfer_params` object in the P node's answer goes, verbatim, into the
@@ -342,53 +342,52 @@ band tends to cap the decode nodes first. The startup log prints
 `signals="prefill=[...] decode=[...]"` with each role's band. The `router_cache_*` series
 for the P flow carry `pool="<pool>:prefill"`.
 
-**Elastic P/D.** `--pd-elastic` turns P/D on with a P set that grows and shrinks
-with prefill load, over the same NIXL/token legs (nothing is refused, stored or
-resent). `--pd-prefill-backends`, when given, is the *floor*: always prefill,
-never released. `--pd-prefill-min N` is the fewest nodes in the set, floor
-included; the router converts the least-loaded decode nodes to reach it. It needs
-symmetric workers: every engine launched with the same P/D config and
-`kv_role=kv_both`, so any node can serve either leg on any request.
+**Dynamic vanilla P/D.** `--prefill-split --prefill-split-mode=pd` runs the
+prefill split above as NIXL prefill/decode disaggregation. The default,
+`--prefill-split-mode=reject`, is the split as described above.
 
-- **Budget.** Every prefill leg is a job of the pool's prefill manager, charged
-  its prompt less the deepest prefix any P node is recorded holding. It goes to
-  the P node with budget room (`--prefill-node-budget-tokens`, queued plus
-  running) chosen by the P flow's cost, which counts each node's pending leg
-  tokens as its queue. With every node full the leg waits in the router, and
-  moves to whichever node frees room first. Size the budget to a few seconds of
-  one node's prefill throughput: the default 4M tokens is far more than a P node
-  should hold in its own queue.
-- **Conversion.** When the set's pending tokens have stayed over the budget of
-  all its nodes for `--prefill-convert-after` (0 = 15 s under `--pd-elastic`),
-  the decode node with the least decode load (in-flight prefill plus active
-  context tokens) joins it as `converting`: it gets no new decode leg and takes
-  prefill legs at once while the decodes it already had finish, then is
-  `prefill`. Its prefill-leg concurrency (`--pd-prefill-max-node-concurrency`, or
-  the global value) counts prefill legs only. The clock restarts at every
-  conversion.
-- **Release.** A converted node returns to decode after `--prefill-release-idle`
-  (0 = 60 s under `--pd-elastic`) without a prefill leg, or once the set's pending
-  tokens have stayed at or below `--prefill-release-below` (default 0.5) of the
-  budget the set would have without one node, for `--prefill-release-idle`. That
-  releases the converted node with the fewest pending tokens and none queued;
-  its running legs finish there. The low-water clock restarts at every release,
-  so the next one needs a full window. Cost routing spreads legs over every P
-  node, so under steady load no node goes idle: the low-water rule is what
-  shrinks the set. Over 100% of the budget to grow, under half of a smaller
-  budget to shrink, each held for its own duration: that gap is the hysteresis.
-- **Ceiling.** At most `floor(nodes * --prefill-max-fleet-fraction)` healthy nodes
-  are in the set, floor included, and one always stays in decode. Never below
-  the minimum.
-- **Placement.** Within the set and within decode it is cost routing as for fixed
-  P/D. A D leg never goes to a node in the set, converting included, and with no
-  decode node left the request is answered `503`.
-- A node's prefix marks count only in the role that made them: joining the set
-  it loses its decode marks, leaving it its prefill marks.
-- Every conversion and release logs one line (`decode node converted to
-  prefill` / `prefill node released to decode`) with the reason, the node's load
-  and the set's (`pending_tokens`, `queued_tokens`, `queued_jobs`, nodes per
-  mode, budget, ceiling). `/router-viz` shows each backend as `prefill`,
-  `converting` or `decode` with its pending tokens.
+- **Every** `/v1/chat/completions` and `/v1/completions` request is first a
+  prefill leg, with the same body as fixed P/D: `max_tokens=1`,
+  `kv_transfer_params.do_remote_decode`. It then goes to a decode node with the
+  returned `kv_transfer_params`, which pulls the KV over NIXL. No `503`, no store,
+  no resend.
+- Each prefill leg is a prefill job of the split's manager. It is charged its
+  prompt less the deepest prefix any prefill node is recorded holding.
+  Conversion, drain, release and placement are the split's, unchanged:
+  - Budget: `--prefill-node-budget-tokens`.
+  - Drain: `--prefill-convert-after`.
+  - Release: `--prefill-release-idle`.
+  - Cap: `--prefill-max-fleet-fraction`.
+  - Placement among prefill nodes is cost-weighted (`--move-cost-weight`).
+- A drained node takes legs only once the decodes it had have finished. So no
+  node runs prefill legs next to decodes it took as a decode node; the engine's
+  `VLLM_MAX_PREFILLS_EXEMPT_PREFILL_ONLY` assumes exactly that.
+- `--pd-prefill-backends`, optional here, names nodes that are prefill from the
+  start and never released: the floor. With no floor, the first request drains a
+  node. The floor counts toward `--prefill-max-fleet-fraction`.
+- Prefill legs run under the prefill band (`--pd-prefill-max-node-concurrency`,
+  else `--max-node-concurrency`).
+- Decode legs are placed by cost routing over the decode nodes. A draining or
+  prefill node never takes one. With no decode node left the request is answered
+  `503`.
+- A failed leg, or one answered without params, sends the request to a decode node
+  alone, which recomputes (`router_pd_fallbacks_total`,
+  `router_prefill_jobs_total{outcome="failed"}`).
+- `/v1/messages` is served on decode nodes only.
+- Engines: every node is launched the same way, `kv_role=kv_both` with the P/D
+  connector in token boundary mode, so any node serves either leg.
+- Metrics are the split's: `router_prefill_nodes{mode}`, conversions, releases,
+  jobs (one per request), per-backend mode and pending tokens. The fixed-P/D leg
+  metrics come on top.
+- Each drain and release logs one line: `decode node draining for prefill` /
+  `prefill node released to decode`. It carries the reason, the node's in-flight
+  and pending tokens, the prefill nodes' pending, running and queued tokens and
+  queued jobs, nodes per mode, the budget, and the leg's tokens.
+- `/router-viz` shows `decode`, `draining` and `prefill` per backend.
+
+As in the reject mode, cost routing spreads legs over the prefill nodes. Under
+steady load a node with a little work never goes idle, so it is not released
+until traffic drops.
 
 `--rebalance-ratio` is **off by default**. Set to `0.5` it makes a backend
 carrying more than twice the fleet minimum stop taking new work, so the idle
@@ -1121,7 +1120,7 @@ So alert on all three:
 | `router_prefill_jobs_total{outcome,reason}` | prefill jobs. `ok` (no reason); `failed`, by `reason`: `timeout` (`--request-timeout` on the job's request to the node, counted from when it is sent, not from when it was reserved), `status_4xx` / `status_5xx`, `transport` (connection failed or broke), `rejected` (refused as a large prefill despite the bypass), `other` — the request is then sent on with the bypass; `cancelled` by the caller, `reason` `abandoned` (it left while the job waited in the router for a slot) or `client_cancelled` (while the job ran or waited out a 429) — nothing more is sent for it, and the job's slot, budget share and pending tokens are returned. A caller leaving used to count as `failed` (and took the bypass fallback); it no longer does. Each failure logs `prefill job failed` (warn), each cancellation `prefill job cancelled` (info), with the reason, backend, tokens, time waited for a slot and time running, status and error; at most one line per outcome and reason every 10s, the next one carrying `suppressed_since_last` |
 | `router_prefill_conversions_total` / `router_prefill_releases_total` | decode nodes taken out for prefill, and returned to decode as soon as their last job finishes |
 | `router_prefill_bypass_fallbacks_total{reason}` | requests served with the bypass and no prefill: `no_node` (none could be added) or `job_failed` |
-| `router_prefill_nodes{mode}` / `router_prefill_node_mode{backend}` | backends per mode, and each backend's mode (0 decode, 1 draining, 2 prefill, 3 converting under `--pd-elastic`); `router_prefill_node_mode` and `router_prefill_pending_tokens` also cover the elastic P set |
+| `router_prefill_nodes{mode}` / `router_prefill_node_mode{backend}` | backends per mode, and each backend's mode (0 decode, 1 draining, 2 prefill); under `--prefill-split-mode=pd` these, and every other `router_prefill_*` series, describe the dynamic P set |
 | `router_prefill_queued_jobs` / `router_prefill_job_retries_total` | prefill jobs waiting for a slot under `--max-node-concurrency` (a prefill node never runs more jobs than that, counting its other in-flight requests), and jobs retried on the same node after it answered 429 |
 | `router_prefill_pending_tokens{backend}` | queued plus in-flight prefill tokens on a backend. A node is sent at most `--prefill-node-budget-tokens` of it at once; the rest waits in the router (`router_prefill_queued_jobs`) and may move. `/router-viz` shows each node's `running_tokens` |
 | `router_prefill_fallbacks_skipped_total` | rejected requests whose bypass fallback (no prefill node, or a job that did not succeed) was not sent because the caller had already left; not in `router_prefill_bypass_fallbacks_total` |
@@ -1130,10 +1129,6 @@ So alert on all three:
 | `router_pd_fallbacks_total{reason}` | requests sent to a D node without `kv_transfer_params`, so it recomputes: `no_prefill_node`, `prefill_failed` or `no_params` |
 | `router_pd_prefill_retries_total` | prefill legs retried after every P node was saturated or the chosen one answered 429 |
 | `router_pd_leg_duration_seconds{leg}` | wall time of the `prefill` leg (retries included) and the `decode` leg (to the end of its response) |
-| `router_pd_prefill_nodes{mode}` | elastic P/D (`--pd-elastic`): backends by role, `prefill`, `converting` or `decode` |
-| `router_pd_prefill_conversions_total{reason}` | decode nodes moved into the elastic P set: `min` (below `--pd-prefill-min`) or `over_budget` |
-| `router_pd_prefill_releases_total{reason}` | converted nodes returned to decode: `idle` or `low_water` |
-| `router_pd_prefill_queue_tokens{state}` | prefill-leg tokens on the elastic P set: `queued` in the router or `running` on a P node |
 | `router_backend_queued` | requests currently waiting in ONE backend's `--max-node-concurrency` queue. Non-zero only while `--retry-time-limit` is set; the per-backend companion to the fleet-wide `router_backend_queue_wait_seconds` below |
 | `router_backend_queue_wait_seconds` | latency spent in a backend's wait queue, by outcome — `woken` (a slot freed, request re-decided), `expired` (budget ran out, same 429 as the poll path), `abandoned` (caller disconnected). Separate from `router_retry_wait_seconds`: that one measures the whole-fleet poll loop, this one a wait bound to a single backend, and the two describe different mechanisms for the same refusal |
 | `router_backend_queue_full_total{backend}` | requests refused a place in line outright because that backend's queue was already at its depth bound (`--max-node-concurrency`). Answered `503`, not `429` — the request never waited at all |
