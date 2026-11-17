@@ -423,9 +423,21 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
 - Each prefill leg is a prefill job of the split's manager. It is charged what a
   prefill node must compute: the prompt less the larger of two credits.
   - The deepest prefix a prefill node holds locally.
-  - What the shared KV tier holds: the deepest prefix either the prefill or the
-    decode tree has recorded, since every earlier leg stored its prompt there,
-    cut to `--prefill-store-unit-tokens`.
+  - What the shared KV tier holds, cut to `--prefill-store-unit-tokens`: the
+    deepest prefix recorded as stored. Every prompt a prefill leg computed, or
+    a decode node recomputed after a failed leg, is recorded in a tree of its
+    own (`pool="<pool>:stored"`). Nothing in it is forgotten when a node changes
+    role; only `--cache-tail-ttl` ages a prompt out. The prefill and decode
+    trees' depths count too.
+
+  `--prefill-node-budget-tokens` (0 = 160,000 in this mode) is therefore the
+  compute a P node may have outstanding: size it to a few seconds of a node's
+  prefill rate. `--prefill-load-weight` (default 0) adds that fraction of the
+  tokens a leg loads from the tier. On a fleet whose P nodes spend their time
+  loading rather than computing, a compute-only charge keeps them looking empty:
+  packing keeps sending them legs, and only the router-wait signal can call for
+  a drain, once legs back up in the router. A weight near the cost of loading a
+  token relative to computing one (0.01-0.05) makes the budget see the load.
 
   The trees forget a prefix after `--cache-tail-ttl`, so with turns further
   apart than that a leg is charged its whole prompt; raise it, which costs only

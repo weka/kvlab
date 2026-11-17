@@ -171,4 +171,14 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 	if !strings.HasPrefix(o.signalsLog(), "prefill=[") {
 		t.Errorf("signals log %q is not per role in pd mode", o.signalsLog())
 	}
+	// A budget left at 0 takes the pd default; the reject mode keeps the
+	// manager's.
+	o.PrefillNodeBudgetTokens, o.PrefillLoadWeight = 0, 0.02
+	if c := o.pdDynamicConfig(false); c.NodeBudgetTokens != DefaultPDNodeBudgetTokens || c.LoadWeight != 0.02 {
+		t.Errorf("pd budget %d load weight %v, want %d and 0.02", c.NodeBudgetTokens, c.LoadWeight, DefaultPDNodeBudgetTokens)
+	}
+	split.PrefillNodeBudgetTokens = 0
+	if c := split.prefillConfig(); c.NodeBudgetTokens != 0 {
+		t.Errorf("reject budget %d, want 0 (the manager's default)", c.NodeBudgetTokens)
+	}
 }

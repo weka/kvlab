@@ -81,5 +81,6 @@ func (d *pdLegDiag) observe(ctx context.Context, units []kvcache.Unit, c pdCharg
 	obs.Logger(ctx).Info("pd leg charge", "conversation", conv,
 		"units", len(units), "prev_units", len(prev), "diverge_unit", diverge, "shared_with_prev_tokens", shared,
 		"total_tokens", c.total, "prefill_tree_tokens", c.local, "decode_tree_tokens", c.decode,
+		"stored_record_tokens", c.record,
 		"stored_tokens", c.stored, "charge_tokens", c.charge)
 }

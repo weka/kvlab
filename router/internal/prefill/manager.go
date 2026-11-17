@@ -101,6 +101,10 @@ type Config struct {
 	// then only bounds what is dispatched to a node. 0 leaves PD on the
 	// budget rule, as the reject mode.
 	DrainDelay time.Duration
+	// LoadWeight (PD only) adds this fraction of the tokens a leg loads from
+	// the shared tier to its charge, which otherwise counts only the tokens it
+	// computes. 0 charges compute alone.
+	LoadWeight float64
 
 	// StoreUnitTokens is the granularity the shared KV tier stores a prompt at:
 	// a finished job leaves floor(prompt / unit) * unit tokens loadable by any
@@ -305,6 +309,9 @@ func (m *Manager) DecodeNodes(cands []*registry.Backend) []*registry.Backend {
 	}
 	return out
 }
+
+// LoadWeight is Config.LoadWeight.
+func (m *Manager) LoadWeight() float64 { return m.cfg.LoadWeight }
 
 // StoreCut is how many leading tokens of a prompt of the given size a finished
 // job leaves in the shared tier.

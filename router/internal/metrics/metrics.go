@@ -599,7 +599,7 @@ var (
 	}, []string{"pool"})
 	PDPrefillHeldTokens = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "router_pd_prefill_held_tokens",
-		Help:    "Under --prefill-split-mode=pd, per prefill leg: the deepest prefix of its prompt the router's prefix tree records, by tree: prefill (any P node) or decode (any D node). The leg's charge is its prompt less the larger, the decode one cut to --prefill-store-unit-tokens.",
+		Help:    "Under --prefill-split-mode=pd, per prefill leg: the deepest prefix of its prompt the router records, by tree: prefill (any P node), decode (any D node) or stored (the shared tier, kept across role changes). The leg's charge is its prompt less the larger of the prefill depth and the others cut to --prefill-store-unit-tokens.",
 		Buckets: prometheus.ExponentialBuckets(64, 4, 10),
 	}, []string{"pool", "tree"})
 	PDPrefillServiceSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -621,7 +621,7 @@ type PDMetrics struct {
 	Retries                                          prometheus.Counter
 	PrefillSeconds, DecodeSeconds                    prometheus.Observer
 	ServiceSeconds                                   prometheus.Observer
-	HeldPrefill, HeldDecode                          prometheus.Observer
+	HeldPrefill, HeldDecode, HeldStored              prometheus.Observer
 }
 
 // ForPD resolves a pool's disaggregation collectors, every series at 0.
@@ -639,6 +639,7 @@ func ForPD(pool string) *PDMetrics {
 		ServiceSeconds:   PDPrefillServiceSeconds.WithLabelValues(pool),
 		HeldPrefill:      PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
 		HeldDecode:       PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
+		HeldStored:       PDPrefillHeldTokens.WithLabelValues(pool, "stored"),
 	}
 }
 

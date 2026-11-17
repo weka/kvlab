@@ -183,7 +183,9 @@ type Options struct {
 	// PrefillDrainDelay is --prefill-drain-delay, --prefill-split-mode=pd only.
 	PrefillDrainDelay time.Duration
 	// PrefillMinNodes is --prefill-min-nodes, --prefill-split-mode=pd only.
-	PrefillMinNodes    int
+	PrefillMinNodes int
+	// PrefillLoadWeight is --prefill-load-weight, --prefill-split-mode=pd only.
+	PrefillLoadWeight  float64
 	PrefillReleaseIdle time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
@@ -314,6 +316,13 @@ const (
 	PrefillSplitPD     = "pd"
 )
 
+// DefaultPDNodeBudgetTokens is --prefill-node-budget-tokens under
+// --prefill-split-mode=pd when it is left at 0: the tokens a P node may have
+// to compute outstanding, a few seconds of a node's prefill rate. Legs are
+// charged their compute there, which is far less than a rejected prefill's
+// recompute in the reject mode.
+const DefaultPDNodeBudgetTokens = 160_000
+
 // dynamicPD reports whether the prefill split runs as dynamic vanilla P/D.
 func (o Options) dynamicPD() bool {
 	return o.PrefillSplit && o.PrefillSplitMode == PrefillSplitPD
@@ -330,6 +339,10 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	c := o.splitConfig()
 	c.NodeConcurrency = prefillFlow.NodeConcurrency
 	c.MinPrefill = o.PrefillMinNodes
+	c.LoadWeight = o.PrefillLoadWeight
+	if c.NodeBudgetTokens <= 0 {
+		c.NodeBudgetTokens = DefaultPDNodeBudgetTokens
+	}
 	return &c
 }
 

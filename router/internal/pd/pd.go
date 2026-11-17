@@ -26,10 +26,13 @@ import (
 type Set struct {
 	prefill map[string]struct{}
 	M       *metrics.PDMetrics
-	// Dynamic, when set, owns the P set: the URLs above are only its floor,
-	// and every prefill leg is a job of the manager, charged against its
-	// budget.
+	// Dynamic, when set, owns the P set: the URLs above are only its initial
+	// nodes, and every prefill leg is a job of the manager, charged against
+	// its budget.
 	Dynamic *prefill.Manager
+	// Stored, with Dynamic, records what the shared KV tier holds, for the
+	// legs' charge.
+	Stored *Stored
 }
 
 // New builds a set from the prefill backends' URLs.

@@ -41,6 +41,11 @@ func (s *Server) pdServe(
 	start := s.cfg.Clock.Now()
 	res := s.serveWithCapacityRetry(w, r, target, rr, decodeBody, accepted, outcome, auth)
 	set.M.DecodeSeconds.Observe(s.cfg.Clock.Now().Sub(start).Seconds())
+	if !rr.KVTransfer && res.Err == nil && res.Status >= 200 && res.Status < 300 {
+		// Without a prefill leg the decode node computed the prompt, and
+		// stored it.
+		set.Stored.Record(rr)
+	}
 	return res
 }
 
@@ -92,6 +97,7 @@ func (s *Server) runPDPrefill(
 		c := s.pdLegTokens(target, mgr, rr)
 		m.HeldPrefill.Observe(float64(c.local))
 		m.HeldDecode.Observe(float64(c.decode))
+		m.HeldStored.Observe(float64(c.record))
 		s.pdDiag.observe(r.Context(), rr.Units, c)
 		// The manager packs legs onto its prefill nodes in a fixed order; no
 		// policy is consulted.
@@ -164,6 +170,8 @@ func (s *Server) runPDPrefill(
 		}
 		m.LegOK.Inc()
 		m.ServiceSeconds.Observe(s.cfg.Clock.Now().Sub(dispatched).Seconds())
+		// The P node stored the prompt to the tier as it computed it.
+		set.Stored.Record(rr)
 		if mgr != nil {
 			mgr.CountJob(true)
 		}
@@ -194,8 +202,9 @@ func (s *Server) pdLegTokens(t Target, m *prefill.Manager, rr *policy.RoutingReq
 	if h, ok := t.Selector.(heldDepther); ok {
 		c.decode = h.HeldDepth(rr)
 	}
-	c.stored = m.StoreCut(max(c.local, c.decode))
-	c.charge = pdLegCharge(c.total, c.local, c.stored)
+	c.record = t.PD.Stored.Depth(rr)
+	c.stored = m.StoreCut(max(c.local, c.decode, c.record))
+	c.charge = pdLegCharge(c.total, c.local, c.stored, m.LoadWeight())
 	return c
 }
 
@@ -203,13 +212,18 @@ func (s *Server) pdLegTokens(t Target, m *prefill.Manager, rr *policy.RoutingReq
 // tokens: the prompt, the deepest prefix the P tree and the D tree record,
 // what is credited as stored in the tier, and the charge.
 type pdCharge struct {
-	total, local, decode, stored, charge int64
+	total, local, decode, record, stored, charge int64
 }
 
-// pdLegCharge is a leg's budget charge: the prompt less what a P node already
-// holds or can load from the tier, at least one token.
-func pdLegCharge(total, local, stored int64) int64 {
-	return max(total-max(local, stored), 1)
+// pdLegCharge is a leg's budget charge: the tokens it computes, the prompt
+// less what a P node already holds or can load from the tier (at least one),
+// plus loadWeight times the tokens it loads from the tier. A P node that is
+// slow because of its loads rather than its compute shows only through the
+// load term; at 0 the charge is compute alone.
+func pdLegCharge(total, local, stored int64, loadWeight float64) int64 {
+	compute := max(total-max(local, stored), 1)
+	loaded := max(stored-local, 0)
+	return compute + int64(loadWeight*float64(loaded))
 }
 
 // captureWriter keeps a prefill leg's response, which is small: one token and

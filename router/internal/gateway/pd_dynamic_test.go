@@ -44,6 +44,7 @@ type dynFleet struct {
 	set     *pd.Set
 	mgr     *prefill.Manager
 	pflow   *affinity.Policy
+	dflow   *affinity.Policy
 	backend []*registry.Backend
 	// failP makes P legs answer 500.
 	failP atomic.Bool
@@ -144,9 +145,14 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 		}
 	}
 	f.mgr = prefill.New(cfg)
-	f.pflow = pflow
+	f.pflow, f.dflow = pflow, dflow
 	f.set = pd.New(f.pool, floor)
 	f.set.Dynamic = f.mgr
+	stored, err := pd.NewStored(flow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.set.Stored = stored
 	p := &pool.Pool{Name: f.pool, Registry: reg, Flow: dflow, PD: f.set, PDFlow: pflow}
 	tbl, err := routing.NewTable([]routing.Rule{{Pool: p}})
 	if err != nil {
@@ -363,7 +369,12 @@ func TestPDDynamicLegChargeCreditsThePrefixTheTierHolds(t *testing.T) {
 		mockvllm.Config{DefaultMaxTokens: 2, BaseLatency: 400 * time.Millisecond})
 	history := []map[string]any{{"role": "user", "content": "shared " + strings.Repeat("context ", 5_000)}}
 	f.postMessages(t, history)
-	f.pflow.Forget(f.backend[0]) // the P tree no longer knows the prefix
+	// Both trees lose the prefix, as on the P node's release and the D
+	// node's promotion; the tier still holds it, and so does the record.
+	for _, b := range f.backend {
+		f.pflow.Forget(b)
+		f.dflow.Forget(b)
+	}
 
 	turn := append(history,
 		map[string]any{"role": "assistant", "content": "ok"},
@@ -379,23 +390,29 @@ func TestPDDynamicLegChargeCreditsThePrefixTheTierHolds(t *testing.T) {
 }
 
 func TestPDLegChargeIsThePromptLessWhatIsHeldOrStored(t *testing.T) {
-	for _, c := range []struct{ total, local, stored, want int64 }{
-		{10_000, 0, 0, 10_000},      // nothing known: the whole prompt
-		{10_000, 9_000, 0, 1_000},   // P tree holds it
-		{10_000, 0, 8_192, 1_808},   // tier holds it, cut to the store unit
-		{10_000, 9_500, 8_192, 500}, // the deeper credit wins
-		{10_000, 10_000, 0, 1},      // at least one token
+	for _, c := range []struct {
+		total, local, stored int64
+		w                    float64
+		want                 int64
+	}{
+		{10_000, 0, 0, 0, 10_000},           // nothing known: the whole prompt
+		{10_000, 9_000, 0, 0, 1_000},        // P tree holds it
+		{10_000, 0, 8_192, 0, 1_808},        // tier holds it, cut to the store unit
+		{10_000, 9_500, 8_192, 0, 500},      // the deeper credit wins
+		{10_000, 10_000, 0, 0, 1},           // at least one token
+		{10_000, 0, 8_192, 0.05, 2_217},     // plus 5% of the 8,192 loaded
+		{10_000, 9_000, 8_192, 0.05, 1_000}, // local hit: nothing loaded
 	} {
-		if got := gateway.PDLegCharge(c.total, c.local, c.stored); got != c.want {
-			t.Errorf("charge(%d, local %d, stored %d) = %d, want %d", c.total, c.local, c.stored, got, c.want)
+		if got := gateway.PDLegCharge(c.total, c.local, c.stored, c.w); got != c.want {
+			t.Errorf("charge(%d, local %d, stored %d, w %v) = %d, want %d", c.total, c.local, c.stored, c.w, got, c.want)
 		}
 	}
 }
 
-// The delay rule on the real gateway: P legs bounded to 2 per node, a surge
-// keeps them waiting in the router past --prefill-drain-delay and drains
-// decode nodes into prefill; once quiet, the newest converted nodes go back
-// to decode under the low watermark, down to the floor.
+// The ramp from one prefill node, on the real gateway under the delay rule:
+// P legs bounded to 2 per node, a surge keeps them waiting in the router past
+// --prefill-drain-delay and drains decode nodes into prefill up to the cap;
+// once quiet, they return to decode down to the minimum of one.
 func TestPDDynamicDelayRuleDrainsOnWaitAndReleasesWhenQuiet(t *testing.T) {
 	const nodes = 6
 	f := newDynFleet(t, nodes, prefill.Config{
@@ -437,8 +454,8 @@ func TestPDDynamicDelayRuleDrainsOnWaitAndReleasesWhenQuiet(t *testing.T) {
 	wg.Wait()
 	close(stop)
 	conv := testutil.ToFloat64(metrics.PrefillConversions.WithLabelValues(f.pool))
-	if conv < 1 || peak.Load() < 2 {
-		t.Fatalf("surge drained %v nodes (peak P set %d), want drains on the wait", conv, peak.Load())
+	if conv < 2 || peak.Load() != nodes/2 {
+		t.Fatalf("surge drained %v nodes (peak P set %d), want a ramp from 1 to the cap %d", conv, peak.Load(), nodes/2)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for f.inP() > 1 && time.Now().Before(deadline) {

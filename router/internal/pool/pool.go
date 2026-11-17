@@ -235,6 +235,11 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 				}
 			}
 			p.PD.Dynamic = prefill.New(ec)
+			sc := cfg.Flow // its tail TTL is the tier record's retention
+			sc.PoolName = cfg.Name + ":stored"
+			if p.PD.Stored, err = pd.NewStored(sc); err != nil {
+				return nil, fmt.Errorf("pool %q: %w", cfg.Name, err)
+			}
 		}
 	}
 
@@ -298,6 +303,10 @@ func (p *Pool) Run(ctx context.Context) {
 	}
 	if p.PD != nil && p.PD.Dynamic != nil {
 		go p.PD.Dynamic.Run(ctx, func() []*registry.Backend { return p.Registry.Snapshot().Backends })
+	}
+	if p.PD != nil && p.PD.Stored != nil {
+		go p.tick(ctx, sweepInterval(p.PD.Stored.TailTTL()), p.PD.Stored.Sweep)
+		go p.tick(ctx, gaugeInterval, p.PD.Stored.PublishGauges)
 	}
 	if p.SplitFlow != nil {
 		go p.tick(ctx, sweepInterval(p.SplitFlow.TailTTL()), func() { p.SplitFlow.Sweep() })
