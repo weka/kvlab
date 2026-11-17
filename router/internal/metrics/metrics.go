@@ -599,7 +599,7 @@ var (
 	}, []string{"pool"})
 	PDTTFTWindowMean = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_pd_ttft_window_mean_seconds",
-		Help: "Under --prefill-split-mode=pd: the mean end-to-end TTFT (arrival to the decode leg's first byte) of the last --pd-ttft-window P/D requests, the provisioning signal; 0 with no recent request.",
+		Help: "Under --prefill-split-mode=pd: the provisioning signal, the mean time to the prefill's finish (arrival to the P leg's kv_transfer_params: router wait plus P service) of the last --pd-ttft-window P/D requests; 0 with no recent request. Decode time after the hand-off is not in it.",
 	}, []string{"pool"})
 	PDTTFTWindowSamples = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_pd_ttft_window_samples",

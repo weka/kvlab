@@ -319,13 +319,14 @@ const (
 )
 
 // The TTFT-driven P/D defaults, for zero Options fields: the provisioning
-// window and its thresholds, and the routing cost of 1,000 prompt tokens a
+// window and its thresholds on the time to the prefill's finish (a static
+// 9-of-48 P set runs its legs in ~0.3s; an overloaded one ~3s), and the routing cost of 1,000 prompt tokens a
 // prefill node does not hold (100k unknown tokens weigh as 1s of estimated
 // leg time).
 const (
 	DefaultPDTTFTWindow       = 32
-	DefaultPDTTFTHigh         = 5 * time.Second
-	DefaultPDTTFTLow          = 2 * time.Second
+	DefaultPDTTFTHigh         = 1500 * time.Millisecond
+	DefaultPDTTFTLow          = 500 * time.Millisecond
 	DefaultPDUnknownCostPer1K = 10 * time.Millisecond
 )
 

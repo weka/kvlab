@@ -37,18 +37,19 @@ func (s *Server) pdServe(
 	if params, ok := s.runPDPrefill(r, target, rr, body, outcome, auth); ok {
 		decodeBody = pd.DecodeBody(body, params)
 		rr.KVTransfer = true
+		if mgr := set.Dynamic; mgr != nil {
+			// The provisioning signal is the time to the prefill's finish:
+			// arrival to the P leg's kv_transfer_params, its router wait and
+			// service. What decode adds after that is not the P set's to
+			// fix. A leg that failed, or a decode node recomputing, does
+			// not count.
+			mgr.ObserveTTFT(s.cfg.Clock.Now().Sub(arrived))
+		}
 	}
 	rr.PolicyState = nil
 	start := s.cfg.Clock.Now()
-	fw := &firstByteWriter{ResponseWriter: w, clk: s.cfg.Clock}
-	res := s.serveWithCapacityRetry(fw, r, target, rr, decodeBody, accepted, outcome, auth)
+	res := s.serveWithCapacityRetry(w, r, target, rr, decodeBody, accepted, outcome, auth)
 	set.M.DecodeSeconds.Observe(s.cfg.Clock.Now().Sub(start).Seconds())
-	if mgr := set.Dynamic; mgr != nil && rr.KVTransfer && res.Err == nil &&
-		res.Status >= 200 && res.Status < 300 && !fw.at.IsZero() {
-		// Only a request whose KV came from its prefill leg counts: one a
-		// decode node recomputed says nothing about the prefill nodes.
-		mgr.ObserveTTFT(fw.at.Sub(arrived))
-	}
 	if !rr.KVTransfer && res.Err == nil && res.Status >= 200 && res.Status < 300 {
 		// Without a prefill leg the decode node computed the prompt, and
 		// stored it.
@@ -260,26 +261,3 @@ func (s *Server) pdPick(t Target, m *prefill.Manager, rr *policy.RoutingRequest)
 	}
 	return m.PickPrefill(active, total, depths)
 }
-
-// firstByteWriter notes when the first response body byte is written: a
-// streamed decode leg's first token.
-type firstByteWriter struct {
-	http.ResponseWriter
-	clk interface{ Now() time.Time }
-	at  time.Time
-}
-
-func (w *firstByteWriter) Write(p []byte) (int, error) {
-	if w.at.IsZero() && len(p) > 0 {
-		w.at = w.clk.Now()
-	}
-	return w.ResponseWriter.Write(p)
-}
-
-func (w *firstByteWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-func (w *firstByteWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

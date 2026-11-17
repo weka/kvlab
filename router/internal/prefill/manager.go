@@ -94,7 +94,8 @@ type Config struct {
 	// 0 is no limit.
 	DrainMinInterval time.Duration
 	// TTFTWindow, TTFTHigh and TTFTLow (PD only) drive provisioning: the
-	// mean end-to-end TTFT of the last TTFTWindow P/D requests above TTFTHigh
+	// mean time to the prefill's finish (arrival to the P leg's
+	// kv_transfer_params) of the last TTFTWindow P/D requests above TTFTHigh
 	// drains a decode node into prefill, below TTFTLow returns one to decode
 	// (see pdttft.go).
 	TTFTWindow        int

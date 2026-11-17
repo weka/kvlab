@@ -371,7 +371,8 @@ aggregated totals matched the sum exactly.
 (kv_transfer_params with `do_remote_prefill`) gets its prompt by "KV transfer",
 which is free unless `--external-kv-tps` is set, so prefill load lands on
 prefill nodes only. A burst of long unique prompts on one prefill node pushes
-the mean TTFT over `--pd-ttft-high` and drains decode nodes into prefill; going
+the mean time to the prefill's finish over `--pd-ttft-high` and drains decode
+nodes into prefill; going
 quiet (no recent request reads as low) returns them to decode:
 
 ```bash

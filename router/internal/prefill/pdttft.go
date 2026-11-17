@@ -17,8 +17,9 @@ import (
 //     prompt tokens the node is not known to hold. Known prefix is free.
 //     Active is a prefill node that is not returning to decode; a node still
 //     draining into prefill takes no leg until its decodes have finished.
-//   - Provisioning (tickPDLocked): the mean end-to-end TTFT of the last
-//     TTFTWindow P/D requests. Above TTFTHigh one decode node is drained into
+//   - Provisioning (tickPDLocked): the mean time to the prefill's finish
+//     (arrival to the P leg's kv_transfer_params) of the last TTFTWindow P/D
+//     requests: the part of TTFT the prefill set controls. Above TTFTHigh one decode node is drained into
 //     prefill; below TTFTLow the newest drain is abandoned, or else one
 //     prefill node is selected to return to decode: it takes no new leg,
 //     finishes its in-flight ones, then becomes a decode node. A window with
@@ -77,9 +78,8 @@ func (w *ttftWindow) mean(now time.Time) (time.Duration, int) {
 	return sum / time.Duration(k), k
 }
 
-// ObserveTTFT records a P/D request's end-to-end TTFT: arrival to the first
-// byte of its decode leg's response. Only requests whose prefill leg handed
-// off its KV count; one a decode node recomputed says nothing about the P set.
+// ObserveTTFT records a P/D request's time to the prefill's finish: arrival to
+// its P leg's kv_transfer_params. Only legs that handed off their KV count.
 func (m *Manager) ObserveTTFT(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -256,7 +256,7 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 	if k > 0 && m.ttft.since < m.cfg.TTFTWindow {
 		return // the window has not refreshed since the last action
 	}
-	attrs := []any{"ttft_mean", mean.Round(time.Millisecond), "ttft_samples", k}
+	attrs := []any{"prefill_finish_mean", mean.Round(time.Millisecond), "prefill_finish_samples", k}
 	switch {
 	case mean > m.cfg.TTFTHigh:
 		if len(decode) == 0 || !m.canConvertLocked(len(cands), nonDecode, len(decode)) {

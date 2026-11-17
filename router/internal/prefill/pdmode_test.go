@@ -307,7 +307,7 @@ func TestPDModeProvisioningIsLoggedAndCounted(t *testing.T) {
 	f.ttft(4, 8*time.Second)
 	f.m.Tick(f.bs)
 	out := buf.String()
-	for _, want := range []string{`msg="decode node draining for prefill"`, "reason=ttft_high", "ttft_mean=8s", "ttft_samples=4"} {
+	for _, want := range []string{`msg="decode node draining for prefill"`, "reason=ttft_high", "prefill_finish_mean=8s", "prefill_finish_samples=4"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log lacks %q:\n%s", want, out)
 		}

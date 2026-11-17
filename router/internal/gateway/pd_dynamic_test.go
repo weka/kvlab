@@ -467,3 +467,21 @@ func pdCounter(t *testing.T, pool, action string) float64 {
 	t.Helper()
 	return testutil.ToFloat64(metrics.PDProvisionActions.WithLabelValues(pool, action))
 }
+
+// The provisioning signal is the time to the prefill's finish: arrival to the
+// P leg's kv_transfer_params. Time the decode leg adds is not in it.
+func TestPDDynamicSignalStopsAtThePrefillHandOff(t *testing.T) {
+	f := newDynFleet(t, 3, prefill.Config{MaxFleetFraction: 0.5},
+		mockvllm.Config{DefaultMaxTokens: 2, BaseLatency: 200 * time.Millisecond})
+	start := time.Now()
+	f.post(t, "hello "+strings.Repeat("x", 2000))
+	total := time.Since(start)
+	f.mgr.Tick(f.backend)
+	mean := testutil.ToFloat64(metrics.PDTTFTWindowMean.WithLabelValues(f.pool))
+	if total < 400*time.Millisecond {
+		t.Fatalf("setup: the request took %v, want both legs' 200ms", total)
+	}
+	if mean < 0.2 || mean > 0.35 {
+		t.Errorf("signal = %.3fs for a %v request, want the P leg's ~0.2s, not the decode leg's time too", mean, total)
+	}
+}

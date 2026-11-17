@@ -387,16 +387,21 @@ leaves it.
   engine's `VLLM_MAX_PREFILLS_EXEMPT_PREFILL_ONLY` assumes exactly that. Legs
   never wait for a budget: `--prefill-node-budget-tokens` and
   `--prefill-convert-after` belong to the reject mode only.
-- **Provisioning follows TTFT.** The signal is the mean end-to-end TTFT (arrival
-  to the decode leg's first byte) of the last `--pd-ttft-window` (default 32)
-  requests whose KV came from their prefill leg. Requests a decode node
-  recomputed do not count. A window with no request in the last 10 s reads as
-  low.
-  - Above `--pd-ttft-high` (default 5 s): one decode node is drained into
+- **Provisioning follows the time to the prefill's finish:** the part of TTFT
+  the prefill set controls. The signal is the mean, over the last
+  `--pd-ttft-window` (default 32) requests whose KV came from their prefill leg,
+  of the time from router arrival to that leg's `kv_transfer_params`: router
+  wait plus prefill service. Requests a decode node recomputed do not count.
+  What decode adds after the hand-off is not in the signal: on a fleet whose
+  decode side is saturated, end-to-end TTFT would keep calling for more prefill
+  nodes, taking them from decode. A window with no request in the last 10 s
+  reads as low. A static 9-of-48 prefill set on Kimi-Linear-48B runs its legs in
+  ~0.3 s; an overloaded one in ~3 s.
+  - Above `--pd-ttft-high` (default 1.5 s): one decode node is drained into
     prefill. It is the one whose decodes should end soonest: nothing in flight
     first, then the one whose oldest in-flight request started last, then fewer
     in flight. It becomes a prefill node when they have.
-  - Below `--pd-ttft-low` (default 2 s): the newest drain still in progress is
+  - Below `--pd-ttft-low` (default 0.5 s): the newest drain still in progress is
     abandoned (it returns to decode). Otherwise one prefill node is chosen to
     return to decode: the one holding the fewest tokens in the prefill tree
     (least affinity lost), then the fewest legs in flight, then the newest. It
@@ -447,7 +452,8 @@ leaves it.
 - Engines: every node is launched the same way, `kv_role=kv_both` with the P/D
   connector in token boundary mode, so any node serves either leg.
 - **Metrics:**
-  - `router_pd_ttft_window_mean_seconds` and `router_pd_ttft_window_samples`:
+  - `router_pd_ttft_window_mean_seconds` (the time to the prefill's finish,
+    despite the name) and `router_pd_ttft_window_samples`:
     the signal.
   - `router_pd_provision_actions_total{action=drain|abandon|release}`.
   - `router_pd_prefill_node_est_seconds{backend}`: the time part of each
@@ -458,7 +464,8 @@ leaves it.
   - The fixed-P/D leg metrics.
 - **Log lines:** each drain, promotion, return and release logs one line, with
   the reason (`ttft_high`, `ttft_low`, `ttft_low_abandon`, `min_nodes`,
-  `drained`), the window mean and sample count, and the prefill set's state:
+  `drained`), the window mean and sample count (`prefill_finish_mean`,
+  `prefill_finish_samples`), and the prefill set's state:
   - `decode node draining for prefill`;
   - `draining node is now a prefill node` (with `drain_took`);
   - `prefill node returning to decode`;
