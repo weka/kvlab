@@ -254,7 +254,19 @@ brief overflow is cheaper to queue through. Successive drains are also at least
 limit). An overflow from an over-estimated charge, or from a burst that finishes
 quickly, gets that long to clear before another decode node is given up. Jobs
 queue on the prefill nodes meanwhile, and `router_prefill_drains_deferred_total`
-counts the jobs held back. The pool's first prefill node is never delayed. Past the cap, or while the overflow
+counts the jobs held back. The pool's first prefill node is never delayed.
+
+In both modes a draining node takes no job while a prefill node exists, since
+a job there would wait for the node's decodes to finish. The job queues on the
+least-pending prefill node instead, and moves to the drained node once that
+node is a prefill node. A drained node with nothing in flight takes the job at
+once. A drain is abandoned only once the overflow that called for it has
+cleared; until then the node keeps draining with no job on it. Every prefill
+job's charge and router wait are in `router_prefill_job_tokens` and
+`router_prefill_job_wait_seconds`. Each step of the control loop logs a line:
+`decode node draining for prefill`, `draining node is now a prefill node` (with
+`drain_took`), and `prefill node released to decode` (reason `idle`,
+`low_delay` or `drain_abandoned`). Past the cap, or while the overflow
 is younger than that, jobs queue on the least-loaded prefill node, and with no
 prefill node at all the request is resent to the backend that refused it, with
 the bypass. The budget also bounds what a node is *sent*: a node runs jobs only
@@ -356,6 +368,29 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
   `kv_transfer_params.do_remote_decode`. It then goes to a decode node with the
   returned `kv_transfer_params`, which pulls the KV over NIXL. No `503`, no store,
   no resend.
+- **What drains a decode node: `--prefill-drain-delay` (default 2 s).** A
+  prefill node mostly loads KV from the shared tier, and a compute-token budget
+  does not see that load. The time a leg waits for a prefill node does.
+  - The signal is the 90th percentile of the legs' router wait: from placement
+    to the slot that lets a leg be sent. It covers legs granted in the last 10 s,
+    plus legs still waiting counted at their age so far.
+  - Drain: legs are waiting now and the signal has stayed above the delay for
+    `--prefill-convert-after`. One decode node is drained, within the cap and
+    `--prefill-drain-min-interval`, and the clock restarts.
+  - Release: nothing waiting, or the signal at or below a quarter of the delay,
+    for `--prefill-release-idle`. The newest converted prefill node with nothing
+    queued goes back to decode, and that clock restarts too. A floor node never
+    goes.
+  - While the load is that low, cost placement leaves the newest converted node
+    out whenever another prefill node has room. Legs go to the floor and the
+    oldest nodes first, and the newest runs dry.
+  - `--prefill-node-budget-tokens` and the prefill band's
+    `--pd-prefill-max-node-concurrency` only bound what is sent to one node. Set
+    at least one, or legs never wait in the router and nothing drains. Prefill
+    nodes still queueing in the engine then show only in
+    `router_pd_prefill_service_seconds`.
+  - `--prefill-drain-delay 0` drains on the budget instead, as the reject mode
+    does.
 - Each prefill leg is a prefill job of the split's manager. It is charged what a
   prefill node must compute: the prompt less the larger of two credits.
   - The deepest prefix a prefill node holds locally.
@@ -1142,6 +1177,9 @@ So alert on all three:
 | `router_pd_prefill_legs_total{outcome}` | prefill legs sent to a P node (`--pd-prefill-backends` only): `ok`, `failed` (non-2xx or transport error) or `no_params` (answered without `kv_transfer_params`) |
 | `router_pd_fallbacks_total{reason}` | requests sent to a D node without `kv_transfer_params`, so it recomputes: `no_prefill_node`, `prefill_failed` or `no_params` |
 | `router_pd_prefill_retries_total` | prefill legs retried after every P node was saturated or the chosen one answered 429 |
+| `router_prefill_job_tokens` / `router_prefill_job_wait_seconds` | per prefill job (both split modes): the tokens it is charged against the budget, and its router wait from placement to dispatch |
+| `router_prefill_drains_deferred_total` | jobs that found a drain due but held back by `--prefill-drain-min-interval` |
+| `router_pd_prefill_service_seconds` | per successful prefill leg: from sending it to a P node to its `kv_transfer_params` |
 | `router_pd_leg_duration_seconds{leg}` | wall time of the `prefill` leg (retries included) and the `decode` leg (to the end of its response) |
 | `router_backend_queued` | requests currently waiting in ONE backend's `--max-node-concurrency` queue. Non-zero only while `--retry-time-limit` is set; the per-backend companion to the fleet-wide `router_backend_queue_wait_seconds` below |
 | `router_backend_queue_wait_seconds` | latency spent in a backend's wait queue, by outcome — `woken` (a slot freed, request re-decided), `expired` (budget ran out, same 429 as the poll path), `abandoned` (caller disconnected). Separate from `router_retry_wait_seconds`: that one measures the whole-fleet poll loop, this one a wait bound to a single backend, and the two describe different mechanisms for the same refusal |
