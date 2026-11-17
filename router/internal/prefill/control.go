@@ -2,6 +2,7 @@ package prefill
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/weka/kvlab/router/internal/registry"
@@ -76,38 +77,37 @@ func (m *Manager) overLocked() bool {
 	return false
 }
 
-// lowLocked reports whether the prefill load is low enough to spare the newest
-// converted node: under the delay rule, the signal at or below its low
-// watermark. The budget rule has no such signal and spares nothing.
-func (m *Manager) lowLocked() bool {
-	return m.cfg.PD && m.cfg.DrainDelay > 0 && !m.delayLow.IsZero()
+// packOrderLocked sorts bs oldest prefill node first: initial nodes (never
+// converted), then by when each was converted, then by URL. Under PD a job
+// goes to the first with room, so the oldest nodes fill and the newest runs
+// dry and is the first the release rules return; cost placement would keep
+// every prefill node a little busy and none would ever go back.
+func (m *Manager) packOrderLocked(bs []*registry.Backend) []*registry.Backend {
+	out := slices.Clone(bs)
+	slices.SortFunc(out, func(a, b *registry.Backend) int {
+		na, nb := m.nodes[a.URL], m.nodes[b.URL]
+		if c := na.convertedAt.Compare(nb.convertedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.URL, b.URL)
+	})
+	return out
 }
 
-// spareNewestLocked leaves the most recently converted node out of eligible
-// under cost placement and the delay rule, while another eligible node exists
-// and the load is low. Work then goes to the floor and the oldest converted nodes first, and
-// the newest runs dry, so the release rules can return it to decode; cost
-// placement would otherwise keep every prefill node a little busy and none
-// would ever go back. The ladder needs no help: it packs onto the fullest.
-func (m *Manager) spareNewestLocked(eligible []*registry.Backend) []*registry.Backend {
-	if !m.cfg.CostPick || len(eligible) < 2 || !m.lowLocked() {
-		return eligible
+// moveTargetsLocked is the nodes a waiting job may move to, in the order they
+// are tried: pack order under PD, any order otherwise.
+func (m *Manager) moveTargetsLocked() []*node {
+	out := make([]*node, 0, len(m.nodes))
+	for _, n := range m.nodes {
+		out = append(out, n)
 	}
-	var newest *node
-	for _, b := range eligible {
-		n := m.nodes[b.URL]
-		if newest == nil || n.convertedAt.After(newest.convertedAt) {
-			newest = n
-		}
-	}
-	if newest == nil {
-		return eligible
-	}
-	out := make([]*registry.Backend, 0, len(eligible)-1)
-	for _, b := range eligible {
-		if b != newest.b {
-			out = append(out, b)
-		}
+	if m.cfg.PD {
+		slices.SortFunc(out, func(a, b *node) int {
+			if c := a.convertedAt.Compare(b.convertedAt); c != 0 {
+				return c
+			}
+			return strings.Compare(a.b.URL, b.b.URL)
+		})
 	}
 	return out
 }

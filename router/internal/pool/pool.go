@@ -215,7 +215,7 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 			ec := *cfg.PDDynamic
 			ec.PD, ec.Initial = true, cfg.PDPrefill
 			ec.PoolName, ec.Clock = cfg.Name, clk
-			ec.CostPick = cfg.Flow.CostRouting
+			ec.CostPick = false // P legs pack (see prefill.Manager.packOrderLocked)
 			if ec.Log == nil {
 				ec.Log = p.log
 			}

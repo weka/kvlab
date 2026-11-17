@@ -93,7 +93,9 @@ func (s *Server) runPDPrefill(
 		m.HeldPrefill.Observe(float64(c.local))
 		m.HeldDecode.Observe(float64(c.decode))
 		s.pdDiag.observe(r.Context(), rr.Units, c)
-		job, err := mgr.Reserve(s.healthy(target), c.charge, s.pdPicker(target, rr, r, c.stored))
+		// The manager packs legs onto its prefill nodes in a fixed order; no
+		// policy is consulted.
+		job, err := mgr.Reserve(s.healthy(target), c.charge, nil)
 		if err != nil {
 			m.FallbackNoNode.Inc()
 			mgr.FallbackNoNode()
@@ -208,19 +210,6 @@ type pdCharge struct {
 // holds or can load from the tier, at least one token.
 func pdLegCharge(total, local, stored int64) int64 {
 	return max(total-max(local, stored), 1)
-}
-
-// pdPicker chooses among the dynamic P set's nodes with budget room by the P
-// flow, costing each by the leg tokens the manager has pending there (queued
-// in the router and running), with the tier's stored prefix credited to every
-// node.
-func (s *Server) pdPicker(t Target, rr *policy.RoutingRequest, r *http.Request, stored int64) prefill.Picker {
-	return func(eligible []*registry.Backend, queued func(*registry.Backend) int64) (*registry.Backend, error) {
-		sel := *rr
-		sel.PolicyState = nil
-		sel.PrefillOnly, sel.PrefillQueue, sel.PreloadedTokens = true, queued, stored
-		return t.PrefillSelector.Select(r.Context(), eligible, &sel)
-	}
 }
 
 // captureWriter keeps a prefill leg's response, which is small: one token and

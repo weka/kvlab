@@ -208,40 +208,25 @@ func TestDelayRuleDrainsOnlyWhenTheWaitStaysHigh(t *testing.T) {
 	}
 }
 
-// Low load: the newest converted node is left out of placement, and after
-// ReleaseIdle under the low watermark it goes back to decode; the floor stays.
-func TestLowDelaySparesAndReleasesTheNewestConvertedNode(t *testing.T) {
+// Low load: after ReleaseIdle under the low watermark the newest converted
+// node goes back to decode, then the next newest after a window of its own;
+// the minimum of one prefill node stays.
+func TestLowDelayReleasesTheNewestConvertedNodeFirst(t *testing.T) {
 	f := delayFleet(t, 5)
 	// Two converted nodes, node 1 before node 2.
 	f.m.mu.Lock()
 	for i, b := range f.bs[1:3] {
 		n := f.m.nodeLocked(b)
-		n.mode, n.convertedAt = Prefill, f.clk.Now().Add(time.Duration(i)*time.Second)
+		n.mode, n.convertedAt = Prefill, f.clk.Now().Add(time.Duration(i+1)*time.Second)
 	}
 	f.m.mu.Unlock()
 	// Node 1 has a leg running throughout, so it is never idle: only the
-	// low-delay rule can release a converted node here.
-	busy, _ := f.m.Reserve(f.bs, 10, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
-		return f.bs[1], nil
-	})
+	// low-delay rule can release it.
+	busy, _ := f.m.Reserve(f.bs[1:2], 10, nil)
 	if err := f.m.WaitReady(context.Background(), busy); err != nil || busy.Backend != f.bs[1] {
 		t.Fatalf("setup: busy leg on %s (%v), want node 1", busy.Backend.URL, err)
 	}
 	f.m.Tick(f.bs) // no waits: the signal is at its low watermark from now
-	var offered []*registry.Backend
-	j, _ := f.m.Reserve(f.bs, 10, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
-		offered = el
-		return f.bs[0], nil // the floor: node 1 gets no job, so it is not idle-released
-	})
-	if err := f.m.WaitReady(context.Background(), j); err != nil {
-		t.Fatal(err)
-	}
-	j.Done()
-	for _, b := range offered {
-		if b == f.bs[2] {
-			t.Errorf("the newest converted node was offered while load was low: %v", names(offered))
-		}
-	}
 	f.clk.Advance(9 * time.Second)
 	f.m.Tick(f.bs)
 	if f.m.ModeOf(f.bs[2]) != Prefill {
@@ -252,14 +237,40 @@ func TestLowDelaySparesAndReleasesTheNewestConvertedNode(t *testing.T) {
 	if f.m.ModeOf(f.bs[2]) != Decode || f.m.ModeOf(f.bs[1]) != Prefill {
 		t.Fatalf("modes %v, want the newest (node 2) released and node 1 kept", f.modes())
 	}
-	// The low clock restarts: node 1 needs a window of its own, and goes
-	// even with a leg running; one prefill node, the minimum, always stays.
 	f.clk.Advance(10 * time.Second)
 	f.m.Tick(f.bs)
 	f.clk.Advance(time.Hour)
 	f.m.Tick(f.bs)
 	if n := count(f.modes(), Prefill); n != 1 {
 		t.Errorf("modes %v, want only the minimum of one prefill node left", f.modes())
+	}
+}
+
+// Legs pack: each goes to the first prefill node with room, oldest first
+// (initial nodes, then by conversion time), so the newest is the last used.
+func TestPDModeLegsPackOldestFirst(t *testing.T) {
+	f := pdModeFleet(t, 4, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.8})
+	f.m.mu.Lock()
+	f.m.nodeLocked(f.bs[3]).mode, f.m.nodes[f.bs[3].URL].convertedAt = Prefill, f.clk.Now().Add(time.Minute)
+	f.m.nodeLocked(f.bs[2]).mode, f.m.nodes[f.bs[2].URL].convertedAt = Prefill, f.clk.Now().Add(time.Second)
+	f.m.mu.Unlock()
+	var got []*registry.Backend
+	for _, tok := range []int64{60, 60, 60, 10} {
+		j, err := f.m.Reserve(f.bs, tok, func([]*registry.Backend, func(*registry.Backend) int64) (*registry.Backend, error) {
+			t.Fatal("a policy was consulted for a packed leg")
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer j.Done()
+		got = append(got, j.Backend)
+	}
+	want := []*registry.Backend{f.bs[0], f.bs[2], f.bs[3], f.bs[0]}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("leg %d on %s, want %s (initial node 0, then node 2, then the newest node 3)", i, got[i].URL, want[i].URL)
+		}
 	}
 }
 

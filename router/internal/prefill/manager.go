@@ -322,8 +322,9 @@ func (m *Manager) StoreCut(tokens int64) int64 {
 //     among them all). Draining nodes take no job while a prefill node exists:
 //     a job there would wait for the node's decodes to finish while a prefill
 //     node could run it. With no prefill node yet the draining nodes stand in.
-//     The newest converted node is left out while another has room and the
-//     load is low (see spareNewestLocked), so it can run dry and be released.
+//     Under PD the job goes to the first prefill node with room in a stable
+//     oldest-first order (see packOrderLocked) instead: the oldest nodes fill
+//     first and the newest runs dry, so the release rules can return it.
 //  2. Failing that, while the prefill share is under the cap, drain the
 //     least-loaded decode node: with ConvertAfter set only once the
 //     least-loaded prefill node has been over budget that long, and no sooner
@@ -366,7 +367,6 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 			eligible = append(eligible, b)
 		}
 	}
-	eligible = m.spareNewestLocked(eligible)
 	nonDecode := len(prefillNodes) + len(draining)
 	byDelay := m.cfg.PD && m.cfg.DrainDelay > 0
 
@@ -417,6 +417,9 @@ func (m *Manager) drainLocked(decode []*registry.Backend, reason string, attrs .
 }
 
 func (m *Manager) pickLocked(eligible []*registry.Backend, pick Picker) *registry.Backend {
+	if m.cfg.PD {
+		return m.packOrderLocked(eligible)[0]
+	}
 	if m.cfg.CostPick && pick != nil {
 		// A policy that declines (every node saturated by some signal) must not
 		// refuse work the budget says fits: fall through to packing.
@@ -646,7 +649,7 @@ func (m *Manager) moveOneLocked() bool {
 		if m.canRunLocked(s.n, head) {
 			continue // about to start where it is
 		}
-		for _, n := range m.nodes {
+		for _, n := range m.moveTargetsLocked() {
 			if n != s.n && n.mode == Prefill && len(n.queue) == 0 && m.canRunLocked(n, head) {
 				m.moveLocked(head, s.n, n)
 				return true

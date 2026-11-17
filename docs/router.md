@@ -381,9 +381,11 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
     for `--prefill-release-idle`. The newest converted prefill node with nothing
     queued goes back to decode, and that clock restarts too. Never below
     `--prefill-min-nodes`.
-  - While the load is that low, cost placement leaves the newest converted node
-    out whenever another prefill node has room. Legs go to the floor and the
-    oldest nodes first, and the newest runs dry.
+  - **Placement packs.** A leg goes to the first prefill node with room in a
+    fixed oldest-first order: the initial nodes, then the others by when they
+    were converted, then by URL. The oldest nodes fill first, the newest runs
+    dry, and it is the first the release rules return. Decode legs stay
+    cost-routed.
   - `--prefill-node-budget-tokens` and the prefill band's
     `--pd-prefill-max-node-concurrency` only bound what is sent to one node. Set
     at least one, or legs never wait in the router and nothing drains. Prefill
@@ -412,8 +414,7 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
     decode tree has recorded, since every earlier leg stored its prompt there,
     cut to `--prefill-store-unit-tokens`.
 
-  The same tier credit is applied to every prefill node in the leg's placement
-  cost. The trees forget a prefix after `--cache-tail-ttl`, so with turns further
+  The trees forget a prefix after `--cache-tail-ttl`, so with turns further
   apart than that a leg is charged its whole prompt; raise it, which costs only
   router memory.
   Conversion, drain, release and placement are the split's, unchanged:
@@ -421,7 +422,6 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
   - Drain: `--prefill-convert-after`.
   - Release: `--prefill-release-idle`.
   - Cap: `--prefill-max-fleet-fraction`.
-  - Placement among prefill nodes is cost-weighted (`--move-cost-weight`).
 - A drained node takes legs only once the decodes it had have finished. So no
   node runs prefill legs next to decodes it took as a decode node; the engine's
   `VLLM_MAX_PREFILLS_EXEMPT_PREFILL_ONLY` assumes exactly that.
