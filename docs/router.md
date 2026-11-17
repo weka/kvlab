@@ -391,6 +391,20 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
     `router_pd_prefill_service_seconds`.
   - `--prefill-drain-delay 0` drains on the budget instead, as the reject mode
     does.
+- **Charge diagnostics.** For one conversation in 64, every prefill leg logs a
+  `pd leg charge` line with these fields:
+  - `conversation`, `units`, `prev_units`;
+  - `diverge_unit`: the first unit of the prompt that differs from the
+    conversation's previous leg, as the router's tree sees it, or -1 on the
+    first leg;
+  - `shared_with_prev_tokens`;
+  - `total_tokens`, `prefill_tree_tokens`, `decode_tree_tokens`,
+    `stored_tokens`, `charge_tokens`.
+
+  A conversation is named by the request id's part before `-t<turn>-` (kvlab's
+  replay ids). Requests whose ids have another shape are not sampled. Comparing
+  `charge_tokens` with the engine's `local_compute` shows whether the charge
+  tracks real compute, and `diverge_unit` shows where it stops.
 - Each prefill leg is a prefill job of the split's manager. It is charged what a
   prefill node must compute: the prompt less the larger of two credits.
   - The deepest prefix a prefill node holds locally.
@@ -1179,6 +1193,7 @@ So alert on all three:
 | `router_pd_prefill_retries_total` | prefill legs retried after every P node was saturated or the chosen one answered 429 |
 | `router_prefill_job_tokens` / `router_prefill_job_wait_seconds` | per prefill job (both split modes): the tokens it is charged against the budget, and its router wait from placement to dispatch |
 | `router_prefill_drains_deferred_total` | jobs that found a drain due but held back by `--prefill-drain-min-interval` |
+| `router_pd_prefill_held_tokens{tree}` | `--prefill-split-mode=pd`, per prefill leg: the deepest prefix of its prompt the router's tree records, `tree="prefill"` (any P node) or `tree="decode"` (any D node); the leg is charged its prompt less the larger, the decode depth cut to `--prefill-store-unit-tokens` |
 | `router_pd_prefill_service_seconds` | per successful prefill leg: from sending it to a P node to its `kv_transfer_params` |
 | `router_pd_leg_duration_seconds{leg}` | wall time of the `prefill` leg (retries included) and the `decode` leg (to the end of its response) |
 | `router_backend_queued` | requests currently waiting in ONE backend's `--max-node-concurrency` queue. Non-zero only while `--retry-time-limit` is set; the per-backend companion to the fleet-wide `router_backend_queue_wait_seconds` below |

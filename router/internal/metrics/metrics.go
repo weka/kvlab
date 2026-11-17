@@ -597,6 +597,11 @@ var (
 		Name: "router_pd_prefill_retries_total",
 		Help: "Prefill legs retried after every P node was saturated or the chosen one answered 429.",
 	}, []string{"pool"})
+	PDPrefillHeldTokens = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "router_pd_prefill_held_tokens",
+		Help:    "Under --prefill-split-mode=pd, per prefill leg: the deepest prefix of its prompt the router's prefix tree records, by tree: prefill (any P node) or decode (any D node). The leg's charge is its prompt less the larger, the decode one cut to --prefill-store-unit-tokens.",
+		Buckets: prometheus.ExponentialBuckets(64, 4, 10),
+	}, []string{"pool", "tree"})
 	PDPrefillServiceSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "router_pd_prefill_service_seconds",
 		Help:    "Service time of each successful prefill leg: from sending it to a P node to its kv_transfer_params, retries on that node included. Router wait before it is router_prefill_job_wait_seconds under --prefill-split-mode=pd.",
@@ -616,6 +621,7 @@ type PDMetrics struct {
 	Retries                                          prometheus.Counter
 	PrefillSeconds, DecodeSeconds                    prometheus.Observer
 	ServiceSeconds                                   prometheus.Observer
+	HeldPrefill, HeldDecode                          prometheus.Observer
 }
 
 // ForPD resolves a pool's disaggregation collectors, every series at 0.
@@ -631,6 +637,8 @@ func ForPD(pool string) *PDMetrics {
 		PrefillSeconds:   PDLegSeconds.WithLabelValues(pool, "prefill"),
 		DecodeSeconds:    PDLegSeconds.WithLabelValues(pool, "decode"),
 		ServiceSeconds:   PDPrefillServiceSeconds.WithLabelValues(pool),
+		HeldPrefill:      PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
+		HeldDecode:       PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
 	}
 }
 
@@ -655,7 +663,7 @@ func All() []prometheus.Collector {
 		RequestsShed, SaturationRejects, BackendCapExceeded, observedShadow,
 		PrefillRejections, PrefillJobs, PrefillConversions, PrefillDrainsDeferred, PrefillReleases, PrefillJobTokens, PrefillJobWait,
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
-		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds, PDPrefillServiceSeconds,
+		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds, PDPrefillServiceSeconds, PDPrefillHeldTokens,
 	}
 }
 

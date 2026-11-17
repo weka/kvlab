@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/weka/kvlab/router/internal/dialect/openai"
 	"github.com/weka/kvlab/router/internal/gateway"
@@ -450,4 +453,74 @@ func TestPDDynamicDelayRuleDrainsOnWaitAndReleasesWhenQuiet(t *testing.T) {
 		t.Error("no prefill service time observed")
 	}
 	t.Logf("conversions %v, peak P set %d", conv, peak.Load())
+}
+
+// A followed conversation's legs are logged with their charge breakdown and
+// how far each prompt matches the previous leg; the held-depth histograms
+// see every leg.
+func TestPDDynamicLegChargeDiagnostics(t *testing.T) {
+	var conv string
+	for i := 0; ; i++ {
+		if c, ok := gateway.PDDiagConversation(fmt.Sprintf("wk-s%d-t1-ab12", i)); ok {
+			conv = c
+			break
+		}
+	}
+	var buf syncBuffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	f := newDynFleet(t, 3, prefill.Config{MaxFleetFraction: 0.5}, mockvllm.Config{DefaultMaxTokens: 2})
+	history := []map[string]any{{"role": "user", "content": strings.Repeat("context ", 3_000)}}
+	send := func(turn int, msgs []map[string]any) {
+		b, _ := json.Marshal(map[string]any{"model": "m", "max_tokens": 2, "messages": msgs})
+		req, _ := http.NewRequest(http.MethodPost, f.srv.URL+"/v1/chat/completions", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-Id", fmt.Sprintf("%s-t%d-ab12", conv, turn))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	send(1, history)
+	send(2, append(history,
+		map[string]any{"role": "assistant", "content": "ok"},
+		map[string]any{"role": "user", "content": "next"}))
+
+	var lines []string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, `msg="pd leg charge"`) {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 2 {
+		t.Fatalf("%d charge lines for the followed conversation, want 2:\n%s", len(lines), buf.String())
+	}
+	if !strings.Contains(lines[0], "diverge_unit=-1") {
+		t.Errorf("first leg: %s", lines[0])
+	}
+	// The second prompt extends the first: it matches every unit of it.
+	var prevUnits int
+	for _, kv := range strings.Fields(lines[1]) {
+		if strings.HasPrefix(kv, "prev_units=") {
+			_, _ = fmt.Sscanf(kv, "prev_units=%d", &prevUnits)
+		}
+	}
+	if prevUnits == 0 || !strings.Contains(lines[1], fmt.Sprintf("diverge_unit=%d ", prevUnits)) {
+		t.Errorf("second leg does not extend the first: %s", lines[1])
+	}
+	for _, want := range []string{"total_tokens=", "prefill_tree_tokens=", "decode_tree_tokens=", "stored_tokens=", "charge_tokens=", "conversation=" + conv} {
+		if !strings.Contains(lines[1], want) {
+			t.Errorf("second leg lacks %s: %s", want, lines[1])
+		}
+	}
+	for _, tree := range []string{"prefill", "decode"} {
+		var m dto.Metric
+		_ = metrics.PDPrefillHeldTokens.WithLabelValues(f.pool, tree).(prometheus.Metric).Write(&m)
+		if got := m.GetHistogram().GetSampleCount(); got != 2 {
+			t.Errorf("held tokens{tree=%s} observed %d legs, want 2", tree, got)
+		}
+	}
 }

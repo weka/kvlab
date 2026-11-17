@@ -89,8 +89,11 @@ func (s *Server) runPDPrefill(
 	cands := func() []*registry.Backend { return set.PrefillNodes(s.healthy(target)) }
 	mgr := set.Dynamic
 	if mgr != nil {
-		tokens, stored := s.pdLegTokens(target, mgr, rr)
-		job, err := mgr.Reserve(s.healthy(target), tokens, s.pdPicker(target, rr, r, stored))
+		c := s.pdLegTokens(target, mgr, rr)
+		m.HeldPrefill.Observe(float64(c.local))
+		m.HeldDecode.Observe(float64(c.decode))
+		s.pdDiag.observe(r.Context(), rr.Units, c)
+		job, err := mgr.Reserve(s.healthy(target), c.charge, s.pdPicker(target, rr, r, c.stored))
 		if err != nil {
 			m.FallbackNoNode.Inc()
 			mgr.FallbackNoNode()
@@ -178,21 +181,27 @@ func (s *Server) runPDPrefill(
 // decode). The deeper of the two, cut to --prefill-store-unit-tokens, is
 // credited as stored, as for the reject mode's jobs; the P tree's own depth is
 // a local hit and is credited whole.
-func (s *Server) pdLegTokens(t Target, m *prefill.Manager, rr *policy.RoutingRequest) (tokens, stored int64) {
-	var total int64
+func (s *Server) pdLegTokens(t Target, m *prefill.Manager, rr *policy.RoutingRequest) pdCharge {
+	var c pdCharge
 	for _, u := range rr.Units {
-		total += int64(u.Tokens)
+		c.total += int64(u.Tokens)
 	}
-	var local, seen int64
 	if h, ok := t.PrefillSelector.(heldDepther); ok {
-		local = h.HeldDepth(rr)
+		c.local = h.HeldDepth(rr)
 	}
-	seen = local
 	if h, ok := t.Selector.(heldDepther); ok {
-		seen = max(seen, h.HeldDepth(rr))
+		c.decode = h.HeldDepth(rr)
 	}
-	stored = m.StoreCut(seen)
-	return pdLegCharge(total, local, stored), stored
+	c.stored = m.StoreCut(max(c.local, c.decode))
+	c.charge = pdLegCharge(c.total, c.local, c.stored)
+	return c
+}
+
+// pdCharge is how a leg's budget charge was made up, in router-estimated
+// tokens: the prompt, the deepest prefix the P tree and the D tree record,
+// what is credited as stored in the tier, and the charge.
+type pdCharge struct {
+	total, local, decode, stored, charge int64
 }
 
 // pdLegCharge is a leg's budget charge: the prompt less what a P node already

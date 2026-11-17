@@ -36,6 +36,8 @@ type Server struct {
 	sem     chan struct{}
 	// jobFails rate-limits the log line of a failed prefill job.
 	jobFails jobFailLog
+	// pdDiag logs how sampled conversations' prefill legs are charged.
+	pdDiag pdLegDiag
 
 	handler http.Handler
 }
