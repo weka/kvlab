@@ -169,9 +169,15 @@ func (Dialect) ExtractUnits(body []byte, class string, dst []kvcache.Unit) ([]kv
 			}
 			add("system", blk)
 		}
-		// /v1/chat/completions. Leading system messages first so they anchor the
-		// shared prefix even if a client reorders them.
+		// /v1/chat/completions, in the order sent, with tools after the leading
+		// run of system/developer messages, where chat templates render them. A
+		// system message after the first turn stays where it was sent: hoisting
+		// it would put every message after the leading system block behind it,
+		// so a conversation that adds a system message on a later turn would
+		// share only that block with its earlier turns, while the engine, which
+		// sees the real order, still holds the whole prefix.
 		var sys, rest [][2][]byte
+		leading := true
 		_ = jsonscan.Array(messages, func(elem []byte) bool {
 			var role, content []byte
 			if err := jsonscan.Fields(elem, func(mk, mv []byte) bool {
@@ -205,9 +211,10 @@ func (Dialect) ExtractUnits(body []byte, class string, dst []kvcache.Unit) ([]kv
 				content = elem
 			}
 			pair := [2][]byte{role, content}
-			if string(role) == "system" || string(role) == "developer" {
+			if leading && (string(role) == "system" || string(role) == "developer") {
 				sys = append(sys, pair)
 			} else {
+				leading = false
 				rest = append(rest, pair)
 			}
 			return true

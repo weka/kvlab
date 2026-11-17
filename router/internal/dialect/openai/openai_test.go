@@ -264,3 +264,39 @@ func TestExtractUsageReadsBothEnvelopes(t *testing.T) {
 		})
 	}
 }
+
+// A system message sent after the first turn (a per-turn reminder, a mode
+// switch) stays where it was sent. Each turn's units then extend the previous
+// turn's, as the engine's prefix does; hoisting it to the front would leave
+// the turns sharing only their leading system block.
+func TestLateSystemMessageKeepsItsPlaceSoTurnsExtendEachOther(t *testing.T) {
+	big := func(s string) string { return strings.Repeat(s+" ", 600) }
+	msg := func(role, content string) string { return fmt.Sprintf(`{"role":%q,"content":%q}`, role, content) }
+	tools := `[{"type":"function","function":{"name":"read","parameters":{}}}]`
+	turns := [][]string{
+		{msg("system", big("you are an agent")), msg("user", big("task one"))},
+	}
+	turns = append(turns, append(append([]string{}, turns[0]...),
+		msg("assistant", big("did one")), msg("system", big("reminder one")), msg("user", big("task two"))))
+	turns = append(turns, append(append([]string{}, turns[1]...),
+		msg("assistant", big("did two")), msg("system", big("reminder two")), msg("user", big("task three"))))
+
+	var prev []kvcache.Unit
+	for i, ms := range turns {
+		u := extract(t, fmt.Sprintf(`{"tools":%s,"messages":[%s]}`, tools, strings.Join(ms, ",")))
+		if i > 0 {
+			if len(u) <= len(prev) || !same(u[:len(prev)], prev) {
+				t.Fatalf("turn %d does not extend turn %d: the late system message moved ahead of the conversation", i+1, i)
+			}
+		}
+		prev = u
+	}
+
+	// Tools still follow the leading system block, before the first turn.
+	withTools := extract(t, fmt.Sprintf(`{"tools":%s,"messages":[%s]}`, tools, turns[0][0]+","+turns[0][1]))
+	noTools := extract(t, fmt.Sprintf(`{"messages":[%s]}`, turns[0][0]+","+turns[0][1]))
+	sysUnits := len(extract(t, fmt.Sprintf(`{"messages":[%s]}`, turns[0][0])))
+	if !same(withTools[:sysUnits], noTools[:sysUnits]) || same(withTools[sysUnits:sysUnits+1], noTools[sysUnits:sysUnits+1]) {
+		t.Error("tools are not placed right after the leading system block")
+	}
+}
