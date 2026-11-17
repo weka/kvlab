@@ -119,11 +119,14 @@ type Config struct {
 
 	// PD is dynamic vanilla P/D: every request's prefill leg is a job, and a
 	// node out of decode mode never takes a decode leg (DecodeNodes has no
-	// fallback). Floor applies only with it set.
+	// fallback). Initial and MinPrefill apply only with it set.
 	PD bool
-	// Floor names nodes, by URL, that are prefill from the start and never
-	// return to decode.
-	Floor []string
+	// Initial names nodes, by URL, that are prefill from the start. They are
+	// released like any other; MinPrefill is what keeps nodes in prefill.
+	Initial []string
+	// MinPrefill is the fewest prefill nodes: none is released below it, and
+	// decode nodes are drained to reach it.
+	MinPrefill int
 	// Log, when set, gets a line for every conversion and release with the
 	// load behind it.
 	Log *slog.Logger
@@ -167,8 +170,8 @@ type node struct {
 	// within it); idleSince when a prefill node last ran out of jobs (zero
 	// while it has any).
 	overSince, idleSince time.Time
-	// floor is a Config.Floor node; convertedAt when it last left decode.
-	floor       bool
+	// convertedAt is when it last left decode; zero for an initial node, so
+	// initial nodes count as the oldest.
 	convertedAt time.Time
 }
 
@@ -181,8 +184,9 @@ type Manager struct {
 	nodes map[string]*node
 	// lastDrain is when a decode node was last drained (DrainMinInterval).
 	lastDrain time.Time
-	// floor is Config.Floor, normalised.
-	floor map[string]bool
+	// initial is Config.Initial, normalised, less the nodes already met: a
+	// node is made a prefill node by it once, when first seen.
+	initial map[string]bool
 	// waits is recent jobs' router waits, oldest first, for the delay signal;
 	// delayOver and delayLow are when the signal last went above DrainDelay
 	// and below its low watermark (zero while it is not).
@@ -197,10 +201,10 @@ type Manager struct {
 // New builds a manager for one pool.
 func New(cfg Config) *Manager {
 	cfg = cfg.withDefaults()
-	m := &Manager{cfg: cfg, m: metrics.ForPrefill(cfg.PoolName), nodes: map[string]*node{}, floor: map[string]bool{}}
+	m := &Manager{cfg: cfg, m: metrics.ForPrefill(cfg.PoolName), nodes: map[string]*node{}, initial: map[string]bool{}}
 	if cfg.PD {
-		for _, u := range cfg.Floor {
-			m.floor[normalize(u)] = true
+		for _, u := range cfg.Initial {
+			m.initial[normalize(u)] = true
 		}
 	}
 	return m
@@ -260,11 +264,12 @@ func (m *Manager) nodeLocked(b *registry.Backend) *node {
 	n := m.nodes[b.URL]
 	if n == nil {
 		n = &node{b: b}
-		if m.floor[normalize(b.URL)] {
-			n.floor, n.mode = true, Prefill
+		if key := normalize(b.URL); m.initial[key] {
+			delete(m.initial, key)
+			n.mode = Prefill
 		}
 		m.nodes[b.URL] = n
-		if n.floor {
+		if n.mode == Prefill {
 			m.publishLocked(n)
 		}
 	}
@@ -706,7 +711,10 @@ func (m *Manager) CountJobRetry() {
 // node still in prefill and keeps it, or finds it back in decode and converts
 // it afresh.
 func (m *Manager) releaseIfIdleLocked(n *node) {
-	if n.mode == Decode || n.floor || n.pending != 0 || n.running != 0 || len(n.queue) != 0 {
+	if n.mode == Decode || n.pending != 0 || n.running != 0 || len(n.queue) != 0 {
+		return
+	}
+	if n.mode == Prefill && !m.mayReleaseLocked() {
 		return
 	}
 	if n.mode == Prefill && m.cfg.ReleaseIdle > 0 {
@@ -718,7 +726,7 @@ func (m *Manager) releaseIfIdleLocked(n *node) {
 	// A drain is abandoned only once the overflow that called for it has
 	// cleared; until then the node keeps draining with nothing on it, and
 	// becomes a prefill node when its decodes finish.
-	if n.mode == Draining && m.overLocked() {
+	if n.mode == Draining && (m.overLocked() || m.nonDecodeLocked() <= m.cfg.MinPrefill) {
 		return
 	}
 	m.releaseLocked(n)
@@ -760,7 +768,7 @@ func (m *Manager) releaseExpired() {
 func (m *Manager) releaseExpiredLocked() {
 	now := m.cfg.Clock.Now()
 	for _, n := range m.nodes {
-		if n.mode == Prefill && !n.floor && !n.idleSince.IsZero() && now.Sub(n.idleSince) >= m.cfg.ReleaseIdle {
+		if n.mode == Prefill && !n.idleSince.IsZero() && now.Sub(n.idleSince) >= m.cfg.ReleaseIdle && m.mayReleaseLocked() {
 			m.releaseLocked(n)
 		}
 	}

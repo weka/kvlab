@@ -156,7 +156,7 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 		t.Fatal("reject mode must build the split's manager only")
 	}
 	o := split
-	o.PrefillSplitMode, o.PDPrefillMaxNodeConcurrency, o.PrefillDrainDelay = PrefillSplitPD, 8, 2*time.Second
+	o.PrefillSplitMode, o.PDPrefillMaxNodeConcurrency, o.PrefillDrainDelay, o.PrefillMinNodes = PrefillSplitPD, 8, 2*time.Second, 2
 	if o.prefillConfig() != nil {
 		t.Error("pd mode also built the reject mode's manager")
 	}
@@ -165,7 +165,7 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 	}
 	c := o.pdDynamicConfig(false)
 	if c.NodeBudgetTokens != 500_000 || c.MaxFleetFraction != 0.4 || c.ConvertAfter != 20*time.Second ||
-		c.ReleaseIdle != 90*time.Second || c.NodeConcurrency != 8 || c.DrainDelay != 2*time.Second {
+		c.ReleaseIdle != 90*time.Second || c.NodeConcurrency != 8 || c.DrainDelay != 2*time.Second || c.MinPrefill != 2 {
 		t.Errorf("config = %+v, want the split flags and the prefill band's concurrency 8", c)
 	}
 	if !strings.HasPrefix(o.signalsLog(), "prefill=[") {

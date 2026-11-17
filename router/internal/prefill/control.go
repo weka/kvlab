@@ -96,7 +96,7 @@ func (m *Manager) spareNewestLocked(eligible []*registry.Backend) []*registry.Ba
 	var newest *node
 	for _, b := range eligible {
 		n := m.nodes[b.URL]
-		if !n.floor && (newest == nil || n.convertedAt.After(newest.convertedAt)) {
+		if newest == nil || n.convertedAt.After(newest.convertedAt) {
 			newest = n
 		}
 	}
@@ -146,17 +146,30 @@ func (m *Manager) Tick(cands []*registry.Backend) {
 		case n.mode == Prefill:
 			// A node that became a prefill node with no job, or whose idle
 			// start was never stamped, is idle from now.
-			if !n.floor && n.idleSince.IsZero() && n.pending == 0 && n.running == 0 && len(n.queue) == 0 {
+			if n.idleSince.IsZero() && n.pending == 0 && n.running == 0 && len(n.queue) == 0 {
 				n.idleSince = now
 			}
 		case n.mode != Draining:
-		case !over && n.pending == 0 && len(n.queue) == 0 && n.running == 0:
+		case !over && n.pending == 0 && len(n.queue) == 0 && n.running == 0 && nonDecode > m.cfg.MinPrefill:
 			m.releaseLocked(n)
 			nonDecode--
 		case n.b.Inflight() == 0:
 			m.setModeLocked(n, Prefill)
 			m.publishLocked(n)
 			m.logLocked("draining node is now a prefill node", n, "drained", "drain_took", now.Sub(n.convertedAt).Round(time.Millisecond))
+		}
+	}
+	if m.cfg.PD && nonDecode < m.cfg.MinPrefill && len(decode) > 0 &&
+		m.canConvertLocked(len(cands), nonDecode, len(decode)) {
+		// Below the minimum (a prefill node released by its health, or none
+		// named initially): drain toward it, one node per tick.
+		m.drainLocked(decode, "min_nodes")
+		nonDecode++
+		decode = decode[:0]
+		for _, b := range cands {
+			if m.nodes[b.URL].mode == Decode {
+				decode = append(decode, b)
+			}
 		}
 	}
 	if m.cfg.PD && m.cfg.DrainDelay > 0 {
@@ -197,12 +210,12 @@ func (m *Manager) delayRuleLocked(now time.Time, cands, decode []*registry.Backe
 	}
 	var newest *node
 	for _, n := range m.nodes {
-		if n.mode == Prefill && !n.floor && len(n.queue) == 0 &&
+		if n.mode == Prefill && len(n.queue) == 0 &&
 			(newest == nil || n.convertedAt.After(newest.convertedAt)) {
 			newest = n
 		}
 	}
-	if newest != nil {
+	if newest != nil && m.mayReleaseLocked() {
 		m.releaseForLocked(newest, "low_delay")
 		m.delayLow = now
 	}

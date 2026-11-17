@@ -86,8 +86,8 @@ type Config struct {
 	// Flow.
 	PDPrefillFlow *affinity.Config
 	// PDDynamic, when set, is dynamic vanilla P/D: the prefill split's
-	// manager owns the P set, with PDPrefill as its floor, and every request's
-	// prefill leg is one of its jobs. Its PD, Floor, PoolName, Clock, CostPick
+	// manager owns the P set, with PDPrefill as its initial nodes, and every
+	// request's prefill leg is one of its jobs. Its PD, Initial, PoolName, Clock, CostPick
 	// and OnModeChange are filled in here.
 	PDDynamic *prefill.Config
 
@@ -213,7 +213,7 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 		p.PDFlow = pflow
 		if cfg.PDDynamic != nil {
 			ec := *cfg.PDDynamic
-			ec.PD, ec.Floor = true, cfg.PDPrefill
+			ec.PD, ec.Initial = true, cfg.PDPrefill
 			ec.PoolName, ec.Clock = cfg.Name, clk
 			ec.CostPick = cfg.Flow.CostRouting
 			if ec.Log == nil {

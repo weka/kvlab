@@ -181,7 +181,9 @@ type Options struct {
 	// PrefillDrainMinInterval is --prefill-drain-min-interval, both modes.
 	PrefillDrainMinInterval time.Duration
 	// PrefillDrainDelay is --prefill-drain-delay, --prefill-split-mode=pd only.
-	PrefillDrainDelay  time.Duration
+	PrefillDrainDelay time.Duration
+	// PrefillMinNodes is --prefill-min-nodes, --prefill-split-mode=pd only.
+	PrefillMinNodes    int
 	PrefillReleaseIdle time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
@@ -327,6 +329,7 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	_, prefillFlow := o.roleFlowConfigs()
 	c := o.splitConfig()
 	c.NodeConcurrency = prefillFlow.NodeConcurrency
+	c.MinPrefill = o.PrefillMinNodes
 	return &c
 }
 

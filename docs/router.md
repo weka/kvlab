@@ -292,7 +292,7 @@ live, requests fall back to a D node alone; with no live D node a request is
 answered `503` at once ("no healthy decode backend is available (only prefill
 nodes are live)" when only P nodes are up). Selecting the P pool by its own label
 selector is not supported. It replaces vLLM's round-robin toy proxy. With `--prefill-split` it needs
-`--prefill-split-mode=pd`, where it names the dynamic P set's floor (below). Every `/v1/chat/completions` and `/v1/completions` request goes
+`--prefill-split-mode=pd`, where it names the dynamic P set's initial nodes (below). Every `/v1/chat/completions` and `/v1/completions` request goes
 to a P node first, as a copy with `max_tokens=1`, `stream=false`, no
 `stream_options` and `kv_transfer_params={"do_remote_decode": true, ...}`. The
 `kv_transfer_params` object in the P node's answer goes, verbatim, into the
@@ -379,8 +379,8 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
     `--prefill-drain-min-interval`, and the clock restarts.
   - Release: nothing waiting, or the signal at or below a quarter of the delay,
     for `--prefill-release-idle`. The newest converted prefill node with nothing
-    queued goes back to decode, and that clock restarts too. A floor node never
-    goes.
+    queued goes back to decode, and that clock restarts too. Never below
+    `--prefill-min-nodes`.
   - While the load is that low, cost placement leaves the newest converted node
     out whenever another prefill node has room. Legs go to the floor and the
     oldest nodes first, and the newest runs dry.
@@ -425,9 +425,11 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
 - A drained node takes legs only once the decodes it had have finished. So no
   node runs prefill legs next to decodes it took as a decode node; the engine's
   `VLLM_MAX_PREFILLS_EXEMPT_PREFILL_ONLY` assumes exactly that.
-- `--pd-prefill-backends`, optional here, names nodes that are prefill from the
-  start and never released: the floor. With no floor, the first request drains a
-  node. The floor counts toward `--prefill-max-fleet-fraction`.
+- `--pd-prefill-backends`, optional here, names the nodes that start as prefill
+  nodes. They are released like any other. `--prefill-min-nodes` (default 1) is
+  the fewest prefill nodes kept: none is released below it, and decode nodes are
+  drained to reach it, at start when no node is named. Every prefill node counts
+  toward `--prefill-max-fleet-fraction`.
 - Prefill legs run under the prefill band (`--pd-prefill-max-node-concurrency`,
   else `--max-node-concurrency`).
 - Decode legs are placed by cost routing over the decode nodes. A draining or

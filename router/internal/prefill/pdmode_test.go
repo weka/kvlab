@@ -21,7 +21,10 @@ func pdModeFleet(t *testing.T, n int, cfg Config) *fleet {
 	t.Helper()
 	f := newFleet(t, n, Config{})
 	cfg.PD = true
-	cfg.Floor = []string{f.bs[0].URL + "/"} // normalised like the CLI's
+	cfg.Initial = []string{f.bs[0].URL + "/"} // normalised like the CLI's
+	if cfg.MinPrefill == 0 {
+		cfg.MinPrefill = 1 // keeps node 0 the one prefill node at rest
+	}
 	cfg.Clock, cfg.PoolName = f.clk, t.Name()
 	f.m = New(cfg)
 	return f
@@ -250,13 +253,13 @@ func TestLowDelaySparesAndReleasesTheNewestConvertedNode(t *testing.T) {
 		t.Fatalf("modes %v, want the newest (node 2) released and node 1 kept", f.modes())
 	}
 	// The low clock restarts: node 1 needs a window of its own, and goes
-	// even with a leg running; the floor is never released.
+	// even with a leg running; one prefill node, the minimum, always stays.
 	f.clk.Advance(10 * time.Second)
 	f.m.Tick(f.bs)
 	f.clk.Advance(time.Hour)
 	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[1]) != Decode || f.m.ModeOf(f.bs[0]) != Prefill {
-		t.Errorf("modes %v, want node 1 released and the floor kept", f.modes())
+	if n := count(f.modes(), Prefill); n != 1 {
+		t.Errorf("modes %v, want only the minimum of one prefill node left", f.modes())
 	}
 }
 
@@ -305,5 +308,47 @@ func TestPDModeConversionAndReleaseAreLogged(t *testing.T) {
 	}
 	if strings.Count(out, "released to decode") != 1 {
 		t.Errorf("want exactly one release (the floor stays):\n%s", out)
+	}
+}
+
+// The initial prefill nodes are released like any other; only the minimum is
+// kept.
+func TestPDModeInitialNodesAreReleasedDownToTheMinimum(t *testing.T) {
+	f := newFleet(t, 4, Config{})
+	f.m = New(Config{PD: true, Initial: []string{f.bs[0].URL, f.bs[1].URL}, MinPrefill: 1,
+		ReleaseIdle: time.Second, Clock: f.clk, PoolName: t.Name()})
+	f.m.Tick(f.bs) // both initial nodes are prefill, idle from now
+	if f.m.ModeOf(f.bs[0]) != Prefill || f.m.ModeOf(f.bs[1]) != Prefill {
+		t.Fatalf("modes %v, want the two initial nodes prefill", f.modes())
+	}
+	f.clk.Advance(time.Second)
+	f.m.Tick(f.bs)
+	f.clk.Advance(time.Second)
+	f.m.Tick(f.bs)
+	if n := count(f.modes(), Prefill); n != 1 {
+		t.Errorf("%d prefill nodes after both went idle, want the minimum 1 (modes %v)", n, f.modes())
+	}
+}
+
+// With no initial nodes the minimum is reached by draining, and a drain toward
+// the minimum is never abandoned for lack of load.
+func TestPDModeMinimumIsReachedByDrainingAndKept(t *testing.T) {
+	f := newFleet(t, 5, Config{})
+	f.m = New(Config{PD: true, MinPrefill: 2, MaxFleetFraction: 0.6, Clock: f.clk, PoolName: t.Name()})
+	busy := lease.Acquire(f.bs[0]) // decoding: a drain of it waits
+	defer busy.Release()
+	for _, b := range f.bs[1:] {
+		defer lease.Acquire(b).Release()
+		defer lease.Acquire(b).Release()
+	}
+	f.m.Tick(f.bs)
+	f.m.Tick(f.bs)
+	if n := count(f.modes(), Draining) + count(f.modes(), Prefill); n != 2 {
+		t.Fatalf("%d nodes out of decode, want the minimum 2 (modes %v)", n, f.modes())
+	}
+	f.clk.Advance(time.Minute)
+	f.m.Tick(f.bs) // nothing waits, yet the drains stand: they are the minimum
+	if n := count(f.modes(), Decode); n != 3 {
+		t.Errorf("modes %v: a drain toward the minimum was abandoned", f.modes())
 	}
 }

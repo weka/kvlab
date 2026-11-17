@@ -122,7 +122,10 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 	}
 	flow := affinity.Config{CostRouting: true}
 	dflow, pflow := mustFlow(t, flow), mustFlow(t, flow)
-	cfg.PD, cfg.Floor, cfg.CostPick = true, floor, true
+	cfg.PD, cfg.Initial, cfg.CostPick = true, floor, true
+	if cfg.MinPrefill == 0 {
+		cfg.MinPrefill = 1
+	}
 	cfg.PoolName = f.pool
 	cfg.OnModeChange = func(b *registry.Backend, from, to prefill.Mode) {
 		// Called under the manager's lock; f.mu is never held while calling
@@ -218,12 +221,7 @@ func TestPDDynamicEveryRequestRunsAPLegThenADLegWithItsParams(t *testing.T) {
 	if n != 20 {
 		t.Errorf("%d requests seen, want 20", n)
 	}
-	if c := dLegs[0]; c != 0 {
-		t.Errorf("%d D legs on the floor node", c)
-	}
-	if !f.set.IsPrefill(f.backend[0]) {
-		t.Error("the floor node left the P set")
-	}
+	_ = dLegs // D legs on a node while it was in the P set fail f.check
 	if ok := testutil.ToFloat64(metrics.PrefillJobs.WithLabelValues(f.pool, "ok", "")); ok != 20 {
 		t.Errorf("router_prefill_jobs_total{outcome=ok} = %v, want 20 (one per request)", ok)
 	}

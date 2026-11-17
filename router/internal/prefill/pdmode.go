@@ -20,6 +20,28 @@ import (
 // and never released. A node that is draining or prefill never takes a decode
 // leg, even when no decode node is left.
 
+// mayReleaseLocked reports whether a prefill node may go back to decode and
+// leave MinPrefill healthy prefill nodes.
+func (m *Manager) mayReleaseLocked() bool {
+	k := 0
+	for _, n := range m.nodes {
+		if n.mode == Prefill && n.b.Available() {
+			k++
+		}
+	}
+	return k > m.cfg.MinPrefill
+}
+
+// nonDecodeLocked counts the healthy nodes out of decode: prefill or draining.
+func (m *Manager) nonDecodeLocked() (k int) {
+	for _, n := range m.nodes {
+		if n.mode != Decode && n.b.Available() {
+			k++
+		}
+	}
+	return k
+}
+
 func normalize(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
 
 func available(bs []*registry.Backend) []*registry.Backend {
@@ -38,7 +60,7 @@ func (m *Manager) inPrefillLocked(b *registry.Backend) bool {
 	if n := m.nodes[b.URL]; n != nil {
 		return n.mode != Decode
 	}
-	return m.floor[normalize(b.URL)]
+	return m.initial[normalize(b.URL)]
 }
 
 // IsPrefill reports whether b is out of decode routing: draining or prefill,
