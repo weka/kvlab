@@ -71,9 +71,11 @@ func TestPDModeNeverReturnsAPrefillOrDrainingNodeForDecode(t *testing.T) {
 		t.Fatalf("decode candidates = %v, want none", names(got))
 	}
 	// Fill the floor so the next leg drains a decode node.
+	// Node 2's requests are older than node 1's: node 1 drains soonest.
+	defer lease.Acquire(f.bs[2]).Release()
+	defer lease.Acquire(f.bs[2]).Release()
+	time.Sleep(2 * time.Millisecond)
 	defer lease.Acquire(f.bs[1]).Release()
-	defer lease.Acquire(f.bs[2]).Release()
-	defer lease.Acquire(f.bs[2]).Release()
 	j1, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
 	defer j1.Done()
 	j2, err := f.m.Reserve(f.bs, 10, nil)
@@ -103,9 +105,11 @@ func TestDrainedNodeTakesNoJobUntilItIsAPrefillNode(t *testing.T) {
 			f.m.nodeLocked(f.bs[0]).mode = Prefill
 			f.m.mu.Unlock()
 		}
+		// Node 2's requests are older than node 1's: node 1 drains soonest.
+		defer lease.Acquire(f.bs[2]).Release()
+		defer lease.Acquire(f.bs[2]).Release()
+		time.Sleep(2 * time.Millisecond)
 		decode := lease.Acquire(f.bs[1])
-		defer lease.Acquire(f.bs[2]).Release()
-		defer lease.Acquire(f.bs[2]).Release()
 		full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
 		_ = f.m.WaitReady(context.Background(), full)
 		j, err := f.m.Reserve(f.bs, 10, nil)
@@ -140,9 +144,11 @@ func TestDrainedNodeTakesNoJobUntilItIsAPrefillNode(t *testing.T) {
 // not completed.
 func TestDrainIsAbandonedOnlyWhenTheOverflowClears(t *testing.T) {
 	f := pdModeFleet(t, 3, Config{MaxFleetFraction: 0.7})
+	// Node 2's requests are older than node 1's: node 1 drains soonest.
+	defer lease.Acquire(f.bs[2]).Release()
+	defer lease.Acquire(f.bs[2]).Release()
+	time.Sleep(2 * time.Millisecond)
 	defer lease.Acquire(f.bs[1]).Release() // node 1 keeps decoding
-	defer lease.Acquire(f.bs[2]).Release()
-	defer lease.Acquire(f.bs[2]).Release()
 	full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
 	_ = f.m.WaitReady(context.Background(), full)
 	q, _ := f.m.Reserve(f.bs, 10, nil) // drains node 1, queues on the floor
@@ -276,17 +282,19 @@ func TestPDModeLegsPackOldestFirst(t *testing.T) {
 
 func TestJobChargeAndWaitAreObserved(t *testing.T) {
 	f := delayFleet(t, 3)
+	tokens0 := histogram(t, metrics.PrefillJobTokens.WithLabelValues(t.Name()))
+	wait0 := histogram(t, metrics.PrefillJobWait.WithLabelValues(t.Name()))
 	j, _ := f.m.Reserve(f.bs, 70, nil)
 	f.clk.Advance(300 * time.Millisecond)
 	_ = f.m.WaitReady(context.Background(), j)
 	j.Done()
 	tokens := histogram(t, metrics.PrefillJobTokens.WithLabelValues(t.Name()))
 	wait := histogram(t, metrics.PrefillJobWait.WithLabelValues(t.Name()))
-	if tokens.GetSampleCount() != 1 || tokens.GetSampleSum() != 70 {
-		t.Errorf("job tokens count %d sum %v, want 1 and 70", tokens.GetSampleCount(), tokens.GetSampleSum())
+	if n, sum := tokens.GetSampleCount()-tokens0.GetSampleCount(), tokens.GetSampleSum()-tokens0.GetSampleSum(); n != 1 || sum != 70 {
+		t.Errorf("job tokens count %d sum %v, want 1 and 70", n, sum)
 	}
-	if wait.GetSampleCount() != 1 {
-		t.Errorf("job wait count %d, want 1", wait.GetSampleCount())
+	if n := wait.GetSampleCount() - wait0.GetSampleCount(); n != 1 {
+		t.Errorf("job wait count %d, want 1", n)
 	}
 }
 
