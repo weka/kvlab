@@ -383,6 +383,13 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
     with nothing in flight first, then the one whose oldest in-flight request
     started last, then fewer requests in flight. A drain takes no prefill leg
     until its decodes finish.
+  - Abandon: a drain no longer needed returns to decode at once. While nothing
+    waits, or the signal is at or below half the delay, the newest draining
+    node with no job on it goes back, one per tick (100 ms). The threshold is
+    below the drain condition, so a signal hovering at the delay does not drain
+    and abandon in turn. A draining node keeps its decode prefix marks until it
+    becomes a prefill node, so an abandoned drain returns with its
+    conversations' decode affinity intact; it only paused new decode legs.
   - Release: nothing waiting, or the signal at or below a quarter of the delay,
     for `--prefill-release-idle`. The newest converted prefill node with nothing
     queued goes back to decode, and that clock restarts too. Never below

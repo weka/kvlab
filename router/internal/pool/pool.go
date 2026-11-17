@@ -222,8 +222,12 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 			// A node's marks count only in the role that made them, as for
 			// the prefill split: joining the P set its decode KV is about to
 			// be overwritten by prefill work, and leaving it the reverse.
+			// A drained node keeps its decode marks until it becomes a
+			// prefill node: draining nodes take no decode legs anyway, and a
+			// drain abandoned before then returns to decode with its decode
+			// KV, and its conversations, intact.
 			ec.OnModeChange = func(b *registry.Backend, from, to prefill.Mode) {
-				if from == prefill.Decode {
+				if to == prefill.Prefill {
 					p.Flow.Forget(b)
 				}
 				if to == prefill.Decode {

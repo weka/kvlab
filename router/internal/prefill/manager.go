@@ -750,7 +750,8 @@ func (m *Manager) releaseIfIdleLocked(n *node) {
 	// A drain is abandoned only once the overflow that called for it has
 	// cleared; until then the node keeps draining with nothing on it, and
 	// becomes a prefill node when its decodes finish.
-	if n.mode == Draining && (m.overLocked() || m.nonDecodeLocked() <= m.cfg.MinPrefill) {
+	// Under the delay rule Tick abandons drains, newest first, one per tick.
+	if n.mode == Draining && (m.cfg.PD && m.cfg.DrainDelay > 0 || m.overLocked() || m.nonDecodeLocked() <= m.cfg.MinPrefill) {
 		return
 	}
 	m.releaseLocked(n)

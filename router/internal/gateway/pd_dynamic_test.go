@@ -135,10 +135,12 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 		switch {
 		case from == prefill.Decode:
 			f.joined[b.URL] = time.Now()
-			dflow.Forget(b)
 		case to == prefill.Decode:
 			delete(f.joined, b.URL)
 			pflow.Forget(b)
+		}
+		if to == prefill.Prefill {
+			dflow.Forget(b) // as the pool does: decode marks go at promotion
 		}
 	}
 	f.mgr = prefill.New(cfg)

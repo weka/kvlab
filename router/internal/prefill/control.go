@@ -112,11 +112,34 @@ func (m *Manager) moveTargetsLocked() []*node {
 	return out
 }
 
+// abandonDueLocked is the delay rule's condition to abandon a drain: nothing
+// waiting, or the delay signal at or below half DrainDelay. Lower than the
+// drain condition, so a signal hovering at the delay does not drain and
+// abandon in turn; with no hold time, so a drain no longer needed stops at
+// once.
+func (m *Manager) abandonDueLocked() bool {
+	return m.queuedJobsLocked() == 0 || m.delayLocked() <= m.cfg.DrainDelay/2
+}
+
+// newestIdleDrainLocked is the most recently drained node with no job on it,
+// or nil.
+func (m *Manager) newestIdleDrainLocked() *node {
+	var newest *node
+	for _, n := range m.nodes {
+		if n.mode == Draining && n.pending == 0 && n.running == 0 && len(n.queue) == 0 &&
+			(newest == nil || n.convertedAt.After(newest.convertedAt)) {
+			newest = n
+		}
+	}
+	return newest
+}
+
 // Tick is the control loop between jobs, run every tickEvery by Run (tests
 // call it directly). cands is the pool's healthy backends.
 //
-//   - A draining node with no job on it goes back to decode once the overflow
-//     has cleared (overLocked).
+//   - A draining node with no job on it goes back to decode: under the budget
+//     rule each such node once the overflow has cleared (overLocked); under
+//     the delay rule the newest such node, one per tick, while abandonDueLocked.
 //   - Otherwise a draining node whose decodes have finished becomes a prefill
 //     node, and jobs waiting elsewhere move to it.
 //   - Under the delay rule: jobs waiting and the delay signal above DrainDelay
@@ -141,8 +164,16 @@ func (m *Manager) Tick(cands []*registry.Backend) {
 		}
 	}
 	over := m.overLocked()
+	byDelay := m.cfg.PD && m.cfg.DrainDelay > 0
+	var abandon *node
+	if byDelay && nonDecode > m.cfg.MinPrefill && m.abandonDueLocked() {
+		abandon = m.newestIdleDrainLocked()
+	}
 	for _, n := range m.nodes {
 		switch {
+		case n == abandon:
+			m.releaseLocked(n)
+			nonDecode--
 		case n.mode == Prefill:
 			// A node that became a prefill node with no job, or whose idle
 			// start was never stamped, is idle from now.
@@ -150,7 +181,7 @@ func (m *Manager) Tick(cands []*registry.Backend) {
 				n.idleSince = now
 			}
 		case n.mode != Draining:
-		case !over && n.pending == 0 && len(n.queue) == 0 && n.running == 0 && nonDecode > m.cfg.MinPrefill:
+		case !byDelay && !over && n.pending == 0 && len(n.queue) == 0 && n.running == 0 && nonDecode > m.cfg.MinPrefill:
 			m.releaseLocked(n)
 			nonDecode--
 		case n.b.Inflight() == 0:

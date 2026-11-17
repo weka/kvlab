@@ -394,3 +394,43 @@ func TestPDModeDrainsTheNodeWhoseOldestRequestIsYoungest(t *testing.T) {
 		t.Errorf("modes %v, want node 3 (youngest oldest request) draining, not node 1 (fewest but oldest)", f.modes())
 	}
 }
+
+// Under the delay rule drains are abandoned one per tick, newest first, once
+// nothing waits or the signal is at or below half the delay; a signal between
+// half the delay and the delay abandons nothing.
+func TestDelayRuleAbandonsNewestDrainFirstOnePerTick(t *testing.T) {
+	f := delayFleet(t, 5)
+	for _, b := range f.bs[1:] {
+		defer lease.Acquire(b).Release() // decoding: drains stay draining
+	}
+	f.m.mu.Lock()
+	for i, b := range f.bs[1:3] {
+		n := f.m.nodeLocked(b)
+		n.mode, n.convertedAt = Draining, f.clk.Now().Add(time.Duration(i+1)*time.Second)
+	}
+	f.m.mu.Unlock()
+
+	// A leg waiting 700ms on the full node 0: above half the 1s delay, below
+	// the delay. Nothing is abandoned.
+	full, _ := f.m.Reserve(f.bs[:1], 100, nil)
+	_ = f.m.WaitReady(context.Background(), full)
+	waiting, _ := f.m.Reserve(f.bs[:1], 10, nil)
+	f.clk.Advance(700 * time.Millisecond)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Draining || f.m.ModeOf(f.bs[2]) != Draining {
+		t.Fatalf("modes %v: a drain was abandoned with the signal above half the delay", f.modes())
+	}
+	// Nothing waits any more: the newest drain (node 2) goes first, then
+	// node 1 on the next tick.
+	full.Done()
+	_ = f.m.WaitReady(context.Background(), waiting)
+	waiting.Done()
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[2]) != Decode || f.m.ModeOf(f.bs[1]) != Draining {
+		t.Fatalf("modes %v after one tick, want only the newest drain (node 2) abandoned", f.modes())
+	}
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Decode {
+		t.Errorf("modes %v after two ticks, want node 1 abandoned too", f.modes())
+	}
+}
