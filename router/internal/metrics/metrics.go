@@ -597,6 +597,22 @@ var (
 		Name: "router_pd_prefill_retries_total",
 		Help: "Prefill legs retried after every P node was saturated or the chosen one answered 429.",
 	}, []string{"pool"})
+	PDTTFTWindowMean = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_ttft_window_mean_seconds",
+		Help: "Under --prefill-split-mode=pd: the mean end-to-end TTFT (arrival to the decode leg's first byte) of the last --pd-ttft-window P/D requests, the provisioning signal; 0 with no recent request.",
+	}, []string{"pool"})
+	PDTTFTWindowSamples = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_ttft_window_samples",
+		Help: "Requests in the TTFT window (0 when it holds nothing recent).",
+	}, []string{"pool"})
+	PDProvisionActions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "router_pd_provision_actions_total",
+		Help: "Provisioning actions under --prefill-split-mode=pd: drain (a decode node starts draining into prefill), abandon (a drain returns to decode), release (a prefill node returned to decode).",
+	}, []string{"pool", "action"})
+	PDPrefillNodeEst = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_prefill_node_est_seconds",
+		Help: "Under --prefill-split-mode=pd: a prefill node's estimated time for one more P leg, its service EWMA (or the fleet's) times 1 + legs in flight / 4; the time part of the leg's routing cost.",
+	}, []string{"pool", "backend"})
 	PDPrefillHeldTokens = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "router_pd_prefill_held_tokens",
 		Help:    "Under --prefill-split-mode=pd, per prefill leg: the deepest prefix of its prompt the router records, by tree: prefill (any P node), decode (any D node) or stored (the shared tier, kept across role changes). The leg's charge is its prompt less the larger of the prefill depth and the others cut to --prefill-store-unit-tokens.",
@@ -622,10 +638,17 @@ type PDMetrics struct {
 	PrefillSeconds, DecodeSeconds                    prometheus.Observer
 	ServiceSeconds                                   prometheus.Observer
 	HeldPrefill, HeldDecode, HeldStored              prometheus.Observer
+	TTFTMean, TTFTSamples                            prometheus.Gauge
+	actions                                          *prometheus.CounterVec
+	nodeEst                                          *prometheus.GaugeVec
 }
 
 // ForPD resolves a pool's disaggregation collectors, every series at 0.
 func ForPD(pool string) *PDMetrics {
+	actions := PDProvisionActions.MustCurryWith(prometheus.Labels{"pool": pool})
+	for _, a := range PDProvisionActionNames {
+		actions.WithLabelValues(a)
+	}
 	return &PDMetrics{
 		LegOK:            PDPrefillLegs.WithLabelValues(pool, "ok"),
 		LegFailed:        PDPrefillLegs.WithLabelValues(pool, "failed"),
@@ -640,7 +663,23 @@ func ForPD(pool string) *PDMetrics {
 		HeldPrefill:      PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
 		HeldDecode:       PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
 		HeldStored:       PDPrefillHeldTokens.WithLabelValues(pool, "stored"),
+		TTFTMean:         PDTTFTWindowMean.WithLabelValues(pool),
+		TTFTSamples:      PDTTFTWindowSamples.WithLabelValues(pool),
+		actions:          actions,
+		nodeEst:          PDPrefillNodeEst.MustCurryWith(prometheus.Labels{"pool": pool}),
 	}
+}
+
+// PDProvisionActionNames is the closed enum of router_pd_provision_actions_total's
+// action label.
+var PDProvisionActionNames = []string{"drain", "abandon", "release"}
+
+// Action counts a provisioning action, one of PDProvisionActionNames.
+func (m *PDMetrics) Action(action string) { m.actions.WithLabelValues(action).Inc() }
+
+// SetNodeEst publishes a prefill node's estimated leg time.
+func (m *PDMetrics) SetNodeEst(backend string, seconds float64) {
+	m.nodeEst.WithLabelValues(backend).Set(seconds)
 }
 
 // All returns every collector this package declares. The dead-metric check in
@@ -665,6 +704,7 @@ func All() []prometheus.Collector {
 		PrefillRejections, PrefillJobs, PrefillConversions, PrefillDrainsDeferred, PrefillReleases, PrefillJobTokens, PrefillJobWait,
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds, PDPrefillServiceSeconds, PDPrefillHeldTokens,
+		PDTTFTWindowMean, PDTTFTWindowSamples, PDProvisionActions, PDPrefillNodeEst,
 	}
 }
 

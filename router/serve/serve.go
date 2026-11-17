@@ -180,13 +180,15 @@ type Options struct {
 	PrefillConvertAfter time.Duration
 	// PrefillDrainMinInterval is --prefill-drain-min-interval, both modes.
 	PrefillDrainMinInterval time.Duration
-	// PrefillDrainDelay is --prefill-drain-delay, --prefill-split-mode=pd only.
-	PrefillDrainDelay time.Duration
 	// PrefillMinNodes is --prefill-min-nodes, --prefill-split-mode=pd only.
 	PrefillMinNodes int
-	// PrefillLoadWeight is --prefill-load-weight, --prefill-split-mode=pd only.
-	PrefillLoadWeight  float64
-	PrefillReleaseIdle time.Duration
+	// PDTTFTWindow, PDTTFTHigh and PDTTFTLow are --pd-ttft-window,
+	// --pd-ttft-high and --pd-ttft-low; PDUnknownCostPer1K is
+	// --pd-prefill-unknown-cost-per-1k. --prefill-split-mode=pd only.
+	PDTTFTWindow          int
+	PDTTFTHigh, PDTTFTLow time.Duration
+	PDUnknownCostPer1K    time.Duration
+	PrefillReleaseIdle    time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
 	// PrefillSplitMode is --prefill-split-mode: PrefillSplitReject (the
@@ -316,12 +318,16 @@ const (
 	PrefillSplitPD     = "pd"
 )
 
-// DefaultPDNodeBudgetTokens is --prefill-node-budget-tokens under
-// --prefill-split-mode=pd when it is left at 0: the tokens a P node may have
-// to compute outstanding, a few seconds of a node's prefill rate. Legs are
-// charged their compute there, which is far less than a rejected prefill's
-// recompute in the reject mode.
-const DefaultPDNodeBudgetTokens = 160_000
+// The TTFT-driven P/D defaults, for zero Options fields: the provisioning
+// window and its thresholds, and the routing cost of 1,000 prompt tokens a
+// prefill node does not hold (100k unknown tokens weigh as 1s of estimated
+// leg time).
+const (
+	DefaultPDTTFTWindow       = 32
+	DefaultPDTTFTHigh         = 5 * time.Second
+	DefaultPDTTFTLow          = 2 * time.Second
+	DefaultPDUnknownCostPer1K = 10 * time.Millisecond
+)
 
 // dynamicPD reports whether the prefill split runs as dynamic vanilla P/D.
 func (o Options) dynamicPD() bool {
@@ -339,10 +345,19 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	c := o.splitConfig()
 	c.NodeConcurrency = prefillFlow.NodeConcurrency
 	c.MinPrefill = o.PrefillMinNodes
-	c.LoadWeight = o.PrefillLoadWeight
-	if c.NodeBudgetTokens <= 0 {
-		c.NodeBudgetTokens = DefaultPDNodeBudgetTokens
+	or := func(d, def time.Duration) time.Duration {
+		if d > 0 {
+			return d
+		}
+		return def
 	}
+	c.TTFTWindow = o.PDTTFTWindow
+	if c.TTFTWindow <= 0 {
+		c.TTFTWindow = DefaultPDTTFTWindow
+	}
+	c.TTFTHigh = or(o.PDTTFTHigh, DefaultPDTTFTHigh)
+	c.TTFTLow = or(o.PDTTFTLow, DefaultPDTTFTLow)
+	c.UnknownCostPer1K = or(o.PDUnknownCostPer1K, DefaultPDUnknownCostPer1K)
 	return &c
 }
 
@@ -386,7 +401,6 @@ func (o Options) splitConfig() prefill.Config {
 		ReleaseIdle:      o.PrefillReleaseIdle,
 		StoreUnitTokens:  o.PrefillStoreUnitTokens,
 		DrainMinInterval: o.PrefillDrainMinInterval,
-		DrainDelay:       o.PrefillDrainDelay,
 	}
 }
 
@@ -481,6 +495,9 @@ func (o Options) validatePD() error {
 	case PrefillSplitPD:
 		if !o.PrefillSplit {
 			return errors.New("router: --prefill-split-mode=pd needs --prefill-split")
+		}
+		if o.PDTTFTLow > 0 && o.PDTTFTHigh > 0 && o.PDTTFTLow >= o.PDTTFTHigh {
+			return errors.New("router: --pd-ttft-low must be below --pd-ttft-high")
 		}
 	default:
 		return fmt.Errorf("router: --prefill-split-mode %q: want %s or %s", o.PrefillSplitMode, PrefillSplitReject, PrefillSplitPD)

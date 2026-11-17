@@ -93,18 +93,22 @@ type Config struct {
 	// never holds back the drain that gives the pool its first prefill node.
 	// 0 is no limit.
 	DrainMinInterval time.Duration
-	// DrainDelay (PD only) drives drains by time instead of tokens: when the
-	// 90th percentile of prefill jobs' router wait (reserve to dispatch,
-	// counting jobs still waiting) has stayed above it for ConvertAfter, a
-	// decode node is drained. Below a quarter of it, the low watermark, for
-	// ReleaseIdle, the newest converted node goes back to decode. The budget
-	// then only bounds what is dispatched to a node. 0 leaves PD on the
-	// budget rule, as the reject mode.
-	DrainDelay time.Duration
-	// LoadWeight (PD only) adds this fraction of the tokens a leg loads from
-	// the shared tier to its charge, which otherwise counts only the tokens it
-	// computes. 0 charges compute alone.
-	LoadWeight float64
+	// TTFTWindow, TTFTHigh and TTFTLow (PD only) drive provisioning: the
+	// mean end-to-end TTFT of the last TTFTWindow P/D requests above TTFTHigh
+	// drains a decode node into prefill, below TTFTLow returns one to decode
+	// (see pdttft.go).
+	TTFTWindow        int
+	TTFTHigh, TTFTLow time.Duration
+	// UnknownCostPer1K (PD only) is what a P leg's routing cost adds per 1,000
+	// prompt tokens the candidate node is not known to hold; tokens it holds
+	// are free.
+	UnknownCostPer1K time.Duration
+	// PrefixValues (PD only) is how many tokens each backend's prefill prefix
+	// tree holds, by URL: the prefill node returning to decode is the one
+	// holding least.
+	PrefixValues func() map[string]int64
+	// PDMetrics (PD only) receives the provisioning metrics.
+	PDMetrics *metrics.PDMetrics
 
 	// StoreUnitTokens is the granularity the shared KV tier stores a prompt at:
 	// a finished job leaves floor(prompt / unit) * unit tokens loadable by any
@@ -177,6 +181,13 @@ type node struct {
 	// convertedAt is when it last left decode; zero for an initial node, so
 	// initial nodes count as the oldest.
 	convertedAt time.Time
+	// Under PD (pdttft.go): releasing marks the prefill node returning to
+	// decode, which takes no new leg; legs is its P legs in flight; svc an
+	// EWMA of their service time in seconds, last updated at svcAt.
+	releasing bool
+	legs      int
+	svc       float64
+	svcAt     time.Time
 }
 
 // Manager owns the node modes for one pool.
@@ -191,11 +202,12 @@ type Manager struct {
 	// initial is Config.Initial, normalised, less the nodes already met: a
 	// node is made a prefill node by it once, when first seen.
 	initial map[string]bool
-	// waits is recent jobs' router waits, oldest first, for the delay signal;
-	// delayOver and delayLow are when the signal last went above DrainDelay
-	// and below its low watermark (zero while it is not).
-	waits               []waitSample
-	delayOver, delayLow time.Time
+	// ttft is the provisioning window, lastAction the time of the last
+	// provisioning action and svcFleet the fleet's P-leg service EWMA
+	// (pdttft.go).
+	ttft       ttftWindow
+	lastAction time.Time
+	svcFleet   float64
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
@@ -310,9 +322,6 @@ func (m *Manager) DecodeNodes(cands []*registry.Backend) []*registry.Backend {
 	return out
 }
 
-// LoadWeight is Config.LoadWeight.
-func (m *Manager) LoadWeight() float64 { return m.cfg.LoadWeight }
-
 // StoreCut is how many leading tokens of a prompt of the given size a finished
 // job leaves in the shared tier.
 func (m *Manager) StoreCut(tokens int64) int64 {
@@ -329,15 +338,11 @@ func (m *Manager) StoreCut(tokens int64) int64 {
 //     among them all). Draining nodes take no job while a prefill node exists:
 //     a job there would wait for the node's decodes to finish while a prefill
 //     node could run it. With no prefill node yet the draining nodes stand in.
-//     Under PD the job goes to the first prefill node with room in a stable
-//     oldest-first order (see packOrderLocked) instead: the oldest nodes fill
-//     first and the newest runs dry, so the release rules can return it.
 //  2. Failing that, while the prefill share is under the cap, drain the
 //     least-loaded decode node: with ConvertAfter set only once the
 //     least-loaded prefill node has been over budget that long, and no sooner
-//     than DrainMinInterval after the last drain. Under PD with DrainDelay set
-//     only the first prefill node is drained here; Tick drains the rest by
-//     delay. The job goes to the drained node when it has nothing in flight
+//     than DrainMinInterval after the last drain. The job goes to the drained
+//     node when it has nothing in flight
 //     (its WaitReady makes it a prefill node at once) or there is no prefill
 //     node; otherwise it queues on the least-pending prefill node.
 //  3. Failing that, queue on the prefill node (or, with none, the draining
@@ -375,13 +380,12 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 		}
 	}
 	nonDecode := len(prefillNodes) + len(draining)
-	byDelay := m.cfg.PD && m.cfg.DrainDelay > 0
 
 	var chosen *registry.Backend
 	switch {
 	case len(eligible) > 0:
 		chosen = m.pickLocked(eligible, pick)
-	case (!byDelay || nonDecode == 0) && m.canConvertLocked(len(cands), nonDecode, len(decode)) &&
+	case m.canConvertLocked(len(cands), nonDecode, len(decode)) &&
 		m.overflowedLongEnoughLocked(takers) && m.drainAllowedLocked(nonDecode):
 		d := m.drainLocked(decode, "no_prefill_room", "job_tokens", tokens)
 		chosen = d.b
@@ -428,9 +432,6 @@ func (m *Manager) drainLocked(decode []*registry.Backend, reason string, attrs .
 }
 
 func (m *Manager) pickLocked(eligible []*registry.Backend, pick Picker) *registry.Backend {
-	if m.cfg.PD {
-		return m.packOrderLocked(eligible)[0]
-	}
 	if m.cfg.CostPick && pick != nil {
 		// A policy that declines (every node saturated by some signal) must not
 		// refuse work the budget says fits: fall through to packing.
@@ -677,7 +678,7 @@ func (m *Manager) moveOneLocked() bool {
 		if m.canRunLocked(s.n, head) {
 			continue // about to start where it is
 		}
-		for _, n := range m.moveTargetsLocked() {
+		for _, n := range m.nodes {
 			if n != s.n && n.mode == Prefill && len(n.queue) == 0 && m.canRunLocked(n, head) {
 				m.moveLocked(head, s.n, n)
 				return true
@@ -757,8 +758,7 @@ func (m *Manager) releaseIfIdleLocked(n *node) {
 	// A drain is abandoned only once the overflow that called for it has
 	// cleared; until then the node keeps draining with nothing on it, and
 	// becomes a prefill node when its decodes finish.
-	// Under the delay rule Tick abandons drains, newest first, one per tick.
-	if n.mode == Draining && (m.cfg.PD && m.cfg.DrainDelay > 0 || m.overLocked() || m.nonDecodeLocked() <= m.cfg.MinPrefill) {
+	if n.mode == Draining && (m.overLocked() || m.nonDecodeLocked() <= m.cfg.MinPrefill) {
 		return
 	}
 	m.releaseLocked(n)

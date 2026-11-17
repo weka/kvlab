@@ -359,109 +359,84 @@ band tends to cap the decode nodes first. The startup log prints
 `signals="prefill=[...] decode=[...]"` with each role's band. The `router_cache_*` series
 for the P flow carry `pool="<pool>:prefill"`.
 
-**Dynamic vanilla P/D.** `--prefill-split --prefill-split-mode=pd` runs the
-prefill split above as NIXL prefill/decode disaggregation. The default,
-`--prefill-split-mode=reject`, is the split as described above.
+**Dynamic vanilla P/D.** `--prefill-split --prefill-split-mode=pd` runs NIXL
+prefill/decode disaggregation over a prefill set the router grows and shrinks
+from TTFT. The default, `--prefill-split-mode=reject`, is the split as
+described above. Two mechanisms are kept apart: routing places each prefill
+leg on the prefill set as it is, and provisioning decides when a node joins or
+leaves it.
 
 - **Every** `/v1/chat/completions` and `/v1/completions` request is first a
   prefill leg, with the same body as fixed P/D: `max_tokens=1`,
   `kv_transfer_params.do_remote_decode`. It then goes to a decode node with the
   returned `kv_transfer_params`, which pulls the KV over NIXL. No `503`, no store,
   no resend.
-- **What drains a decode node: `--prefill-drain-delay` (default 2 s).** A
-  prefill node mostly loads KV from the shared tier, and a compute-token budget
-  does not see that load. The time a leg waits for a prefill node does.
-  - The signal is the 90th percentile of the legs' router wait: from placement
-    to the slot that lets a leg be sent. It covers legs granted in the last 10 s,
-    plus legs still waiting counted at their age so far.
-  - Drain: legs are waiting now and the signal has stayed above the delay for
-    `--prefill-convert-after`. One decode node is drained, within the cap and
-    `--prefill-drain-min-interval`, and the clock restarts. The decision reads
-    only the load on the current prefill nodes; drains already under way are
-    not counted as capacity on its way.
-  - The node drained is the decode node whose decodes should end soonest: one
-    with nothing in flight first, then the one whose oldest in-flight request
-    started last, then fewer requests in flight. A drain takes no prefill leg
-    until its decodes finish.
-  - Abandon: a drain no longer needed returns to decode at once. While nothing
-    waits, or the signal is at or below half the delay, the newest draining
-    node with no job on it goes back, one per tick (100 ms). The threshold is
-    below the drain condition, so a signal hovering at the delay does not drain
-    and abandon in turn. A draining node keeps its decode prefix marks until it
-    becomes a prefill node, so an abandoned drain returns with its
-    conversations' decode affinity intact; it only paused new decode legs.
-  - Release: nothing waiting, or the signal at or below a quarter of the delay,
-    for `--prefill-release-idle`. The newest converted prefill node with nothing
-    queued goes back to decode, and that clock restarts too. Never below
-    `--prefill-min-nodes`.
-  - **Placement packs.** A leg goes to the first prefill node with room in a
-    fixed oldest-first order: the initial nodes, then the others by when they
-    were converted, then by URL. The oldest nodes fill first, the newest runs
-    dry, and it is the first the release rules return. Decode legs stay
-    cost-routed.
-  - `--prefill-node-budget-tokens` and the prefill band's
-    `--pd-prefill-max-node-concurrency` only bound what is sent to one node. Set
-    at least one, or legs never wait in the router and nothing drains. Prefill
-    nodes still queueing in the engine then show only in
-    `router_pd_prefill_service_seconds`.
-  - `--prefill-drain-delay 0` drains on the budget instead, as the reject mode
-    does.
-- **Charge diagnostics.** For one conversation in 64, every prefill leg logs a
-  `pd leg charge` line with these fields:
+- **Routing never queues.** A leg goes at once to the active prefill node with
+  the lowest cost, in seconds:
+  - the node's estimated time for a leg: an EWMA of its legs' service time (the
+    fleet's when it has none recent), times 1 + legs in flight / 4;
+  - plus `--pd-prefill-unknown-cost-per-1k` (default 10 ms) for each 1,000
+    prompt tokens the node is not known to hold in its prefill prefix tree.
+    Known prefix is free.
+
+  So a conversation stays on the prefill node holding it until that node's
+  backlog outweighs what moving would cost. Ties go to fewer legs in flight.
+  Active means a prefill node that is not returning to decode. A node still
+  draining into prefill gets no leg until the decodes it had have finished, so
+  no node runs prefill legs next to decodes it took as a decode node; the
+  engine's `VLLM_MAX_PREFILLS_EXEMPT_PREFILL_ONLY` assumes exactly that. Legs
+  never wait for a budget: `--prefill-node-budget-tokens` and
+  `--prefill-convert-after` belong to the reject mode only.
+- **Provisioning follows TTFT.** The signal is the mean end-to-end TTFT (arrival
+  to the decode leg's first byte) of the last `--pd-ttft-window` (default 32)
+  requests whose KV came from their prefill leg. Requests a decode node
+  recomputed do not count. A window with no request in the last 10 s reads as
+  low.
+  - Above `--pd-ttft-high` (default 5 s): one decode node is drained into
+    prefill. It is the one whose decodes should end soonest: nothing in flight
+    first, then the one whose oldest in-flight request started last, then fewer
+    in flight. It becomes a prefill node when they have.
+  - Below `--pd-ttft-low` (default 2 s): the newest drain still in progress is
+    abandoned (it returns to decode). Otherwise one prefill node is chosen to
+    return to decode: the one holding the fewest tokens in the prefill tree
+    (least affinity lost), then the fewest legs in flight, then the newest. It
+    takes no new leg, finishes the legs it has, and then becomes a decode node.
+  - In between: nothing.
+  - After any action the next waits for `--prefill-drain-min-interval` (5 s
+    recommended) and for `--pd-ttft-window` fresh requests, so one window
+    drives one action.
+  - `--prefill-min-nodes` (default 1) is the fewest prefill nodes; decode nodes
+    are drained to reach it, at start when none is named.
+    `--prefill-max-fleet-fraction` is the most, and one node always stays in
+    decode.
+  - `--pd-prefill-backends`, optional, names the nodes that start as prefill
+    nodes. They are released like any other.
+- A draining node keeps its decode prefix marks until it becomes a prefill node.
+  An abandoned drain therefore returns with its conversations' decode affinity
+  intact; it only paused new decode legs. A node returning to decode loses its
+  prefill marks.
+- **Charge diagnostics.** Each leg's estimated compute is the prompt less the
+  larger of two credits:
+  - the deepest prefix a prefill node holds;
+  - what the shared tier is recorded storing, cut to
+    `--prefill-store-unit-tokens`.
+
+  The stored record (`pool="<pool>:stored"`) notes every prompt a leg computed
+  or a decode node recomputed. Nothing in it is forgotten on a role change;
+  only `--cache-tail-ttl` ages a prompt out. The charge is in
+  `router_prefill_job_tokens` and does not gate anything.
+
+  For one conversation in 64 every leg logs a `pd leg charge` line with these
+  fields:
   - `conversation`, `units`, `prev_units`;
   - `diverge_unit`: the first unit of the prompt that differs from the
-    conversation's previous leg, as the router's tree sees it, or -1 on the
-    first leg;
+    conversation's previous leg, or -1 on the first leg;
   - `shared_with_prev_tokens`;
   - `total_tokens`, `prefill_tree_tokens`, `decode_tree_tokens`,
-    `stored_tokens`, `charge_tokens`.
+    `stored_record_tokens`, `stored_tokens`, `charge_tokens`.
 
   A conversation is named by the request id's part before `-t<turn>-` (kvlab's
-  replay ids). Requests whose ids have another shape are not sampled. Comparing
-  `charge_tokens` with the engine's `local_compute` shows whether the charge
-  tracks real compute, and `diverge_unit` shows where it stops.
-- Each prefill leg is a prefill job of the split's manager. It is charged what a
-  prefill node must compute: the prompt less the larger of two credits.
-  - The deepest prefix a prefill node holds locally.
-  - What the shared KV tier holds, cut to `--prefill-store-unit-tokens`: the
-    deepest prefix recorded as stored. Every prompt a prefill leg computed, or
-    a decode node recomputed after a failed leg, is recorded in a tree of its
-    own (`pool="<pool>:stored"`). Nothing in it is forgotten when a node changes
-    role; only `--cache-tail-ttl` ages a prompt out. The prefill and decode
-    trees' depths count too.
-
-  `--prefill-node-budget-tokens` (0 = 160,000 in this mode) is therefore the
-  compute a P node may have outstanding: size it to a few seconds of a node's
-  prefill rate. `--prefill-load-weight` (default 0) adds that fraction of the
-  tokens a leg loads from the tier. On a fleet whose P nodes spend their time
-  loading rather than computing, a compute-only charge keeps them looking empty:
-  packing keeps sending them legs, and only the router-wait signal can call for
-  a drain, once legs back up in the router. Every prompt token a leg does not
-  compute counts as loaded, so the weight makes the budget see the load.
-  Calibrated on a 48x H100 Kimi-Linear-48B fleet: legs are ~100k tokens, ~99%
-  loaded from weka, and a P node sustains ~9 legs/s at ~0.3 s service (~3 in
-  flight) before it saturates. The recommended setting there is
-  `--prefill-load-weight 0.5` with `--prefill-node-budget-tokens 160000`: a
-  typical leg is charged ~53k, so a node carries ~3 in flight.
-
-  The trees forget a prefix after `--cache-tail-ttl`, so with turns further
-  apart than that a leg is charged its whole prompt; raise it, which costs only
-  router memory.
-  Conversion, drain, release and placement are the split's, unchanged:
-  - Budget: `--prefill-node-budget-tokens`.
-  - Drain: `--prefill-convert-after`.
-  - Release: `--prefill-release-idle`.
-  - Cap: `--prefill-max-fleet-fraction`.
-- A drained node takes legs only once the decodes it had have finished. So no
-  node runs prefill legs next to decodes it took as a decode node; the engine's
-  `VLLM_MAX_PREFILLS_EXEMPT_PREFILL_ONLY` assumes exactly that.
-- `--pd-prefill-backends`, optional here, names the nodes that start as prefill
-  nodes. They are released like any other. `--prefill-min-nodes` (default 1) is
-  the fewest prefill nodes kept: none is released below it, and decode nodes are
-  drained to reach it, at start when no node is named. Every prefill node counts
-  toward `--prefill-max-fleet-fraction`.
-- Prefill legs run under the prefill band (`--pd-prefill-max-node-concurrency`,
-  else `--max-node-concurrency`).
+  replay ids).
 - Decode legs are placed by cost routing over the decode nodes. A draining or
   prefill node never takes one. With no decode node left the request is answered
   `503`.
@@ -471,18 +446,24 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
 - `/v1/messages` is served on decode nodes only.
 - Engines: every node is launched the same way, `kv_role=kv_both` with the P/D
   connector in token boundary mode, so any node serves either leg.
-- Metrics are the split's: `router_prefill_nodes{mode}`, conversions, releases,
-  jobs (one per request), per-backend mode and pending tokens. The fixed-P/D leg
-  metrics come on top.
-- Each drain and release logs one line: `decode node draining for prefill` /
-  `prefill node released to decode`. It carries the reason, the node's in-flight
-  and pending tokens, the prefill nodes' pending, running and queued tokens and
-  queued jobs, nodes per mode, the budget, and the leg's tokens.
+- **Metrics:**
+  - `router_pd_ttft_window_mean_seconds` and `router_pd_ttft_window_samples`:
+    the signal.
+  - `router_pd_provision_actions_total{action=drain|abandon|release}`.
+  - `router_pd_prefill_node_est_seconds{backend}`: the time part of each
+    prefill node's cost.
+  - `router_prefill_nodes{mode}`, conversions and releases.
+  - `router_pd_prefill_service_seconds` and
+    `router_pd_prefill_held_tokens{tree}`.
+  - The fixed-P/D leg metrics.
+- **Log lines:** each drain, promotion, return and release logs one line, with
+  the reason (`ttft_high`, `ttft_low`, `ttft_low_abandon`, `min_nodes`,
+  `drained`), the window mean and sample count, and the prefill set's state:
+  - `decode node draining for prefill`;
+  - `draining node is now a prefill node` (with `drain_took`);
+  - `prefill node returning to decode`;
+  - `prefill node released to decode`.
 - `/router-viz` shows `decode`, `draining` and `prefill` per backend.
-
-As in the reject mode, cost routing spreads legs over the prefill nodes. Under
-steady load a node with a little work never goes idle, so it is not released
-until traffic drops.
 
 `--rebalance-ratio` is **off by default**. Set to `0.5` it makes a backend
 carrying more than twice the fleet minimum stop taking new work, so the idle

@@ -123,11 +123,21 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 	}
 	flow := affinity.Config{CostRouting: true}
 	dflow, pflow := mustFlow(t, flow), mustFlow(t, flow)
-	cfg.PD, cfg.Initial, cfg.CostPick = true, floor, true
+	cfg.PD, cfg.Initial = true, floor
 	if cfg.MinPrefill == 0 {
 		cfg.MinPrefill = 1
 	}
+	if cfg.TTFTWindow == 0 {
+		// Thresholds no plain test reaches: they never provision.
+		cfg.TTFTWindow, cfg.TTFTHigh, cfg.TTFTLow = 8, time.Hour, time.Nanosecond
+	}
+	if cfg.UnknownCostPer1K == 0 {
+		cfg.UnknownCostPer1K = 10 * time.Millisecond
+	}
+	cfg.PrefixValues = pflow.BackendTokens
 	cfg.PoolName = f.pool
+	f.set = pd.New(f.pool, floor)
+	cfg.PDMetrics = f.set.M
 	cfg.OnModeChange = func(b *registry.Backend, from, to prefill.Mode) {
 		// Called under the manager's lock; f.mu is never held while calling
 		// into the manager.
@@ -146,7 +156,6 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 	}
 	f.mgr = prefill.New(cfg)
 	f.pflow, f.dflow = pflow, dflow
-	f.set = pd.New(f.pool, floor)
 	f.set.Dynamic = f.mgr
 	stored, err := pd.NewStored(flow)
 	if err != nil {
@@ -256,95 +265,6 @@ func TestPDDynamicFailedPLegFallsBackToDecodeAlone(t *testing.T) {
 	}
 }
 
-// The workbench scenario: a quiet start served by the floor alone, a late
-// surge that holds the prefill nodes over budget and drains decode nodes into
-// prefill up to the cap, and an idle period after which they return to decode.
-func TestPDDynamicSurgeDrainsIntoPrefillAndIdleReleases(t *testing.T) {
-	const nodes = 6
-	f := newDynFleet(t, nodes, prefill.Config{
-		NodeBudgetTokens: 30_000, // about one leg at a time per P node
-		MaxFleetFraction: 0.5,    // at most 3 P nodes
-		ConvertAfter:     150 * time.Millisecond,
-		ReleaseIdle:      400 * time.Millisecond,
-	}, mockvllm.Config{DefaultMaxTokens: 2, ColdInputTPS: 400_000, OutputTPS: 2_000})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go f.mgr.Run(ctx, func() []*registry.Backend { return f.backend })
-
-	prompt := func(i int) string { return fmt.Sprintf("session %d %s", i, strings.Repeat("lorem ipsum ", 7_000)) }
-
-	for i := range 5 { // quiet: the floor keeps up
-		f.post(t, prompt(i))
-	}
-	if n := f.inP(); n != 1 {
-		t.Fatalf("P set = %d after quiet traffic, want the floor alone", n)
-	}
-
-	// Surge: arrivals every 5ms, each leg ~50ms of prefill on one node.
-	var wg sync.WaitGroup
-	var peak atomic.Int64
-	stop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(10 * time.Millisecond):
-				if n := int64(f.inP()); n > peak.Load() {
-					peak.Store(n)
-				}
-			}
-		}
-	}()
-	for i := range 80 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			f.post(t, prompt(100+i))
-		}()
-		time.Sleep(5 * time.Millisecond)
-	}
-	wg.Wait()
-	close(stop)
-	conv := testutil.ToFloat64(metrics.PrefillConversions.WithLabelValues(f.pool))
-	if conv < 2 || peak.Load() != nodes/2 {
-		t.Fatalf("surge drained %v nodes into prefill (peak P set %d), want the cap %d", conv, peak.Load(), nodes/2)
-	}
-	f.mu.Lock()
-	onDrained := 0
-	for node, n := range f.pLegsOn {
-		if node != 0 {
-			onDrained += n
-		}
-	}
-	f.mu.Unlock()
-	if onDrained == 0 {
-		t.Error("no P leg ran on a drained node")
-	}
-
-	// Idle: every drained node returns to decode.
-	deadline := time.Now().Add(5 * time.Second)
-	for f.inP() > 1 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if n := f.inP(); n != 1 {
-		t.Fatalf("P set = %d after the idle period, want the floor alone", n)
-	}
-	if rel := testutil.ToFloat64(metrics.PrefillReleases.WithLabelValues(f.pool)); rel != conv {
-		t.Errorf("releases %v, want one per conversion (%v)", rel, conv)
-	}
-	if got := len(f.set.DecodeNodes(f.backend)); got != nodes-1 {
-		t.Errorf("decode candidates = %d after the release, want %d", got, nodes-1)
-	}
-	for i := range 5 {
-		f.post(t, prompt(1000+i))
-	}
-	f.check(t, true)
-	f.mu.Lock()
-	t.Logf("conversions %v, peak P set %d, P legs by node %v", conv, peak.Load(), f.pLegsOn)
-	f.mu.Unlock()
-}
-
 func (f *dynFleet) postMessages(t *testing.T, msgs []map[string]any) {
 	t.Helper()
 	b, _ := json.Marshal(map[string]any{"model": "m", "max_tokens": 2, "messages": msgs})
@@ -379,98 +299,27 @@ func TestPDDynamicLegChargeCreditsThePrefixTheTierHolds(t *testing.T) {
 	turn := append(history,
 		map[string]any{"role": "assistant", "content": "ok"},
 		map[string]any{"role": "user", "content": "next question " + strings.Repeat("why ", 50)})
-	done := make(chan struct{})
-	go func() { defer close(done); f.postMessages(t, turn) }()
-	time.Sleep(200 * time.Millisecond) // the leg is in flight on the floor node
-	charged := testutil.ToFloat64(metrics.PrefillPendingTokens.WithLabelValues(f.pool, f.backend[0].URL))
-	<-done
-	if charged <= 0 || charged > 1_000 {
+	before := pdHistogram(t, metrics.PrefillJobTokens.WithLabelValues(f.pool))
+	f.postMessages(t, turn)
+	after := pdHistogram(t, metrics.PrefillJobTokens.WithLabelValues(f.pool))
+	charged := after.GetSampleSum() - before.GetSampleSum()
+	if after.GetSampleCount()-before.GetSampleCount() != 1 || charged <= 0 || charged > 1_000 {
 		t.Errorf("turn 2 charged %v tokens, want only its new tokens (~100), not the ~10k prompt", charged)
 	}
 }
 
 func TestPDLegChargeIsThePromptLessWhatIsHeldOrStored(t *testing.T) {
-	for _, c := range []struct {
-		total, local, stored int64
-		w                    float64
-		want                 int64
-	}{
-		{10_000, 0, 0, 0, 10_000},              // nothing known: the whole prompt
-		{10_000, 9_000, 0, 0, 1_000},           // P tree holds it
-		{10_000, 0, 8_192, 0, 1_808},           // tier holds it, cut to the store unit
-		{10_000, 9_500, 8_192, 0, 500},         // the deeper credit wins
-		{10_000, 10_000, 0, 0, 1},              // at least one token
-		{10_000, 0, 8_192, 0.05, 2_217},        // plus 5% of the 8,192 loaded
-		{10_000, 9_000, 8_192, 0.05, 1_450},    // the P tree's depth is loaded too: 5% of 9,000
-		{100_000, 94_000, 94_000, 0.5, 53_000}, // the fleet's typical leg at w=0.5: 6k + 47k
+	for _, c := range []struct{ total, local, stored, want int64 }{
+		{10_000, 0, 0, 10_000},      // nothing known: the whole prompt
+		{10_000, 9_000, 0, 1_000},   // P tree holds it
+		{10_000, 0, 8_192, 1_808},   // tier holds it, cut to the store unit
+		{10_000, 9_500, 8_192, 500}, // the deeper credit wins
+		{10_000, 10_000, 0, 1},      // at least one token
 	} {
-		if got := gateway.PDLegCharge(c.total, c.local, c.stored, c.w); got != c.want {
-			t.Errorf("charge(%d, local %d, stored %d, w %v) = %d, want %d", c.total, c.local, c.stored, c.w, got, c.want)
+		if got := gateway.PDLegCharge(c.total, c.local, c.stored); got != c.want {
+			t.Errorf("charge(%d, local %d, stored %d) = %d, want %d", c.total, c.local, c.stored, got, c.want)
 		}
 	}
-}
-
-// The ramp from one prefill node, on the real gateway under the delay rule:
-// P legs bounded to 2 per node, a surge keeps them waiting in the router past
-// --prefill-drain-delay and drains decode nodes into prefill up to the cap;
-// once quiet, they return to decode down to the minimum of one.
-func TestPDDynamicDelayRuleDrainsOnWaitAndReleasesWhenQuiet(t *testing.T) {
-	const nodes = 6
-	f := newDynFleet(t, nodes, prefill.Config{
-		NodeBudgetTokens: 1 << 30, // the budget does not bind: only time does
-		NodeConcurrency:  2,
-		MaxFleetFraction: 0.5,
-		DrainDelay:       100 * time.Millisecond,
-		ConvertAfter:     150 * time.Millisecond,
-		ReleaseIdle:      300 * time.Millisecond,
-	}, mockvllm.Config{DefaultMaxTokens: 2, ColdInputTPS: 400_000, OutputTPS: 2_000})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go f.mgr.Run(ctx, func() []*registry.Backend { return f.backend })
-	prompt := func(i int) string { return fmt.Sprintf("session %d %s", i, strings.Repeat("lorem ipsum ", 7_000)) }
-
-	var wg sync.WaitGroup
-	var peak atomic.Int64
-	stop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(10 * time.Millisecond):
-				if n := int64(f.inP()); n > peak.Load() {
-					peak.Store(n)
-				}
-			}
-		}
-	}()
-	for i := range 80 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			f.post(t, prompt(i))
-		}()
-		time.Sleep(5 * time.Millisecond)
-	}
-	wg.Wait()
-	close(stop)
-	conv := testutil.ToFloat64(metrics.PrefillConversions.WithLabelValues(f.pool))
-	if conv < 2 || peak.Load() != nodes/2 {
-		t.Fatalf("surge drained %v nodes (peak P set %d), want a ramp from 1 to the cap %d", conv, peak.Load(), nodes/2)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for f.inP() > 1 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if n := f.inP(); n != 1 {
-		t.Fatalf("P set = %d after going quiet, want the floor alone", n)
-	}
-	f.check(t, true)
-	svc := testutil.CollectAndCount(metrics.PDPrefillServiceSeconds)
-	if svc == 0 {
-		t.Error("no prefill service time observed")
-	}
-	t.Logf("conversions %v, peak P set %d", conv, peak.Load())
 }
 
 // A followed conversation's legs are logged with their charge breakdown and
@@ -541,4 +390,80 @@ func TestPDDynamicLegChargeDiagnostics(t *testing.T) {
 			t.Errorf("held tokens{tree=%s} observed %d legs, want 2", tree, got)
 		}
 	}
+}
+
+func pdHistogram(t *testing.T, o prometheus.Observer) *dto.Histogram {
+	t.Helper()
+	var m dto.Metric
+	if err := o.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetHistogram()
+}
+
+// The ramp from one prefill node, TTFT-driven, on the real gateway: a surge of
+// long prompts on the single prefill node pushes the mean TTFT over the high
+// threshold and drains decode nodes into prefill, up to the cap; legs never
+// wait in the router. Once quiet (no recent request reads as low) the prefill
+// set shrinks back to the minimum of one.
+func TestPDDynamicTTFTRampFromOneExpandsUnderLoadAndShrinksWhenQuiet(t *testing.T) {
+	const nodes = 6
+	f := newDynFleet(t, nodes, prefill.Config{
+		MaxFleetFraction: 0.5, // at most 3 prefill nodes
+		TTFTWindow:       8,
+		TTFTHigh:         300 * time.Millisecond,
+		TTFTLow:          100 * time.Millisecond,
+		DrainMinInterval: 100 * time.Millisecond,
+	}, mockvllm.Config{DefaultMaxTokens: 2, ColdInputTPS: 400_000, OutputTPS: 2_000})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go f.mgr.Run(ctx, func() []*registry.Backend { return f.backend })
+	prompt := func(i int) string { return fmt.Sprintf("session %d %s", i, strings.Repeat("lorem ipsum ", 7_000)) }
+
+	var wg sync.WaitGroup
+	var peak atomic.Int64
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+				if n := int64(f.inP()); n > peak.Load() {
+					peak.Store(n)
+				}
+			}
+		}
+	}()
+	for i := range 150 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f.post(t, prompt(i))
+		}()
+		time.Sleep(4 * time.Millisecond)
+	}
+	wg.Wait()
+	close(stop)
+	conv := testutil.ToFloat64(metrics.PrefillConversions.WithLabelValues(f.pool))
+	if conv < 1 || peak.Load() < 2 || peak.Load() > nodes/2 {
+		t.Fatalf("surge drained %v nodes (peak P set %d), want a ramp from 1 within the cap %d", conv, peak.Load(), nodes/2)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for f.inP() > 1 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := f.inP(); n != 1 {
+		t.Fatalf("P set = %d after going quiet, want the minimum of one", n)
+	}
+	f.check(t, true)
+	if got := pdCounter(t, f.pool, "drain"); got < 1 {
+		t.Errorf("drain actions counted %v, want at least 1", got)
+	}
+	t.Logf("conversions %v, peak P set %d", conv, peak.Load())
+}
+
+func pdCounter(t *testing.T, pool, action string) float64 {
+	t.Helper()
+	return testutil.ToFloat64(metrics.PDProvisionActions.WithLabelValues(pool, action))
 }

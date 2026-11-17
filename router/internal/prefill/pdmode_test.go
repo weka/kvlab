@@ -16,18 +16,36 @@ import (
 	"github.com/weka/kvlab/router/internal/registry"
 )
 
-// pdModeFleet runs the manager as dynamic P/D with bs[0] as the floor.
+// pdModeFleet runs the manager as TTFT-driven dynamic P/D with bs[0] as its
+// initial prefill node: window 4, high 5s, low 2s, 5s between actions.
 func pdModeFleet(t *testing.T, n int, cfg Config) *fleet {
 	t.Helper()
 	f := newFleet(t, n, Config{})
 	cfg.PD = true
 	cfg.Initial = []string{f.bs[0].URL + "/"} // normalised like the CLI's
 	if cfg.MinPrefill == 0 {
-		cfg.MinPrefill = 1 // keeps node 0 the one prefill node at rest
+		cfg.MinPrefill = 1
+	}
+	if cfg.TTFTWindow == 0 {
+		cfg.TTFTWindow, cfg.TTFTHigh, cfg.TTFTLow = 4, 5*time.Second, 2*time.Second
+	}
+	if cfg.DrainMinInterval == 0 {
+		cfg.DrainMinInterval = 5 * time.Second
+	}
+	if cfg.UnknownCostPer1K == 0 {
+		cfg.UnknownCostPer1K = 10 * time.Millisecond
 	}
 	cfg.Clock, cfg.PoolName = f.clk, t.Name()
+	cfg.PDMetrics = metrics.ForPD(t.Name())
 	f.m = New(cfg)
 	return f
+}
+
+// ttft feeds the window n samples of d.
+func (f *fleet) ttft(n int, d time.Duration) {
+	for range n {
+		f.m.ObserveTTFT(d)
+	}
 }
 
 func names(bs []*registry.Backend) []string {
@@ -38,250 +56,226 @@ func names(bs []*registry.Backend) []string {
 	return out
 }
 
-func TestPDModeFloorIsPrefillBeforeItIsSeenAndIsNeverReleased(t *testing.T) {
-	for _, idle := range []time.Duration{0, time.Second} {
-		f := pdModeFleet(t, 3, Config{ReleaseIdle: idle})
-		if !f.m.IsPrefill(f.bs[0]) {
-			t.Fatal("floor node is not prefill before the manager met it")
-		}
-		if got := f.m.DecodeNodes(f.bs); len(got) != 2 || got[0] == f.bs[0] || got[1] == f.bs[0] {
-			t.Fatalf("decode candidates = %v, want the two non-floor nodes", names(got))
-		}
-		j, err := f.m.Reserve(f.bs, 10, nil)
-		if err != nil || j.Backend != f.bs[0] {
-			t.Fatalf("first leg on %v (%v), want the floor node", j, err)
-		}
-		if err := f.m.WaitReady(context.Background(), j); err != nil {
-			t.Fatal(err)
-		}
-		j.Done()
-		f.clk.Advance(time.Hour)
-		f.m.releaseExpired()
-		if f.m.ModeOf(f.bs[0]) != Prefill {
-			t.Errorf("release-idle %v: floor node mode = %v after an idle hour, want prefill", idle, f.m.ModeOf(f.bs[0]))
-		}
-	}
+func (f *fleet) setMode(b *registry.Backend, mode Mode, convertedAt time.Time) {
+	f.m.mu.Lock()
+	n := f.m.nodeLocked(b)
+	n.mode, n.convertedAt = mode, convertedAt
+	f.m.mu.Unlock()
 }
 
-func TestPDModeNeverReturnsAPrefillOrDrainingNodeForDecode(t *testing.T) {
-	f := pdModeFleet(t, 3, Config{MaxFleetFraction: 0.7})
-	// Only the floor node is healthy: the reject mode would serve the
-	// request on it rather than refuse; P/D must not place a D leg there.
+func TestPDModeInitialNodeIsPrefillBeforeItIsSeenAndNeverADecodeCandidate(t *testing.T) {
+	f := pdModeFleet(t, 3, Config{})
+	if !f.m.IsPrefill(f.bs[0]) {
+		t.Fatal("initial node is not prefill before the manager met it")
+	}
+	if got := f.m.DecodeNodes(f.bs); len(got) != 2 || got[0] == f.bs[0] || got[1] == f.bs[0] {
+		t.Fatalf("decode candidates = %v, want the two other nodes", names(got))
+	}
+	// Only the prefill node is healthy: no decode leg goes there anyway.
 	if got := f.m.DecodeNodes(f.bs[:1]); len(got) != 0 {
 		t.Fatalf("decode candidates = %v, want none", names(got))
 	}
-	// Fill the floor so the next leg drains a decode node.
-	// Node 2's requests are older than node 1's: node 1 drains soonest.
+}
+
+// High TTFT drains one decode node; it takes no leg until its decodes end.
+func TestPDModeHighTTFTDrainsOneNodeWhichTakesLegsOnlyOncePromoted(t *testing.T) {
+	f := pdModeFleet(t, 4, Config{MaxFleetFraction: 0.75})
+	for _, b := range f.bs[2:] {
+		defer lease.Acquire(b).Release() // older requests than node 1's
+	}
+	time.Sleep(2 * time.Millisecond)
+	decoding := lease.Acquire(f.bs[1])
+	f.ttft(4, 8*time.Second)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Draining {
+		t.Fatalf("modes %v, want node 1 (youngest oldest request) draining", f.modes())
+	}
+	if got := f.m.ActivePrefill(f.bs); len(got) != 1 || got[0] != f.bs[0] {
+		t.Errorf("active prefill = %v, want the initial node only while node 1 drains", names(got))
+	}
+	if n := count(f.modes(), Draining) + count(f.modes(), Prefill); n != 2 {
+		t.Errorf("one window drove %d nodes out of decode, want 2 (initial + one drain)", n)
+	}
+	decoding.Release()
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Prefill || len(f.m.ActivePrefill(f.bs)) != 2 {
+		t.Errorf("modes %v after the drain, want node 1 an active prefill node", f.modes())
+	}
+}
+
+// After an action the next waits for the interval AND a refreshed window.
+func TestPDModeActionsWaitForTheIntervalAndAFreshWindow(t *testing.T) {
+	f := pdModeFleet(t, 6, Config{MaxFleetFraction: 0.8})
+	f.ttft(4, 8*time.Second)
+	f.m.Tick(f.bs) // drain 1
+	f.clk.Advance(10 * time.Second)
+	f.ttft(3, 8*time.Second) // only 3 of 4 fresh
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 1 {
+		t.Fatalf("conversions = %d on a window not yet refreshed, want 1", got)
+	}
+	f.ttft(1, 8*time.Second)
+	f.clk.Advance(time.Second) // the window is fresh, but stale data counts after 10s only
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 2 {
+		t.Fatalf("conversions = %d after the window refreshed, want 2", got)
+	}
+	f.ttft(4, 8*time.Second)
+	f.clk.Advance(4 * time.Second)
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 2 {
+		t.Errorf("conversions = %d 4s after the last action, want 2 (interval 5s)", got)
+	}
+}
+
+// Between the thresholds nothing happens.
+func TestPDModeHoldsBetweenTheThresholds(t *testing.T) {
+	f := pdModeFleet(t, 4, Config{MaxFleetFraction: 0.75})
+	f.setMode(f.bs[1], Prefill, f.clk.Now())
+	f.ttft(4, 3*time.Second)
+	f.m.Tick(f.bs)
+	if c, r := f.m.State().Conversions, f.m.State().Releases; c != 0 || r != 0 {
+		t.Errorf("conversions %d releases %d at a 3s mean, want none", c, r)
+	}
+}
+
+// Low TTFT abandons the newest drain first, one per action.
+func TestPDModeLowTTFTAbandonsTheNewestDrainFirst(t *testing.T) {
+	f := pdModeFleet(t, 5, Config{MaxFleetFraction: 0.8})
+	for _, b := range f.bs[1:] {
+		defer lease.Acquire(b).Release() // still decoding: drains stay draining
+	}
+	f.setMode(f.bs[1], Draining, f.clk.Now().Add(time.Second))
+	f.setMode(f.bs[2], Draining, f.clk.Now().Add(2*time.Second))
+	f.ttft(4, 500*time.Millisecond)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[2]) != Decode || f.m.ModeOf(f.bs[1]) != Draining {
+		t.Fatalf("modes %v, want the newest drain (node 2) abandoned first", f.modes())
+	}
+	f.clk.Advance(5 * time.Second)
+	f.ttft(4, 500*time.Millisecond)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Decode {
+		t.Errorf("modes %v, want node 1 abandoned on the next action", f.modes())
+	}
+}
+
+// Low TTFT returns the prefill node holding the fewest prefix tokens: it takes
+// no new leg, finishes the ones in flight, then becomes a decode node.
+func TestPDModeLowTTFTReleasesTheNodeHoldingLeastAfterItsLegs(t *testing.T) {
+	held := map[string]int64{}
+	f := pdModeFleet(t, 4, Config{MaxFleetFraction: 0.75, PrefixValues: func() map[string]int64 { return held }})
+	f.setMode(f.bs[1], Prefill, f.clk.Now().Add(time.Second))
+	f.setMode(f.bs[2], Prefill, f.clk.Now().Add(2*time.Second))
+	held[f.bs[0].URL], held[f.bs[1].URL], held[f.bs[2].URL] = 50_000, 1_000, 90_000
+	f.m.LegStart(f.bs[1]) // node 1 has a leg in flight
+	f.ttft(4, time.Second)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Prefill {
+		t.Fatal("released with a leg still in flight")
+	}
+	for _, b := range f.m.ActivePrefill(f.bs) {
+		if b == f.bs[1] {
+			t.Fatal("the node returning to decode is still offered legs")
+		}
+	}
+	f.m.LegDone(f.bs[1], 300*time.Millisecond, true)
+	if f.m.ModeOf(f.bs[1]) != Decode {
+		t.Errorf("modes %v, want node 1 (least prefix held) back in decode once its leg ended", f.modes())
+	}
+}
+
+// No recent request reads as low: an idle fleet shrinks to the minimum, one
+// node per interval, and stops there.
+func TestPDModeNoDataIsLowAndShrinksToTheMinimum(t *testing.T) {
+	f := pdModeFleet(t, 5, Config{MaxFleetFraction: 0.8, MinPrefill: 2})
+	for i, b := range f.bs[1:4] {
+		f.setMode(b, Prefill, f.clk.Now().Add(time.Duration(i+1)*time.Second))
+	}
+	for range 6 {
+		f.m.Tick(f.bs)
+		f.clk.Advance(5 * time.Second)
+	}
+	if n := count(f.modes(), Prefill); n != 2 {
+		t.Errorf("%d prefill nodes after an idle minute, want the minimum 2 (modes %v)", n, f.modes())
+	}
+}
+
+// The minimum is reached by draining, at start when no node is named.
+func TestPDModeMinimumIsReachedByDraining(t *testing.T) {
+	f := newFleet(t, 5, Config{})
+	f.m = New(Config{PD: true, MinPrefill: 2, MaxFleetFraction: 0.6, TTFTWindow: 4,
+		TTFTHigh: 5 * time.Second, TTFTLow: 2 * time.Second, Clock: f.clk, PoolName: t.Name()})
+	for _, b := range f.bs {
+		defer lease.Acquire(b).Release()
+	}
+	f.m.Tick(f.bs)
+	f.m.Tick(f.bs)
+	if n := count(f.modes(), Draining) + count(f.modes(), Prefill); n != 2 {
+		t.Errorf("%d nodes out of decode, want the minimum 2 (modes %v)", n, f.modes())
+	}
+}
+
+// A leg goes to the cheapest active node: estimated leg time plus the cost of
+// the prompt tokens the node does not hold. Known prefix is free.
+func TestPDModePickWeighsEstimatedTimeAgainstUnknownTokens(t *testing.T) {
+	f := pdModeFleet(t, 3, Config{UnknownCostPer1K: 10 * time.Millisecond, MaxFleetFraction: 0.7})
+	f.setMode(f.bs[1], Prefill, f.clk.Now())
+	active := f.m.ActivePrefill(f.bs)
+	// Both idle, no service history: node 1 holds 80k of a 100k prompt.
+	if got := f.m.PickPrefill(active, 100_000, []int64{0, 80_000}); got != f.bs[1] {
+		t.Fatalf("picked %s, want the holder", got.URL)
+	}
+	// The holder is slow: 1s legs with 4 in flight is 2s est; the other
+	// node is 0.3s. 0.8s of unknown tokens does not pay for 1.7s.
+	f.m.LegDone(f.bs[1], time.Second, true) // seed its EWMA
+	for range 4 {
+		f.m.LegStart(f.bs[1])
+	}
+	f.m.LegDone(f.bs[0], 300*time.Millisecond, true)
+	if got := f.m.PickPrefill(active, 100_000, []int64{0, 80_000}); got != f.bs[0] {
+		t.Errorf("picked %s, want the faster node once the holder's backlog outweighs the prefix", got.URL)
+	}
+}
+
+// A draining node only ever finishes its decodes; under the reject mode it
+// also takes no job while a prefill node exists, and its drain is abandoned
+// only once the overflow clears.
+func TestRejectModeDrainedNodeTakesNoJobUntilItIsAPrefillNode(t *testing.T) {
+	f := newFleet(t, 3, Config{MaxFleetFraction: 0.7})
+	f.setMode(f.bs[0], Prefill, time.Time{})
 	defer lease.Acquire(f.bs[2]).Release()
 	defer lease.Acquire(f.bs[2]).Release()
 	time.Sleep(2 * time.Millisecond)
-	defer lease.Acquire(f.bs[1]).Release()
-	j1, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
-	defer j1.Done()
-	j2, err := f.m.Reserve(f.bs, 10, nil)
+	decode := lease.Acquire(f.bs[1])
+	full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
+	_ = f.m.WaitReady(context.Background(), full)
+	j, err := f.m.Reserve(f.bs, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer j2.Done()
-	if f.m.ModeOf(f.bs[1]) != Draining {
-		t.Fatalf("modes %v, want node 1 draining", f.modes())
+	if f.m.ModeOf(f.bs[1]) != Draining || j.Backend != f.bs[0] {
+		t.Fatalf("modes %v, job on %s; want node 1 draining and the job on the prefill node", f.modes(), j.Backend.URL)
 	}
-	if got := f.m.DecodeNodes(f.bs); len(got) != 1 || got[0] != f.bs[2] {
-		t.Errorf("decode candidates = %v, want node 2 only", names(got))
-	}
-}
-
-// A job never waits on a draining node while a prefill node exists: it
-// queues on the prefill node, and moves to the drained node only once that
-// node's decodes have finished and it is a prefill node.
-func TestDrainedNodeTakesNoJobUntilItIsAPrefillNode(t *testing.T) {
-	for _, pd := range []bool{false, true} {
-		f := newFleet(t, 3, Config{MaxFleetFraction: 0.7})
-		if pd {
-			f = pdModeFleet(t, 3, Config{MaxFleetFraction: 0.7})
-		} else {
-			// The reject mode: node 0 is already a prefill node.
-			f.m.mu.Lock()
-			f.m.nodeLocked(f.bs[0]).mode = Prefill
-			f.m.mu.Unlock()
-		}
-		// Node 2's requests are older than node 1's: node 1 drains soonest.
-		defer lease.Acquire(f.bs[2]).Release()
-		defer lease.Acquire(f.bs[2]).Release()
-		time.Sleep(2 * time.Millisecond)
-		decode := lease.Acquire(f.bs[1])
-		full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
-		_ = f.m.WaitReady(context.Background(), full)
-		j, err := f.m.Reserve(f.bs, 10, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if f.m.ModeOf(f.bs[1]) != Draining {
-			t.Fatalf("pd=%v: modes %v, want node 1 draining", pd, f.m.ModeOf(f.bs[1]))
-		}
-		if j.Backend != f.bs[0] {
-			t.Errorf("pd=%v: job placed on %s, want queued on the prefill node, not the draining one", pd, j.Backend.URL)
-		}
-		f.m.Tick(f.bs) // still over budget and still decoding: keeps draining
-		if f.m.ModeOf(f.bs[1]) != Draining {
-			t.Errorf("pd=%v: drain abandoned while the overflow lasts (mode %v)", pd, f.m.ModeOf(f.bs[1]))
-		}
-		decode.Release()
-		f.m.Tick(f.bs)
-		if f.m.ModeOf(f.bs[1]) != Prefill || j.Backend != f.bs[1] {
-			t.Errorf("pd=%v: after the drain node 1 is %v and the job on %s; want prefill and the job moved there",
-				pd, f.m.ModeOf(f.bs[1]), j.Backend.URL)
-		}
-		if err := f.m.WaitReady(context.Background(), j); err != nil {
-			t.Fatal(err)
-		}
-		j.Done()
-		full.Done()
-	}
-}
-
-// A drain whose overflow clears before the node's decodes finish is abandoned,
-// not completed.
-func TestDrainIsAbandonedOnlyWhenTheOverflowClears(t *testing.T) {
-	f := pdModeFleet(t, 3, Config{MaxFleetFraction: 0.7})
-	// Node 2's requests are older than node 1's: node 1 drains soonest.
-	defer lease.Acquire(f.bs[2]).Release()
-	defer lease.Acquire(f.bs[2]).Release()
-	time.Sleep(2 * time.Millisecond)
-	defer lease.Acquire(f.bs[1]).Release() // node 1 keeps decoding
-	full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
-	_ = f.m.WaitReady(context.Background(), full)
-	q, _ := f.m.Reserve(f.bs, 10, nil) // drains node 1, queues on the floor
 	f.m.Tick(f.bs)
 	if f.m.ModeOf(f.bs[1]) != Draining {
-		t.Fatalf("mode %v while the floor is over, want draining", f.m.ModeOf(f.bs[1]))
+		t.Errorf("drain abandoned while the overflow lasts (mode %v)", f.m.ModeOf(f.bs[1]))
 	}
-	full.Done() // the overflow clears: q runs on the floor
-	if err := f.m.WaitReady(context.Background(), q); err != nil {
+	decode.Release()
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Prefill || j.Backend != f.bs[1] {
+		t.Errorf("after the drain node 1 is %v and the job on %s; want prefill and the job moved there",
+			f.m.ModeOf(f.bs[1]), j.Backend.URL)
+	}
+	if err := f.m.WaitReady(context.Background(), j); err != nil {
 		t.Fatal(err)
 	}
-	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[1]) != Decode {
-		t.Errorf("mode %v after the overflow cleared, want the drain abandoned (decode)", f.m.ModeOf(f.bs[1]))
-	}
-	q.Done()
-}
-
-// delayFleet runs the delay rule: drain when the p90 wait stays over 1s for
-// 5s, release the newest converted node after 10s at or under 250ms.
-func delayFleet(t *testing.T, n int) *fleet {
-	return pdModeFleet(t, n, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.8, DrainDelay: time.Second,
-		ConvertAfter: 5 * time.Second, ReleaseIdle: 10 * time.Second, CostPick: true})
-}
-
-func TestDelayRuleDrainsOnlyWhenTheWaitStaysHigh(t *testing.T) {
-	f := delayFleet(t, 4)
-	running, _ := f.m.Reserve(f.bs, 100, nil) // the floor's whole budget
-	_ = f.m.WaitReady(context.Background(), running)
-	waiting, _ := f.m.Reserve(f.bs, 50, nil) // over budget: waits in the router
-	if f.m.State().Conversions != 0 {
-		t.Fatal("a job over budget drained a node at once; the delay rule drains from Tick")
-	}
-	f.clk.Advance(2 * time.Second) // the waiting job is 2s old: p90 over 1s
-	f.m.Tick(f.bs)
-	f.clk.Advance(4 * time.Second)
-	f.m.Tick(f.bs)
-	if got := f.m.State().Conversions; got != 0 {
-		t.Fatalf("drained after %v over the delay, want none before ConvertAfter (5s)", 4*time.Second)
-	}
-	f.clk.Advance(time.Second)
-	f.m.Tick(f.bs)
-	if got := f.m.State().Conversions; got != 1 {
-		t.Fatalf("conversions = %d after 5s over the delay, want 1", got)
-	}
-	running.Done()
-	waiting.Done()
-
-	// A short wait that never crosses the delay drains nothing.
-	g := delayFleet(t, 4)
-	r, _ := g.m.Reserve(g.bs, 100, nil)
-	_ = g.m.WaitReady(context.Background(), r)
-	w, _ := g.m.Reserve(g.bs, 50, nil)
-	g.clk.Advance(500 * time.Millisecond)
-	g.m.Tick(g.bs)
-	r.Done()
-	_ = g.m.WaitReady(context.Background(), w)
-	w.Done()
-	g.clk.Advance(time.Minute)
-	g.m.Tick(g.bs)
-	if got := g.m.State().Conversions; got != 0 {
-		t.Errorf("conversions = %d for a 500ms wait, want 0", got)
-	}
-}
-
-// Low load: after ReleaseIdle under the low watermark the newest converted
-// node goes back to decode, then the next newest after a window of its own;
-// the minimum of one prefill node stays.
-func TestLowDelayReleasesTheNewestConvertedNodeFirst(t *testing.T) {
-	f := delayFleet(t, 5)
-	// Two converted nodes, node 1 before node 2.
-	f.m.mu.Lock()
-	for i, b := range f.bs[1:3] {
-		n := f.m.nodeLocked(b)
-		n.mode, n.convertedAt = Prefill, f.clk.Now().Add(time.Duration(i+1)*time.Second)
-	}
-	f.m.mu.Unlock()
-	// Node 1 has a leg running throughout, so it is never idle: only the
-	// low-delay rule can release it.
-	busy, _ := f.m.Reserve(f.bs[1:2], 10, nil)
-	if err := f.m.WaitReady(context.Background(), busy); err != nil || busy.Backend != f.bs[1] {
-		t.Fatalf("setup: busy leg on %s (%v), want node 1", busy.Backend.URL, err)
-	}
-	f.m.Tick(f.bs) // no waits: the signal is at its low watermark from now
-	f.clk.Advance(9 * time.Second)
-	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[2]) != Prefill {
-		t.Fatal("released before ReleaseIdle under the low watermark")
-	}
-	f.clk.Advance(time.Second)
-	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[2]) != Decode || f.m.ModeOf(f.bs[1]) != Prefill {
-		t.Fatalf("modes %v, want the newest (node 2) released and node 1 kept", f.modes())
-	}
-	f.clk.Advance(10 * time.Second)
-	f.m.Tick(f.bs)
-	f.clk.Advance(time.Hour)
-	f.m.Tick(f.bs)
-	if n := count(f.modes(), Prefill); n != 1 {
-		t.Errorf("modes %v, want only the minimum of one prefill node left", f.modes())
-	}
-}
-
-// Legs pack: each goes to the first prefill node with room, oldest first
-// (initial nodes, then by conversion time), so the newest is the last used.
-func TestPDModeLegsPackOldestFirst(t *testing.T) {
-	f := pdModeFleet(t, 4, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.8})
-	f.m.mu.Lock()
-	f.m.nodeLocked(f.bs[3]).mode, f.m.nodes[f.bs[3].URL].convertedAt = Prefill, f.clk.Now().Add(time.Minute)
-	f.m.nodeLocked(f.bs[2]).mode, f.m.nodes[f.bs[2].URL].convertedAt = Prefill, f.clk.Now().Add(time.Second)
-	f.m.mu.Unlock()
-	var got []*registry.Backend
-	for _, tok := range []int64{60, 60, 60, 10} {
-		j, err := f.m.Reserve(f.bs, tok, func([]*registry.Backend, func(*registry.Backend) int64) (*registry.Backend, error) {
-			t.Fatal("a policy was consulted for a packed leg")
-			return nil, nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer j.Done()
-		got = append(got, j.Backend)
-	}
-	want := []*registry.Backend{f.bs[0], f.bs[2], f.bs[3], f.bs[0]}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("leg %d on %s, want %s (initial node 0, then node 2, then the newest node 3)", i, got[i].URL, want[i].URL)
-		}
-	}
+	j.Done()
+	full.Done()
 }
 
 func TestJobChargeAndWaitAreObserved(t *testing.T) {
-	f := delayFleet(t, 3)
+	f := newFleet(t, 3, Config{MaxFleetFraction: 0.7})
 	tokens0 := histogram(t, metrics.PrefillJobTokens.WithLabelValues(t.Name()))
 	wait0 := histogram(t, metrics.PrefillJobWait.WithLabelValues(t.Name()))
 	j, _ := f.m.Reserve(f.bs, 70, nil)
@@ -307,130 +301,20 @@ func histogram(t *testing.T, o prometheus.Observer) *dto.Histogram {
 	return m.GetHistogram()
 }
 
-func TestPDModeConversionAndReleaseAreLogged(t *testing.T) {
+func TestPDModeProvisioningIsLoggedAndCounted(t *testing.T) {
 	var buf bytes.Buffer
-	f := pdModeFleet(t, 3, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.7, Log: slog.New(slog.NewTextHandler(&buf, nil))})
-	j1, _ := f.m.Reserve(f.bs, 100, nil)
-	_ = f.m.WaitReady(context.Background(), j1)
-	j2, _ := f.m.Reserve(f.bs, 10, nil) // drains an idle node and runs there
-	_ = f.m.WaitReady(context.Background(), j2)
-	j2.Done()
-	j1.Done()
+	f := pdModeFleet(t, 4, Config{MaxFleetFraction: 0.75, Log: slog.New(slog.NewTextHandler(&buf, nil))})
+	f.ttft(4, 8*time.Second)
+	f.m.Tick(f.bs)
 	out := buf.String()
-	for _, want := range []string{
-		`msg="decode node draining for prefill"`, "reason=no_prefill_room", "job_tokens=10", "node_budget_tokens=100",
-		"prefill_pending_tokens=100", `msg="prefill node released to decode"`, "reason=idle",
-	} {
+	for _, want := range []string{`msg="decode node draining for prefill"`, "reason=ttft_high", "ttft_mean=8s", "ttft_samples=4"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Count(out, "released to decode") != 1 {
-		t.Errorf("want exactly one release (the floor stays):\n%s", out)
-	}
-}
-
-// The initial prefill nodes are released like any other; only the minimum is
-// kept.
-func TestPDModeInitialNodesAreReleasedDownToTheMinimum(t *testing.T) {
-	f := newFleet(t, 4, Config{})
-	f.m = New(Config{PD: true, Initial: []string{f.bs[0].URL, f.bs[1].URL}, MinPrefill: 1,
-		ReleaseIdle: time.Second, Clock: f.clk, PoolName: t.Name()})
-	f.m.Tick(f.bs) // both initial nodes are prefill, idle from now
-	if f.m.ModeOf(f.bs[0]) != Prefill || f.m.ModeOf(f.bs[1]) != Prefill {
-		t.Fatalf("modes %v, want the two initial nodes prefill", f.modes())
-	}
-	f.clk.Advance(time.Second)
-	f.m.Tick(f.bs)
-	f.clk.Advance(time.Second)
-	f.m.Tick(f.bs)
-	if n := count(f.modes(), Prefill); n != 1 {
-		t.Errorf("%d prefill nodes after both went idle, want the minimum 1 (modes %v)", n, f.modes())
-	}
-}
-
-// With no initial nodes the minimum is reached by draining, and a drain toward
-// the minimum is never abandoned for lack of load.
-func TestPDModeMinimumIsReachedByDrainingAndKept(t *testing.T) {
-	f := newFleet(t, 5, Config{})
-	f.m = New(Config{PD: true, MinPrefill: 2, MaxFleetFraction: 0.6, Clock: f.clk, PoolName: t.Name()})
-	busy := lease.Acquire(f.bs[0]) // decoding: a drain of it waits
-	defer busy.Release()
-	for _, b := range f.bs[1:] {
-		defer lease.Acquire(b).Release()
-		defer lease.Acquire(b).Release()
-	}
-	f.m.Tick(f.bs)
-	f.m.Tick(f.bs)
-	if n := count(f.modes(), Draining) + count(f.modes(), Prefill); n != 2 {
-		t.Fatalf("%d nodes out of decode, want the minimum 2 (modes %v)", n, f.modes())
-	}
-	f.clk.Advance(time.Minute)
-	f.m.Tick(f.bs) // nothing waits, yet the drains stand: they are the minimum
-	if n := count(f.modes(), Decode); n != 3 {
-		t.Errorf("modes %v: a drain toward the minimum was abandoned", f.modes())
-	}
-}
-
-// Under PD the drained node is the one whose decodes end soonest: nothing in
-// flight first, then the youngest oldest request.
-func TestPDModeDrainsTheNodeWhoseOldestRequestIsYoungest(t *testing.T) {
-	f := pdModeFleet(t, 4, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.8})
-	old := lease.Acquire(f.bs[1]) // node 1: one old request
-	defer old.Release()
-	time.Sleep(5 * time.Millisecond)
-	for range 3 { // node 2: three young requests
-		defer lease.Acquire(f.bs[2]).Release()
-	}
-	time.Sleep(5 * time.Millisecond)
-	defer lease.Acquire(f.bs[3]).Release() // node 3: one youngest request
-	defer lease.Acquire(f.bs[3]).Release()
-
-	full, _ := f.m.Reserve(f.bs, 100, nil) // fills node 0
-	defer full.Done()
-	j, _ := f.m.Reserve(f.bs, 10, nil) // drains one
-	defer j.Done()
-	if f.m.ModeOf(f.bs[3]) != Draining {
-		t.Errorf("modes %v, want node 3 (youngest oldest request) draining, not node 1 (fewest but oldest)", f.modes())
-	}
-}
-
-// Under the delay rule drains are abandoned one per tick, newest first, once
-// nothing waits or the signal is at or below half the delay; a signal between
-// half the delay and the delay abandons nothing.
-func TestDelayRuleAbandonsNewestDrainFirstOnePerTick(t *testing.T) {
-	f := delayFleet(t, 5)
-	for _, b := range f.bs[1:] {
-		defer lease.Acquire(b).Release() // decoding: drains stay draining
-	}
-	f.m.mu.Lock()
-	for i, b := range f.bs[1:3] {
-		n := f.m.nodeLocked(b)
-		n.mode, n.convertedAt = Draining, f.clk.Now().Add(time.Duration(i+1)*time.Second)
-	}
-	f.m.mu.Unlock()
-
-	// A leg waiting 700ms on the full node 0: above half the 1s delay, below
-	// the delay. Nothing is abandoned.
-	full, _ := f.m.Reserve(f.bs[:1], 100, nil)
-	_ = f.m.WaitReady(context.Background(), full)
-	waiting, _ := f.m.Reserve(f.bs[:1], 10, nil)
-	f.clk.Advance(700 * time.Millisecond)
-	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[1]) != Draining || f.m.ModeOf(f.bs[2]) != Draining {
-		t.Fatalf("modes %v: a drain was abandoned with the signal above half the delay", f.modes())
-	}
-	// Nothing waits any more: the newest drain (node 2) goes first, then
-	// node 1 on the next tick.
-	full.Done()
-	_ = f.m.WaitReady(context.Background(), waiting)
-	waiting.Done()
-	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[2]) != Decode || f.m.ModeOf(f.bs[1]) != Draining {
-		t.Fatalf("modes %v after one tick, want only the newest drain (node 2) abandoned", f.modes())
-	}
-	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[1]) != Decode {
-		t.Errorf("modes %v after two ticks, want node 1 abandoned too", f.modes())
+	var m dto.Metric
+	_ = metrics.PDProvisionActions.WithLabelValues(t.Name(), "drain").Write(&m)
+	if m.GetCounter().GetValue() < 1 {
+		t.Error("drain action not counted")
 	}
 }

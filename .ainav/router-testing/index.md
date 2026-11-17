@@ -370,19 +370,20 @@ aggregated totals matched the sum exactly.
 `--prefill-split --prefill-split-mode=pd` runs on the plain mock fleet. A D leg
 (kv_transfer_params with `do_remote_prefill`) gets its prompt by "KV transfer",
 which is free unless `--external-kv-tps` is set, so prefill load lands on
-prefill nodes only. A burst of long unique prompts drains decode nodes into
-prefill; going quiet releases them:
+prefill nodes only. A burst of long unique prompts on one prefill node pushes
+the mean TTFT over `--pd-ttft-high` and drains decode nodes into prefill; going
+quiet (no recent request reads as low) returns them to decode:
 
 ```bash
 /tmp/mock-vllm --instances 6 --base-port 9001 --model-id m --cold-input-tps 400000 --output-tps 2000
 /tmp/kvlab-local router serve --listen :8080 --metrics-listen 127.0.0.1:29000 \
   --backends 'http://127.0.0.1:9001|...|http://127.0.0.1:9006' \
   --prefill-split --prefill-split-mode=pd --pd-prefill-backends http://127.0.0.1:9001 \
-  --prefill-node-budget-tokens 30000 --prefill-convert-after 200ms --prefill-release-idle 1s
-curl -s 127.0.0.1:29000/metrics | grep -E '^router_prefill_(nodes|conversions|releases|jobs)'
+  --pd-ttft-window 8 --pd-ttft-high 300ms --pd-ttft-low 100ms --prefill-drain-min-interval 100ms
+curl -s 127.0.0.1:29000/metrics | grep -E '^router_(prefill_nodes|pd_ttft_window|pd_provision_actions)'
 ```
 
 Readiness-gate on a real completion, not only `/v1/models`: requests sent before
 the backends' first health probes pass get `503 no_healthy_backends`.
-`TestPDDynamicSurgeDrainsIntoPrefillAndIdleReleases` (router/internal/gateway)
-is the same scenario as a test.
+`TestPDDynamicTTFTRampFromOneExpandsUnderLoadAndShrinksWhenQuiet`
+(router/internal/gateway) is the same scenario as a test.

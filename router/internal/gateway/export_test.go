@@ -8,9 +8,7 @@ import "net/http"
 func (s *Server) RecoverForTest(next http.Handler) http.Handler { return s.recoverMiddleware(next) }
 
 // PDLegCharge exposes a dynamic P/D leg's budget charge.
-func PDLegCharge(total, local, stored int64, loadWeight float64) int64 {
-	return pdLegCharge(total, local, stored, loadWeight)
-}
+func PDLegCharge(total, local, stored int64) int64 { return pdLegCharge(total, local, stored) }
 
 // PDDiagConversation exposes the sampling of the per-leg charge log.
 func PDDiagConversation(id string) (string, bool) { return pdDiagConversation(id) }

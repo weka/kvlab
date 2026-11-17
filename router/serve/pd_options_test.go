@@ -151,12 +151,12 @@ func TestValidatePDDynamicMode(t *testing.T) {
 // manager and runs its legs under the P flow's concurrency band.
 func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 	split := Options{PrefillSplit: true, PrefillNodeBudgetTokens: 500_000, PrefillMaxFleetFraction: 0.4,
-		PrefillConvertAfter: 20 * time.Second, PrefillReleaseIdle: 90 * time.Second, NodeConcurrency: 64}
+		PrefillDrainMinInterval: 5 * time.Second, NodeConcurrency: 64}
 	if split.pdDynamicConfig(false) != nil || split.prefillConfig() == nil {
 		t.Fatal("reject mode must build the split's manager only")
 	}
 	o := split
-	o.PrefillSplitMode, o.PDPrefillMaxNodeConcurrency, o.PrefillDrainDelay, o.PrefillMinNodes = PrefillSplitPD, 8, 2*time.Second, 2
+	o.PrefillSplitMode, o.PrefillMinNodes = PrefillSplitPD, 2
 	if o.prefillConfig() != nil {
 		t.Error("pd mode also built the reject mode's manager")
 	}
@@ -164,21 +164,24 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 		t.Error("pd mode manager for a transparent route")
 	}
 	c := o.pdDynamicConfig(false)
-	if c.NodeBudgetTokens != 500_000 || c.MaxFleetFraction != 0.4 || c.ConvertAfter != 20*time.Second ||
-		c.ReleaseIdle != 90*time.Second || c.NodeConcurrency != 8 || c.DrainDelay != 2*time.Second || c.MinPrefill != 2 {
-		t.Errorf("config = %+v, want the split flags and the prefill band's concurrency 8", c)
+	if c.MaxFleetFraction != 0.4 || c.DrainMinInterval != 5*time.Second || c.MinPrefill != 2 {
+		t.Errorf("config = %+v, want the split flags", c)
+	}
+	if c.TTFTWindow != DefaultPDTTFTWindow || c.TTFTHigh != DefaultPDTTFTHigh || c.TTFTLow != DefaultPDTTFTLow ||
+		c.UnknownCostPer1K != DefaultPDUnknownCostPer1K {
+		t.Errorf("TTFT settings %d %v %v %v, want the defaults", c.TTFTWindow, c.TTFTHigh, c.TTFTLow, c.UnknownCostPer1K)
+	}
+	o.PDTTFTWindow, o.PDTTFTHigh, o.PDTTFTLow, o.PDUnknownCostPer1K = 16, 4*time.Second, time.Second, 20*time.Millisecond
+	if c := o.pdDynamicConfig(false); c.TTFTWindow != 16 || c.TTFTHigh != 4*time.Second || c.TTFTLow != time.Second ||
+		c.UnknownCostPer1K != 20*time.Millisecond {
+		t.Errorf("TTFT settings not taken from the options: %+v", c)
 	}
 	if !strings.HasPrefix(o.signalsLog(), "prefill=[") {
 		t.Errorf("signals log %q is not per role in pd mode", o.signalsLog())
 	}
-	// A budget left at 0 takes the pd default; the reject mode keeps the
-	// manager's.
-	o.PrefillNodeBudgetTokens, o.PrefillLoadWeight = 0, 0.02
-	if c := o.pdDynamicConfig(false); c.NodeBudgetTokens != DefaultPDNodeBudgetTokens || c.LoadWeight != 0.02 {
-		t.Errorf("pd budget %d load weight %v, want %d and 0.02", c.NodeBudgetTokens, c.LoadWeight, DefaultPDNodeBudgetTokens)
-	}
-	split.PrefillNodeBudgetTokens = 0
-	if c := split.prefillConfig(); c.NodeBudgetTokens != 0 {
-		t.Errorf("reject budget %d, want 0 (the manager's default)", c.NodeBudgetTokens)
+	o.PDTTFTLow = 5 * time.Second
+	o.Routes = []Route{{Patterns: "*", Endpoints: []string{"http://a:1", "http://b:1"}}}
+	if err := o.validatePD(); err == nil || !strings.Contains(err.Error(), "--pd-ttft-low must be below") {
+		t.Errorf("low >= high: err = %v", err)
 	}
 }

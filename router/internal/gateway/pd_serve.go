@@ -32,6 +32,7 @@ func (s *Server) pdServe(
 	accepted proxy.OnAccepted, outcome proxy.OnOutcome, auth proxy.Auth,
 ) proxy.Result {
 	set := target.PD
+	arrived := s.cfg.Clock.Now()
 	decodeBody := body
 	if params, ok := s.runPDPrefill(r, target, rr, body, outcome, auth); ok {
 		decodeBody = pd.DecodeBody(body, params)
@@ -39,8 +40,15 @@ func (s *Server) pdServe(
 	}
 	rr.PolicyState = nil
 	start := s.cfg.Clock.Now()
-	res := s.serveWithCapacityRetry(w, r, target, rr, decodeBody, accepted, outcome, auth)
+	fw := &firstByteWriter{ResponseWriter: w, clk: s.cfg.Clock}
+	res := s.serveWithCapacityRetry(fw, r, target, rr, decodeBody, accepted, outcome, auth)
 	set.M.DecodeSeconds.Observe(s.cfg.Clock.Now().Sub(start).Seconds())
+	if mgr := set.Dynamic; mgr != nil && rr.KVTransfer && res.Err == nil &&
+		res.Status >= 200 && res.Status < 300 && !fw.at.IsZero() {
+		// Only a request whose KV came from its prefill leg counts: one a
+		// decode node recomputed says nothing about the prefill nodes.
+		mgr.ObserveTTFT(fw.at.Sub(arrived))
+	}
 	if !rr.KVTransfer && res.Err == nil && res.Status >= 200 && res.Status < 300 {
 		// Without a prefill leg the decode node computed the prompt, and
 		// stored it.
@@ -58,11 +66,10 @@ func (s *Server) pdServe(
 // until it is served, --retry-time-limit runs out when that is set, or the
 // caller leaves.
 //
-// Under dynamic P/D the leg is a job of the prefill split's manager instead:
-// charged against a P node's budget, it waits in the router while every P node
-// is full (which is what drains another decode node into prefill), then goes to
-// the node the manager placed it on, once that node has finished draining. It
-// is counted as a prefill job as well as a leg.
+// Under dynamic P/D the leg never waits in the router: each attempt goes at
+// once to the active prefill node the manager's cost picks (PickPrefill), and
+// the manager learns its service time. It is counted as a prefill job as well
+// as a leg.
 func (s *Server) runPDPrefill(
 	r *http.Request, target Target, rr *policy.RoutingRequest, body []byte,
 	outcome proxy.OnOutcome, auth proxy.Auth,
@@ -99,23 +106,14 @@ func (s *Server) runPDPrefill(
 		m.HeldDecode.Observe(float64(c.decode))
 		m.HeldStored.Observe(float64(c.record))
 		s.pdDiag.observe(r.Context(), rr.Units, c)
-		// The manager packs legs onto its prefill nodes in a fixed order; no
-		// policy is consulted.
-		job, err := mgr.Reserve(s.healthy(target), c.charge, nil)
-		if err != nil {
-			m.FallbackNoNode.Inc()
-			mgr.FallbackNoNode()
-			return nil, false
+		mgr.ObserveCharge(c.charge)
+		cands = func() []*registry.Backend {
+			if b := s.pdPick(target, mgr, rr); b != nil {
+				return []*registry.Backend{b}
+			}
+			return nil
 		}
-		defer job.Done()
-		if err := mgr.WaitReady(r.Context(), job); err != nil {
-			mgr.CountJobCancelled("abandoned")
-			return nil, false // the caller left; its decode leg ends with it
-		}
-		// The manager chose the node and bounds its legs (budget, and
-		// --max-node-concurrency when set): the leg goes there alone.
-		only := []*registry.Backend{job.Backend}
-		cands, sel = func() []*registry.Backend { return only }, policy.LeastOutstanding{}
+		sel = policy.LeastOutstanding{}
 	}
 	jobFailed := func(reason string, cancelled bool) {
 		switch {
@@ -137,7 +135,16 @@ func (s *Server) runPDPrefill(
 		}
 		leg.PolicyState = nil
 		cw := &captureWriter{h: http.Header{}}
+		sent := s.cfg.Clock.Now()
+		if mgr != nil {
+			mgr.LegStart(cands[0])
+		}
 		res := s.px.Serve(cw, r, cands, sel, s.dialect, &leg, pbody, accepted, outcome, auth)
+		if mgr != nil {
+			_, gotParams := pd.ParseParams(cw.buf.Bytes())
+			mgr.LegDone(cands[0], s.cfg.Clock.Now().Sub(sent),
+				res.Err == nil && res.Status >= 200 && res.Status < 300 && gotParams)
+		}
 
 		refused := isCapacityRefusal(res.Err) || (res.Err == nil && res.Status == http.StatusTooManyRequests)
 		if refused && r.Context().Err() == nil &&
@@ -204,7 +211,7 @@ func (s *Server) pdLegTokens(t Target, m *prefill.Manager, rr *policy.RoutingReq
 	}
 	c.record = t.PD.Stored.Depth(rr)
 	c.stored = m.StoreCut(max(c.local, c.decode, c.record))
-	c.charge = pdLegCharge(c.total, c.local, c.stored, m.LoadWeight())
+	c.charge = pdLegCharge(c.total, c.local, c.stored)
 	return c
 }
 
@@ -215,21 +222,11 @@ type pdCharge struct {
 	total, local, decode, record, stored, charge int64
 }
 
-// pdLegCharge is a leg's budget charge: the tokens it computes, the prompt
-// less what a P node already holds or can load from the tier (at least one),
-// plus loadWeight times the rest of the prompt, which it loads. A P node that
-// is slow because of its loads rather than its compute shows only through the
-// load term; at 0 the charge is compute alone.
-//
-// Every token not computed counts as loaded, the P tree's local depth
-// included: that depth is the deepest prefix on any P node, not on the one a
-// packed leg lands on, and P nodes serve almost nothing from their own HBM
-// (about 0.6% of prompt tokens on the Kimi-Linear fleet, against ~99% from
-// the tier). Counting it as free made the load term ~0 for any weight.
-func pdLegCharge(total, local, stored int64, loadWeight float64) int64 {
-	compute := max(total-max(local, stored), 1)
-	loaded := max(total-compute, 0)
-	return compute + int64(loadWeight*float64(loaded))
+// pdLegCharge is a leg's estimated compute: the prompt less what a P node
+// already holds or can load from the tier, at least one token. Diagnostics
+// only (router_prefill_job_tokens, the pd leg charge line).
+func pdLegCharge(total, local, stored int64) int64 {
+	return max(total-max(local, stored), 1)
 }
 
 // captureWriter keeps a prefill leg's response, which is small: one token and
@@ -242,3 +239,47 @@ type captureWriter struct {
 func (c *captureWriter) Header() http.Header         { return c.h }
 func (c *captureWriter) Write(p []byte) (int, error) { return c.buf.Write(p) }
 func (c *captureWriter) WriteHeader(int)             {}
+
+// pdPick is the active prefill node a leg goes to now, by the manager's cost
+// over what each candidate's prefill tree holds of the prompt; nil when no
+// prefill node is active.
+func (s *Server) pdPick(t Target, m *prefill.Manager, rr *policy.RoutingRequest) *registry.Backend {
+	active := m.ActivePrefill(s.healthy(t))
+	if len(active) == 0 {
+		return nil
+	}
+	var total int64
+	for _, u := range rr.Units {
+		total += int64(u.Tokens)
+	}
+	var depths []int64
+	if h, ok := t.PrefillSelector.(interface {
+		HeldDepths(*policy.RoutingRequest, []*registry.Backend) []int64
+	}); ok {
+		depths = h.HeldDepths(rr, active)
+	}
+	return m.PickPrefill(active, total, depths)
+}
+
+// firstByteWriter notes when the first response body byte is written: a
+// streamed decode leg's first token.
+type firstByteWriter struct {
+	http.ResponseWriter
+	clk interface{ Now() time.Time }
+	at  time.Time
+}
+
+func (w *firstByteWriter) Write(p []byte) (int, error) {
+	if w.at.IsZero() && len(p) > 0 {
+		w.at = w.clk.Now()
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *firstByteWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *firstByteWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
