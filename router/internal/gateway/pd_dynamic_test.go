@@ -395,13 +395,14 @@ func TestPDLegChargeIsThePromptLessWhatIsHeldOrStored(t *testing.T) {
 		w                    float64
 		want                 int64
 	}{
-		{10_000, 0, 0, 0, 10_000},           // nothing known: the whole prompt
-		{10_000, 9_000, 0, 0, 1_000},        // P tree holds it
-		{10_000, 0, 8_192, 0, 1_808},        // tier holds it, cut to the store unit
-		{10_000, 9_500, 8_192, 0, 500},      // the deeper credit wins
-		{10_000, 10_000, 0, 0, 1},           // at least one token
-		{10_000, 0, 8_192, 0.05, 2_217},     // plus 5% of the 8,192 loaded
-		{10_000, 9_000, 8_192, 0.05, 1_000}, // local hit: nothing loaded
+		{10_000, 0, 0, 0, 10_000},              // nothing known: the whole prompt
+		{10_000, 9_000, 0, 0, 1_000},           // P tree holds it
+		{10_000, 0, 8_192, 0, 1_808},           // tier holds it, cut to the store unit
+		{10_000, 9_500, 8_192, 0, 500},         // the deeper credit wins
+		{10_000, 10_000, 0, 0, 1},              // at least one token
+		{10_000, 0, 8_192, 0.05, 2_217},        // plus 5% of the 8,192 loaded
+		{10_000, 9_000, 8_192, 0.05, 1_450},    // the P tree's depth is loaded too: 5% of 9,000
+		{100_000, 94_000, 94_000, 0.5, 53_000}, // the fleet's typical leg at w=0.5: 6k + 47k
 	} {
 		if got := gateway.PDLegCharge(c.total, c.local, c.stored, c.w); got != c.want {
 			t.Errorf("charge(%d, local %d, stored %d, w %v) = %d, want %d", c.total, c.local, c.stored, c.w, got, c.want)

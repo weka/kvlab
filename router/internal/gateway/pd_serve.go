@@ -217,12 +217,18 @@ type pdCharge struct {
 
 // pdLegCharge is a leg's budget charge: the tokens it computes, the prompt
 // less what a P node already holds or can load from the tier (at least one),
-// plus loadWeight times the tokens it loads from the tier. A P node that is
-// slow because of its loads rather than its compute shows only through the
+// plus loadWeight times the rest of the prompt, which it loads. A P node that
+// is slow because of its loads rather than its compute shows only through the
 // load term; at 0 the charge is compute alone.
+//
+// Every token not computed counts as loaded, the P tree's local depth
+// included: that depth is the deepest prefix on any P node, not on the one a
+// packed leg lands on, and P nodes serve almost nothing from their own HBM
+// (about 0.6% of prompt tokens on the Kimi-Linear fleet, against ~99% from
+// the tier). Counting it as free made the load term ~0 for any weight.
 func pdLegCharge(total, local, stored int64, loadWeight float64) int64 {
 	compute := max(total-max(local, stored), 1)
-	loaded := max(stored-local, 0)
+	loaded := max(total-compute, 0)
 	return compute + int64(loadWeight*float64(loaded))
 }
 

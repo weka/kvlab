@@ -436,8 +436,13 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
   tokens a leg loads from the tier. On a fleet whose P nodes spend their time
   loading rather than computing, a compute-only charge keeps them looking empty:
   packing keeps sending them legs, and only the router-wait signal can call for
-  a drain, once legs back up in the router. A weight near the cost of loading a
-  token relative to computing one (0.01-0.05) makes the budget see the load.
+  a drain, once legs back up in the router. Every prompt token a leg does not
+  compute counts as loaded, so the weight makes the budget see the load.
+  Calibrated on a 48x H100 Kimi-Linear-48B fleet: legs are ~100k tokens, ~99%
+  loaded from weka, and a P node sustains ~9 legs/s at ~0.3 s service (~3 in
+  flight) before it saturates. The recommended setting there is
+  `--prefill-load-weight 0.5` with `--prefill-node-budget-tokens 160000`: a
+  typical leg is charged ~53k, so a node carries ~3 in flight.
 
   The trees forget a prefix after `--cache-tail-ttl`, so with turns further
   apart than that a leg is charged its whole prompt; raise it, which costs only
