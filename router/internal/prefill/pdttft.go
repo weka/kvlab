@@ -19,7 +19,8 @@ import (
 //     draining into prefill takes no leg until its decodes have finished.
 //   - Provisioning (tickPDLocked): the mean time to the prefill's finish
 //     (arrival to the P leg's kv_transfer_params) of the last TTFTWindow P/D
-//     requests: the part of TTFT the prefill set controls. Above TTFTHigh one decode node is drained into
+//     requests (or of the last TTFTWindowTime): the part of TTFT the prefill
+//     set controls. Above TTFTHigh one decode node is drained into
 //     prefill; below TTFTLow the newest drain is abandoned, or else one
 //     prefill node is selected to return to decode: it takes no new leg,
 //     finishes its in-flight ones, then becomes a decode node. A window with
@@ -40,15 +41,58 @@ const (
 	// svcAlpha and fleetAlpha are the EWMA weights of a node's and the
 	// fleet's newest service sample.
 	svcAlpha, fleetAlpha = 0.2, 0.05
+	// minWindowSamples is the fewest samples a time window needs before its
+	// mean is acted on. An empty window still reads as low (an idle fleet
+	// shrinks); a window with a few requests in it is too thin to drain or
+	// release on, and holds.
+	minWindowSamples = 16
 )
 
-// ttftWindow is the last N TTFTs.
+// ttftWindow is the provisioning samples: the last N in a ring (count mode),
+// or those of the last Config.TTFTWindowTime, since the last action (time
+// mode).
 type ttftWindow struct {
 	buf   []time.Duration
 	next  int
 	full  bool
 	since int       // samples since the last provisioning action
 	last  time.Time // when the newest sample arrived
+	timed []timedSample
+}
+
+type timedSample struct {
+	at time.Time
+	d  time.Duration
+}
+
+func (w *ttftWindow) addTimed(d, span time.Duration, now time.Time) {
+	w.timed = append(w.timed, timedSample{at: now, d: d})
+	w.pruneTimed(span, now)
+	w.since++
+	w.last = now
+}
+
+func (w *ttftWindow) pruneTimed(span time.Duration, now time.Time) {
+	i := 0
+	for i < len(w.timed) && now.Sub(w.timed[i].at) > span {
+		i++
+	}
+	if i > 0 {
+		w.timed = append(w.timed[:0], w.timed[i:]...)
+	}
+}
+
+// meanTimed is the mean and size of the samples in the last span.
+func (w *ttftWindow) meanTimed(span time.Duration, now time.Time) (time.Duration, int) {
+	w.pruneTimed(span, now)
+	if len(w.timed) == 0 {
+		return 0, 0
+	}
+	var sum time.Duration
+	for _, s := range w.timed {
+		sum += s.d
+	}
+	return sum / time.Duration(len(w.timed)), len(w.timed)
 }
 
 func (w *ttftWindow) add(d time.Duration, n int, now time.Time) {
@@ -83,7 +127,19 @@ func (w *ttftWindow) mean(now time.Time) (time.Duration, int) {
 func (m *Manager) ObserveTTFT(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.cfg.TTFTWindowTime > 0 {
+		m.ttft.addTimed(d, m.cfg.TTFTWindowTime, m.cfg.Clock.Now())
+		return
+	}
 	m.ttft.add(d, m.cfg.TTFTWindow, m.cfg.Clock.Now())
+}
+
+// windowMeanLocked is the provisioning signal now and its sample count.
+func (m *Manager) windowMeanLocked(now time.Time) (time.Duration, int) {
+	if m.cfg.TTFTWindowTime > 0 {
+		return m.ttft.meanTimed(m.cfg.TTFTWindowTime, now)
+	}
+	return m.ttft.mean(now)
 }
 
 // ObserveCharge records a leg's estimated compute tokens.
@@ -234,7 +290,7 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 	} else {
 		m.provisionLocked(now, cands, decode, nonDecode)
 	}
-	mean, k := m.ttft.mean(now)
+	mean, k := m.windowMeanLocked(now)
 	if m.cfg.PDMetrics != nil {
 		m.cfg.PDMetrics.TTFTMean.Set(mean.Seconds())
 		m.cfg.PDMetrics.TTFTSamples.Set(float64(k))
@@ -249,12 +305,26 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 
 // provisionLocked takes at most one provisioning action.
 func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backend, nonDecode int) {
-	if !m.lastAction.IsZero() && now.Sub(m.lastAction) < m.cfg.DrainMinInterval {
-		return
-	}
-	mean, k := m.ttft.mean(now)
-	if k > 0 && m.ttft.since < m.cfg.TTFTWindow {
-		return // the window has not refreshed since the last action
+	mean, k := m.windowMeanLocked(now)
+	if span := m.cfg.TTFTWindowTime; span > 0 {
+		// Time mode: the window restarted at the last action, so the next
+		// one waits for a full window of samples taken after it, and for
+		// DrainMinInterval. A drain changes the prefill-finish time only once
+		// it has become a prefill node (10-35s), so a shorter look would act
+		// again on the backlog the first action already answered.
+		if !m.lastAction.IsZero() && now.Sub(m.lastAction) < max(span, m.cfg.DrainMinInterval) {
+			return
+		}
+		if k > 0 && k < minWindowSamples {
+			return // too few requests to act on either way
+		}
+	} else {
+		if !m.lastAction.IsZero() && now.Sub(m.lastAction) < m.cfg.DrainMinInterval {
+			return
+		}
+		if k > 0 && m.ttft.since < m.cfg.TTFTWindow {
+			return // the window has not refreshed since the last action
+		}
 	}
 	attrs := []any{"prefill_finish_mean", mean.Round(time.Millisecond), "prefill_finish_samples", k}
 	switch {
@@ -279,7 +349,7 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 		}
 		v.releasing = true
 		m.logLocked("prefill node returning to decode", v, "ttft_low", append(attrs, "legs_in_flight", v.legs)...)
-		m.lastAction, m.ttft.since = now, 0
+		m.restartWindowLocked(now)
 		if v.legs == 0 {
 			m.finishReleaseLocked(v)
 		}
@@ -287,8 +357,14 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 }
 
 func (m *Manager) actedLocked(now time.Time, action string) {
-	m.lastAction, m.ttft.since = now, 0
+	m.restartWindowLocked(now)
 	m.actionLocked(action)
+}
+
+// restartWindowLocked marks an action: the window counts afresh from now.
+func (m *Manager) restartWindowLocked(now time.Time) {
+	m.lastAction, m.ttft.since = now, 0
+	m.ttft.timed = m.ttft.timed[:0]
 }
 
 func (m *Manager) newestDrainLocked() *node {

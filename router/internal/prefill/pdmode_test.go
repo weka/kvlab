@@ -318,3 +318,72 @@ func TestPDModeProvisioningIsLoggedAndCounted(t *testing.T) {
 		t.Error("drain action not counted")
 	}
 }
+
+// timeFleet runs the time window: the last 30s, high 1.5s, low 0.5s.
+func timeFleet(t *testing.T, n int, cfg Config) *fleet {
+	cfg.TTFTWindow, cfg.TTFTWindowTime = 32, 30*time.Second
+	cfg.TTFTHigh, cfg.TTFTLow = 1500*time.Millisecond, 500*time.Millisecond
+	return pdModeFleet(t, n, cfg)
+}
+
+// spread feeds n samples of d over the next span, ending now+span.
+func (f *fleet) spread(n int, d, span time.Duration) {
+	for range n {
+		f.clk.Advance(span / time.Duration(n))
+		f.m.ObserveTTFT(d)
+	}
+}
+
+// The time window averages only the samples of the last span.
+func TestPDModeTimeWindowAveragesTheLastSpanOnly(t *testing.T) {
+	f := timeFleet(t, 4, Config{MaxFleetFraction: 0.75})
+	f.spread(40, 4*time.Second, 30*time.Second) // old and slow
+	f.spread(40, time.Second, 30*time.Second)   // the last 30s: 1s
+	f.clk.Advance(time.Millisecond)             // the last old sample is now just outside
+	f.m.mu.Lock()
+	mean, k := f.m.windowMeanLocked(f.clk.Now())
+	f.m.mu.Unlock()
+	if mean != time.Second || k != 40 {
+		t.Errorf("window mean %v over %d samples, want 1s over the last 30s' 40", mean, k)
+	}
+	f.m.Tick(f.bs)
+	if f.m.State().Conversions != 0 {
+		t.Error("drained on samples older than the window")
+	}
+}
+
+// After an action the next waits for a full window of samples taken after it.
+func TestPDModeTimeWindowNeedsAFullFreshWindowAfterAnAction(t *testing.T) {
+	f := timeFleet(t, 6, Config{MaxFleetFraction: 0.8})
+	f.spread(40, 3*time.Second, 30*time.Second)
+	f.m.Tick(f.bs) // drain 1
+	if got := f.m.State().Conversions; got != 1 {
+		t.Fatalf("conversions = %d on a slow full window, want 1", got)
+	}
+	f.spread(40, 3*time.Second, 29*time.Second) // still slow, but 29s since
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 1 {
+		t.Fatalf("conversions = %d 29s after the last action, want 1 (window 30s)", got)
+	}
+	f.spread(2, 3*time.Second, time.Second)
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 2 {
+		t.Errorf("conversions = %d after a full fresh window, want 2", got)
+	}
+}
+
+// A window with a few requests holds; an empty one reads as low.
+func TestPDModeTimeWindowThinHoldsEmptyIsLow(t *testing.T) {
+	f := timeFleet(t, 4, Config{MaxFleetFraction: 0.75})
+	f.setMode(f.bs[1], Prefill, f.clk.Now().Add(time.Second))
+	f.spread(10, 3*time.Second, 30*time.Second) // 10 < 16
+	f.m.Tick(f.bs)
+	if c, r := f.m.State().Conversions, f.m.State().Releases; c != 0 || r != 0 {
+		t.Fatalf("acted on 10 samples (conversions %d releases %d), want hold", c, r)
+	}
+	f.clk.Advance(31 * time.Second) // nothing in the window now
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Decode {
+		t.Errorf("modes %v: an empty window should read low and release a node", f.modes())
+	}
+}

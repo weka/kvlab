@@ -185,7 +185,9 @@ type Options struct {
 	// PDTTFTWindow, PDTTFTHigh and PDTTFTLow are --pd-ttft-window,
 	// --pd-ttft-high and --pd-ttft-low; PDUnknownCostPer1K is
 	// --pd-prefill-unknown-cost-per-1k. --prefill-split-mode=pd only.
-	PDTTFTWindow          int
+	PDTTFTWindow int
+	// PDTTFTWindowTime is --pd-ttft-window-time; 0 uses the count window.
+	PDTTFTWindowTime      time.Duration
 	PDTTFTHigh, PDTTFTLow time.Duration
 	PDUnknownCostPer1K    time.Duration
 	PrefillReleaseIdle    time.Duration
@@ -356,6 +358,7 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	if c.TTFTWindow <= 0 {
 		c.TTFTWindow = DefaultPDTTFTWindow
 	}
+	c.TTFTWindowTime = o.PDTTFTWindowTime
 	c.TTFTHigh = or(o.PDTTFTHigh, DefaultPDTTFTHigh)
 	c.TTFTLow = or(o.PDTTFTLow, DefaultPDTTFTLow)
 	c.UnknownCostPer1K = or(o.PDUnknownCostPer1K, DefaultPDUnknownCostPer1K)

@@ -100,6 +100,9 @@ type Config struct {
 	// (see pdttft.go).
 	TTFTWindow        int
 	TTFTHigh, TTFTLow time.Duration
+	// TTFTWindowTime, when set, makes the window the samples of the last
+	// TTFTWindowTime instead of the last TTFTWindow (see pdttft.go).
+	TTFTWindowTime time.Duration
 	// UnknownCostPer1K (PD only) is what a P leg's routing cost adds per 1,000
 	// prompt tokens the candidate node is not known to hold; tokens it holds
 	// are free.

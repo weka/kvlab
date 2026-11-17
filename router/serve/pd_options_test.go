@@ -172,8 +172,9 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 		t.Errorf("TTFT settings %d %v %v %v, want the defaults", c.TTFTWindow, c.TTFTHigh, c.TTFTLow, c.UnknownCostPer1K)
 	}
 	o.PDTTFTWindow, o.PDTTFTHigh, o.PDTTFTLow, o.PDUnknownCostPer1K = 16, 4*time.Second, time.Second, 20*time.Millisecond
+	o.PDTTFTWindowTime = 30 * time.Second
 	if c := o.pdDynamicConfig(false); c.TTFTWindow != 16 || c.TTFTHigh != 4*time.Second || c.TTFTLow != time.Second ||
-		c.UnknownCostPer1K != 20*time.Millisecond {
+		c.UnknownCostPer1K != 20*time.Millisecond || c.TTFTWindowTime != 30*time.Second {
 		t.Errorf("TTFT settings not taken from the options: %+v", c)
 	}
 	if !strings.HasPrefix(o.signalsLog(), "prefill=[") {

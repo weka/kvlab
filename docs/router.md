@@ -388,10 +388,11 @@ leaves it.
   never wait for a budget: `--prefill-node-budget-tokens` and
   `--prefill-convert-after` belong to the reject mode only.
 - **Provisioning follows the time to the prefill's finish:** the part of TTFT
-  the prefill set controls. The signal is the mean, over the last
-  `--pd-ttft-window` (default 32) requests whose KV came from their prefill leg,
-  of the time from router arrival to that leg's `kv_transfer_params`: router
-  wait plus prefill service. Requests a decode node recomputed do not count.
+  the prefill set controls. The signal is the mean, over the requests of the
+  last `--pd-ttft-window-time` (default 30 s) whose KV came from their prefill
+  leg, of the time from router arrival to that leg's `kv_transfer_params`:
+  router wait plus prefill service. With `--pd-ttft-window-time 0` it is the
+  last `--pd-ttft-window` (32) requests instead. Requests a decode node recomputed do not count.
   What decode adds after the hand-off is not in the signal: on a fleet whose
   decode side is saturated, end-to-end TTFT would keep calling for more prefill
   nodes, taking them from decode. A window with no request in the last 10 s
@@ -407,9 +408,16 @@ leaves it.
     (least affinity lost), then the fewest legs in flight, then the newest. It
     takes no new leg, finishes the legs it has, and then becomes a decode node.
   - In between: nothing.
-  - After any action the next waits for `--prefill-drain-min-interval` (5 s
-    recommended) and for `--pd-ttft-window` fresh requests, so one window
-    drives one action.
+  - Pacing:
+    - Time window: the window restarts at every action, and the next action
+      waits for a full window of samples taken after it, and for
+      `--prefill-drain-min-interval`. A drain changes prefill times only once
+      it has become a prefill node (10-35 s), so judging it sooner, or on
+      samples from before it, would act again on the backlog it was answering.
+    - A window with fewer than 16 requests holds; one with none reads as low,
+      so an idle fleet shrinks.
+    - Count window: the next action waits for `--prefill-drain-min-interval`
+      and `--pd-ttft-window` fresh requests.
   - `--prefill-min-nodes` (default 1) is the fewest prefill nodes; decode nodes
     are drained to reach it, at start when none is named.
     `--prefill-max-fleet-fraction` is the most, and one node always stays in
