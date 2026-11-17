@@ -498,6 +498,11 @@ var (
 		Help: "Decode nodes taken out of decode routing to become prefill nodes.",
 	}, []string{"pool"})
 
+	PrefillDrainsDeferred = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "router_prefill_drains_deferred_total",
+		Help: "Prefill jobs that found a decode node due to be drained but held back by --prefill-drain-min-interval; they queued on a prefill node instead.",
+	}, []string{"pool"})
+
 	PrefillReleases = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_releases_total",
 		Help: "Prefill nodes returned to decode when their last prefill job finished.",
@@ -629,7 +634,7 @@ func All() []prometheus.Collector {
 		CacheShallowAnchors, CacheShallowAnchorBlocks, CacheGuardRejects, SignalFired, SplitTriggers,
 		CachePoolSize, CacheTreeRuns, CacheTailSet, CacheBlocksExpired, VLLMMetricsEndpoints,
 		RequestsShed, SaturationRejects, BackendCapExceeded, observedShadow,
-		PrefillRejections, PrefillJobs, PrefillConversions, PrefillReleases,
+		PrefillRejections, PrefillJobs, PrefillConversions, PrefillDrainsDeferred, PrefillReleases,
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds,
 	}
@@ -870,6 +875,7 @@ type PrefillMetrics struct {
 	// PrefillJobFailureReasons and PrefillJobCancelReasons.
 	jobsFailed, jobsCancelled *prometheus.CounterVec
 	Conversions               prometheus.Counter
+	DrainsDeferred            prometheus.Counter
 	Releases                  prometheus.Counter
 	JobRetries                prometheus.Counter
 	JobMoves                  prometheus.Counter
@@ -901,6 +907,7 @@ func ForPrefill(pool string) *PrefillMetrics {
 		jobsFailed:      PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "failed"}),
 		jobsCancelled:   PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "cancelled"}),
 		Conversions:     PrefillConversions.WithLabelValues(pool),
+		DrainsDeferred:  PrefillDrainsDeferred.WithLabelValues(pool),
 		Releases:        PrefillReleases.WithLabelValues(pool),
 		JobRetries:      PrefillJobRetries.WithLabelValues(pool),
 		JobMoves:        PrefillJobMoves.WithLabelValues(pool),

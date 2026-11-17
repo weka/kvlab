@@ -249,7 +249,12 @@ to `floor(nodes * --prefill-max-fleet-fraction)` and always leaving one decode
 node. With `--prefill-convert-after` set, that drain waits until the
 least-loaded prefill node has been over budget for that long, jobs queueing on it
 meanwhile: draining costs decode capacity before it adds any prefill, so a
-brief overflow is cheaper to queue through. Past the cap, or while the overflow
+brief overflow is cheaper to queue through. Successive drains are also at least
+`--prefill-drain-min-interval` apart (default 5 s, both split modes; 0 = no
+limit). An overflow from an over-estimated charge, or from a burst that finishes
+quickly, gets that long to clear before another decode node is given up. Jobs
+queue on the prefill nodes meanwhile, and `router_prefill_drains_deferred_total`
+counts the jobs held back. The pool's first prefill node is never delayed. Past the cap, or while the overflow
 is younger than that, jobs queue on the least-loaded prefill node, and with no
 prefill node at all the request is resent to the backend that refused it, with
 the bypass. The budget also bounds what a node is *sent*: a node runs jobs only

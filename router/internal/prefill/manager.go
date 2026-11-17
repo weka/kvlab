@@ -86,6 +86,13 @@ type Config struct {
 	// for this long, so a burst that arrives just after its last job finds it
 	// ready instead of draining a node afresh. 0 releases at once.
 	ReleaseIdle time.Duration
+	// DrainMinInterval is the least time between two drain decisions. An
+	// overflow from a charge that over-estimates the work, or from a burst
+	// that finishes quickly, gets that long to clear before another decode
+	// node is given up for it; meanwhile jobs queue on the prefill nodes. It
+	// never holds back the drain that gives the pool its first prefill node.
+	// 0 is no limit.
+	DrainMinInterval time.Duration
 
 	// StoreUnitTokens is the granularity the shared KV tier stores a prompt at:
 	// a finished job leaves floor(prompt / unit) * unit tokens loadable by any
@@ -163,12 +170,14 @@ type Manager struct {
 
 	mu    sync.Mutex
 	nodes map[string]*node
+	// lastDrain is when a decode node was last drained (DrainMinInterval).
+	lastDrain time.Time
 	// floor is Config.Floor, normalised.
 	floor map[string]bool
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
-	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves, jobsCancelled, fallbackSkipped atomic.Uint64
+	rejections, jobRetries, jobsOK, jobsFailed, conversions, releases, fallbackNoNode, fallbackJobFailed, jobMoves, jobsCancelled, fallbackSkipped, drainsDeferred atomic.Uint64
 }
 
 // New builds a manager for one pool.
@@ -320,10 +329,12 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	switch {
 	case len(eligible) > 0:
 		chosen = m.pickLocked(eligible, pick)
-	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode):
+	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode) &&
+		m.drainAllowedLocked(len(nonDecode)):
 		chosen = leastLoaded(decode)
 		n := m.nodes[chosen.URL]
 		m.setModeLocked(n, Draining)
+		m.lastDrain = m.cfg.Clock.Now()
 		m.conversions.Add(1)
 		m.m.Conversions.Inc()
 		m.logLocked("decode node draining for prefill", n, "no_prefill_room", tokens)
@@ -380,6 +391,19 @@ func (m *Manager) pendingLocked(b *registry.Backend) int64 {
 		return n.pending
 	}
 	return 0
+}
+
+// drainAllowedLocked applies DrainMinInterval to a drain that is otherwise due,
+// counting the one it defers. With no prefill node at all the drain goes
+// ahead: there is nowhere for the job to queue.
+func (m *Manager) drainAllowedLocked(nonDecode int) bool {
+	if m.cfg.DrainMinInterval <= 0 || nonDecode == 0 || m.lastDrain.IsZero() ||
+		m.cfg.Clock.Now().Sub(m.lastDrain) >= m.cfg.DrainMinInterval {
+		return true
+	}
+	m.drainsDeferred.Add(1)
+	m.m.DrainsDeferred.Inc()
+	return false
 }
 
 func (m *Manager) leastPendingLocked(bs []*registry.Backend) *registry.Backend {
@@ -810,8 +834,11 @@ type State struct {
 	JobRetries       uint64 `json:"job_retries"`
 	JobMoves         uint64 `json:"job_moves"`
 	Conversions      uint64 `json:"conversions"`
-	Releases         uint64 `json:"releases"`
-	BypassFallbacks  uint64 `json:"bypass_fallbacks"`
+	// DrainsDeferred is jobs that found a drain due but held back by
+	// DrainMinInterval.
+	DrainsDeferred  uint64 `json:"drains_deferred"`
+	Releases        uint64 `json:"releases"`
+	BypassFallbacks uint64 `json:"bypass_fallbacks"`
 }
 
 // State snapshots the modes, queues and counters, nodes sorted by URL.
@@ -831,6 +858,7 @@ func (m *Manager) State() State {
 	st.JobRetries = m.jobRetries.Load()
 	st.JobMoves = m.jobMoves.Load()
 	st.Conversions = m.conversions.Load()
+	st.DrainsDeferred = m.drainsDeferred.Load()
 	st.Releases = m.releases.Load()
 	st.BypassFallbacks = m.fallbackNoNode.Load() + m.fallbackJobFailed.Load()
 	return st
