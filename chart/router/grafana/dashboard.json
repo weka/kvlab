@@ -1972,7 +1972,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "router_cache_tokens",
-          "legendFormat": "{{backend}}",
+          "legendFormat": "{{pool}} {{backend}}",
           "refId": "A"
         }
       ]

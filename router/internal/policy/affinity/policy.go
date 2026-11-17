@@ -929,7 +929,7 @@ func (p *Policy) PublishGauges() {
 	p.m.TailSet.Set(float64(st.Tails))
 	p.m.AvgCopies.Set(st.AvgCopies)
 	for url, bs := range p.tree.perBackend() {
-		metrics.CacheEntries.WithLabelValues(url).Set(float64(bs.Blocks))
-		metrics.CacheTokens.WithLabelValues(url).Set(float64(bs.Tokens))
+		metrics.CacheEntries.WithLabelValues(p.cfg.PoolName, url).Set(float64(bs.Blocks))
+		metrics.CacheTokens.WithLabelValues(p.cfg.PoolName, url).Set(float64(bs.Tokens))
 	}
 }

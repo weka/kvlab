@@ -249,13 +249,13 @@ var (
 
 	CacheEntries = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_cache_entries",
-		Help: "Nodes held in a backend's prefix model.",
-	}, []string{"backend"})
+		Help: "Nodes held in a backend's prefix model, per flow: under P/D the decode flow is pool=<pool> and the prefill flow pool=<pool>:prefill, each with its own tree.",
+	}, []string{"pool", "backend"})
 
 	CacheTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_cache_tokens",
-		Help: "Estimated tokens held in a backend's prefix model.",
-	}, []string{"backend"})
+		Help: "Estimated tokens held in a backend's prefix model, per flow (see router_cache_entries).",
+	}, []string{"pool", "backend"})
 
 	// --- prefix-cache-split only, from here to CacheBlocksExpired ---
 
