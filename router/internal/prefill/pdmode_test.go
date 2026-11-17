@@ -185,9 +185,10 @@ func TestPDModeLowTTFTReleasesTheNodeHoldingLeastAfterItsLegs(t *testing.T) {
 	}
 }
 
-// No recent request reads as low: an idle fleet shrinks to the minimum, one
-// node per interval, and stops there.
-func TestPDModeNoDataIsLowAndShrinksToTheMinimum(t *testing.T) {
+// No recent request takes no action: a router up before its clients keeps
+// its prefill nodes. Fast prefills shrink the set to the minimum, one node per
+// action, and no further.
+func TestPDModeIdleHoldsAndFastPrefillsShrinkToTheMinimum(t *testing.T) {
 	f := pdModeFleet(t, 5, Config{MaxFleetFraction: 0.8, MinPrefill: 2})
 	for i, b := range f.bs[1:4] {
 		f.setMode(b, Prefill, f.clk.Now().Add(time.Duration(i+1)*time.Second))
@@ -196,8 +197,16 @@ func TestPDModeNoDataIsLowAndShrinksToTheMinimum(t *testing.T) {
 		f.m.Tick(f.bs)
 		f.clk.Advance(5 * time.Second)
 	}
+	if n := count(f.modes(), Prefill); n != 4 {
+		t.Fatalf("%d prefill nodes after an idle half-minute, want all 4 kept (modes %v)", n, f.modes())
+	}
+	for range 6 {
+		f.ttft(4, 100*time.Millisecond)
+		f.m.Tick(f.bs)
+		f.clk.Advance(5 * time.Second)
+	}
 	if n := count(f.modes(), Prefill); n != 2 {
-		t.Errorf("%d prefill nodes after an idle minute, want the minimum 2 (modes %v)", n, f.modes())
+		t.Errorf("%d prefill nodes after fast prefills, want the minimum 2 (modes %v)", n, f.modes())
 	}
 }
 
@@ -372,8 +381,8 @@ func TestPDModeTimeWindowNeedsAFullFreshWindowAfterAnAction(t *testing.T) {
 	}
 }
 
-// A window with a few requests holds; an empty one reads as low.
-func TestPDModeTimeWindowThinHoldsEmptyIsLow(t *testing.T) {
+// A window with a few requests holds, and so does an empty one.
+func TestPDModeTimeWindowThinOrEmptyHolds(t *testing.T) {
 	f := timeFleet(t, 4, Config{MaxFleetFraction: 0.75})
 	f.setMode(f.bs[1], Prefill, f.clk.Now().Add(time.Second))
 	f.spread(10, 3*time.Second, 30*time.Second) // 10 < 16
@@ -383,7 +392,7 @@ func TestPDModeTimeWindowThinHoldsEmptyIsLow(t *testing.T) {
 	}
 	f.clk.Advance(31 * time.Second) // nothing in the window now
 	f.m.Tick(f.bs)
-	if f.m.ModeOf(f.bs[1]) != Decode {
-		t.Errorf("modes %v: an empty window should read low and release a node", f.modes())
+	if c, r := f.m.State().Conversions, f.m.State().Releases; c != 0 || r != 0 || f.m.ModeOf(f.bs[1]) != Prefill {
+		t.Errorf("acted on an empty window (conversions %d releases %d, modes %v), want hold", c, r, f.modes())
 	}
 }

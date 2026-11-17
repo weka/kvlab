@@ -401,12 +401,12 @@ func pdHistogram(t *testing.T, o prometheus.Observer) *dto.Histogram {
 	return m.GetHistogram()
 }
 
-// The ramp from one prefill node, TTFT-driven, on the real gateway: a surge of
-// long prompts on the single prefill node pushes the mean TTFT over the high
+// The ramp from one prefill node on the real gateway: a surge of long prompts
+// on the single prefill node pushes the mean prefill-finish time over the high
 // threshold and drains decode nodes into prefill, up to the cap; legs never
-// wait in the router. Once quiet (no recent request reads as low) the prefill
-// set shrinks back to the minimum of one.
-func TestPDDynamicTTFTRampFromOneExpandsUnderLoadAndShrinksWhenQuiet(t *testing.T) {
+// wait in the router. Light traffic afterwards (fast legs) shrinks the prefill
+// set back to the minimum of one; silence alone would not.
+func TestPDDynamicTTFTRampFromOneExpandsUnderLoadAndShrinksUnderLightTraffic(t *testing.T) {
 	const nodes = 6
 	f := newDynFleet(t, nodes, prefill.Config{
 		MaxFleetFraction: 0.5, // at most 3 prefill nodes
@@ -449,12 +449,16 @@ func TestPDDynamicTTFTRampFromOneExpandsUnderLoadAndShrinksWhenQuiet(t *testing.
 	if conv < 1 || peak.Load() < 2 || peak.Load() > nodes/2 {
 		t.Fatalf("surge drained %v nodes (peak P set %d), want a ramp from 1 within the cap %d", conv, peak.Load(), nodes/2)
 	}
+	time.Sleep(500 * time.Millisecond)
+	if n := f.inP(); n < 2 {
+		t.Fatalf("P set = %d after half a second of silence, want the expansion kept (no data, no action)", n)
+	}
 	deadline := time.Now().Add(15 * time.Second)
-	for f.inP() > 1 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
+	for i := 0; f.inP() > 1 && time.Now().Before(deadline); i++ {
+		f.post(t, fmt.Sprintf("light %d", i)) // short prompts: fast prefill legs
 	}
 	if n := f.inP(); n != 1 {
-		t.Fatalf("P set = %d after going quiet, want the minimum of one", n)
+		t.Fatalf("P set = %d after light traffic, want the minimum of one", n)
 	}
 	f.check(t, true)
 	if got := pdCounter(t, f.pool, "drain"); got < 1 {

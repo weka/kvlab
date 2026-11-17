@@ -24,7 +24,9 @@ import (
 //     prefill; below TTFTLow the newest drain is abandoned, or else one
 //     prefill node is selected to return to decode: it takes no new leg,
 //     finishes its in-flight ones, then becomes a decode node. A window with
-//     no recent request reads as low. After an action the next waits for
+//     no recent request takes no action: no traffic says nothing about the
+//     prefill set, and a router up before its clients must not release the
+//     initial nodes. After an action the next waits for
 //     DrainMinInterval and for TTFTWindow fresh requests, so one window does
 //     not drive several actions. MinPrefill and MaxFleetFraction bound it.
 
@@ -42,9 +44,8 @@ const (
 	// fleet's newest service sample.
 	svcAlpha, fleetAlpha = 0.2, 0.05
 	// minWindowSamples is the fewest samples a time window needs before its
-	// mean is acted on. An empty window still reads as low (an idle fleet
-	// shrinks); a window with a few requests in it is too thin to drain or
-	// release on, and holds.
+	// mean is acted on: a window with a few requests in it is too thin to
+	// drain or release on, and holds, as an empty one does.
 	minWindowSamples = 16
 )
 
@@ -306,6 +307,9 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 // provisionLocked takes at most one provisioning action.
 func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backend, nonDecode int) {
 	mean, k := m.windowMeanLocked(now)
+	if k == 0 {
+		return // no recent request: nothing to act on, either way
+	}
 	if span := m.cfg.TTFTWindowTime; span > 0 {
 		// Time mode: the window restarted at the last action, so the next
 		// one waits for a full window of samples taken after it, and for
@@ -315,14 +319,14 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 		if !m.lastAction.IsZero() && now.Sub(m.lastAction) < max(span, m.cfg.DrainMinInterval) {
 			return
 		}
-		if k > 0 && k < minWindowSamples {
+		if k < minWindowSamples {
 			return // too few requests to act on either way
 		}
 	} else {
 		if !m.lastAction.IsZero() && now.Sub(m.lastAction) < m.cfg.DrainMinInterval {
 			return
 		}
-		if k > 0 && m.ttft.since < m.cfg.TTFTWindow {
+		if m.ttft.since < m.cfg.TTFTWindow {
 			return // the window has not refreshed since the last action
 		}
 	}

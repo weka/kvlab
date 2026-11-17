@@ -395,8 +395,7 @@ leaves it.
   last `--pd-ttft-window` (32) requests instead. Requests a decode node recomputed do not count.
   What decode adds after the hand-off is not in the signal: on a fleet whose
   decode side is saturated, end-to-end TTFT would keep calling for more prefill
-  nodes, taking them from decode. A window with no request in the last 10 s
-  reads as low. A static 9-of-48 prefill set on Kimi-Linear-48B runs its legs in
+  nodes, taking them from decode. A static 9-of-48 prefill set on Kimi-Linear-48B runs its legs in
   ~0.3 s; an overloaded one in ~3 s.
   - Above `--pd-ttft-high` (default 1.5 s): one decode node is drained into
     prefill. It is the one whose decodes should end soonest: nothing in flight
@@ -414,8 +413,10 @@ leaves it.
       `--prefill-drain-min-interval`. A drain changes prefill times only once
       it has become a prefill node (10-35 s), so judging it sooner, or on
       samples from before it, would act again on the backlog it was answering.
-    - A window with fewer than 16 requests holds; one with none reads as low,
-      so an idle fleet shrinks.
+    - A window with fewer than 16 requests, or none, holds: no action either
+      way. A router started before its clients keeps its initial prefill
+      nodes, and an idle fleet keeps the prefill nodes it had. They are
+      released only once requests show low prefill times.
     - Count window: the next action waits for `--prefill-drain-min-interval`
       and `--pd-ttft-window` fresh requests.
   - `--prefill-min-nodes` (default 1) is the fewest prefill nodes; decode nodes
