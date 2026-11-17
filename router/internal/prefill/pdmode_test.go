@@ -363,3 +363,26 @@ func TestPDModeMinimumIsReachedByDrainingAndKept(t *testing.T) {
 		t.Errorf("modes %v: a drain toward the minimum was abandoned", f.modes())
 	}
 }
+
+// Under PD the drained node is the one whose decodes end soonest: nothing in
+// flight first, then the youngest oldest request.
+func TestPDModeDrainsTheNodeWhoseOldestRequestIsYoungest(t *testing.T) {
+	f := pdModeFleet(t, 4, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.8})
+	old := lease.Acquire(f.bs[1]) // node 1: one old request
+	defer old.Release()
+	time.Sleep(5 * time.Millisecond)
+	for range 3 { // node 2: three young requests
+		defer lease.Acquire(f.bs[2]).Release()
+	}
+	time.Sleep(5 * time.Millisecond)
+	defer lease.Acquire(f.bs[3]).Release() // node 3: one youngest request
+	defer lease.Acquire(f.bs[3]).Release()
+
+	full, _ := f.m.Reserve(f.bs, 100, nil) // fills node 0
+	defer full.Done()
+	j, _ := f.m.Reserve(f.bs, 10, nil) // drains one
+	defer j.Done()
+	if f.m.ModeOf(f.bs[3]) != Draining {
+		t.Errorf("modes %v, want node 3 (youngest oldest request) draining, not node 1 (fewest but oldest)", f.modes())
+	}
+}

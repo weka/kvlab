@@ -376,7 +376,13 @@ prefill split above as NIXL prefill/decode disaggregation. The default,
     plus legs still waiting counted at their age so far.
   - Drain: legs are waiting now and the signal has stayed above the delay for
     `--prefill-convert-after`. One decode node is drained, within the cap and
-    `--prefill-drain-min-interval`, and the clock restarts.
+    `--prefill-drain-min-interval`, and the clock restarts. The decision reads
+    only the load on the current prefill nodes; drains already under way are
+    not counted as capacity on its way.
+  - The node drained is the decode node whose decodes should end soonest: one
+    with nothing in flight first, then the one whose oldest in-flight request
+    started last, then fewer requests in flight. A drain takes no prefill leg
+    until its decodes finish.
   - Release: nothing waiting, or the signal at or below a quarter of the delay,
     for `--prefill-release-idle`. The newest converted prefill node with nothing
     queued goes back to decode, and that clock restarts too. Never below

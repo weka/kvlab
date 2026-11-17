@@ -405,7 +405,11 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 // drainLocked starts draining the least-loaded of decode, for reason, and
 // logs it with attrs.
 func (m *Manager) drainLocked(decode []*registry.Backend, reason string, attrs ...any) *node {
-	n := m.nodes[leastLoaded(decode).URL]
+	target := leastLoaded(decode)
+	if m.cfg.PD {
+		target = soonestDrained(decode)
+	}
+	n := m.nodes[target.URL]
 	m.setModeLocked(n, Draining)
 	now := m.cfg.Clock.Now()
 	n.convertedAt, m.lastDrain = now, now
@@ -496,6 +500,23 @@ func leastLoaded(bs []*registry.Backend) *registry.Backend {
 			if rand.IntN(ties) == 0 {
 				best = b
 			}
+		}
+	}
+	return best
+}
+
+// soonestDrained is the decode node to drain under PD: the one whose oldest
+// in-flight request started last (a node with nothing in flight first), so
+// the wait for its decodes is shortest; fewest in-flight requests breaks a tie.
+func soonestDrained(bs []*registry.Backend) *registry.Backend {
+	best := bs[0]
+	bestOld, bestN := best.OldestStream(), best.Inflight()
+	for _, b := range bs[1:] {
+		old, n := b.OldestStream(), b.Inflight()
+		switch {
+		case bestN == 0 && n != 0:
+		case n == 0 && bestN != 0, old.After(bestOld), old.Equal(bestOld) && n < bestN:
+			best, bestOld, bestN = b, old, n
 		}
 	}
 	return best

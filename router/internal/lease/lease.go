@@ -44,8 +44,9 @@ func ResetAccountingErrors() { accountingErrors.Store(0) }
 // Leases are never transferred or reused. A retry to a different backend
 // releases the first lease and acquires a new one (LB-3).
 type Lease struct {
-	b    *registry.Backend
-	once sync.Once
+	b      *registry.Backend
+	once   sync.Once
+	stream uint64
 
 	// mu guards decode and released so a first-byte add racing a release can
 	// neither leak (add after the release already subtracted) nor double-count.
@@ -128,7 +129,7 @@ func Acquire(b *registry.Backend) *Lease {
 	b.AddInflight(+1)
 	b.CountRequest()
 	b.NoteAdmit()
-	return &Lease{b: b}
+	return &Lease{b: b, stream: b.StreamStart()}
 }
 
 // Release returns the lease. It is idempotent and safe from any number of
@@ -154,6 +155,7 @@ func (l *Lease) Release() {
 		return
 	}
 	l.once.Do(func() {
+		l.b.StreamEnd(l.stream)
 		l.mu.Lock()
 		l.released = true
 		if l.decode != 0 {

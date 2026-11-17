@@ -135,6 +135,12 @@ type Backend struct {
 	// only by internal/lease, like inflight.
 	requests atomic.Uint64
 
+	// streams is when each in-flight lease started, by lease id: what a drain
+	// of this node waits on. Written only by internal/lease.
+	streamsMu  sync.Mutex
+	streams    map[uint64]time.Time
+	nextStream atomic.Uint64
+
 	Served, Failed atomic.Uint64
 
 	// ttftNanos is an EWMA of time-to-first-body-byte for accepted responses,
@@ -479,4 +485,41 @@ func JoinBasePath(base, path string) string {
 		return base + "/" + rest
 	}
 	return base + path
+}
+
+// StreamStart records an in-flight request starting now and returns its id
+// for StreamEnd. Called only by internal/lease.
+func (b *Backend) StreamStart() uint64 {
+	id := b.nextStream.Add(1)
+	//clockexempt: in-flight request age, for choosing a node to drain
+	now := time.Now()
+	b.streamsMu.Lock()
+	if b.streams == nil {
+		b.streams = map[uint64]time.Time{}
+	}
+	b.streams[id] = now
+	b.streamsMu.Unlock()
+	return id
+}
+
+// StreamEnd forgets an in-flight request. Called only by internal/lease.
+func (b *Backend) StreamEnd(id uint64) {
+	b.streamsMu.Lock()
+	delete(b.streams, id)
+	b.streamsMu.Unlock()
+}
+
+// OldestStream is when the oldest request in flight on b started; zero with
+// none. A drain of b lasts at least until that request ends, so the node
+// whose oldest request is youngest tends to drain soonest.
+func (b *Backend) OldestStream() time.Time {
+	b.streamsMu.Lock()
+	defer b.streamsMu.Unlock()
+	var oldest time.Time
+	for _, t := range b.streams {
+		if oldest.IsZero() || t.Before(oldest) {
+			oldest = t
+		}
+	}
+	return oldest
 }
