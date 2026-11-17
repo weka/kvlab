@@ -882,6 +882,30 @@ func (p *Policy) HeldDepth(rr *policy.RoutingRequest) int64 {
 	return p.tree.deepestHeld(path{units: rr.Units, modelKey: modelKey(rr.Model)})
 }
 
+// HeldDepths is, for each of bs, how many leading tokens of rr's prompt that
+// backend is recorded holding.
+func (p *Policy) HeldDepths(rr *policy.RoutingRequest, bs []*registry.Backend) []int64 {
+	if len(rr.Units) == 0 || len(bs) == 0 {
+		return make([]int64, len(bs))
+	}
+	slots := make([]int, len(bs))
+	for i, b := range bs {
+		slots[i] = p.tree.slotOrCreate(b.URL)
+	}
+	return p.tree.heldTokens(path{units: rr.Units, modelKey: modelKey(rr.Model)}, slots)
+}
+
+// BackendTokens is the estimated tokens each backend is recorded holding, by
+// URL: how much prefix a backend would take with it if it left this flow. A
+// whole-tree walk; for occasional decisions, not the request path.
+func (p *Policy) BackendTokens() map[string]int64 {
+	out := map[string]int64{}
+	for url, bs := range p.tree.perBackend() {
+		out[url] = bs.Tokens
+	}
+	return out
+}
+
 // AddBackend allocates a backend's slot. Wired to the registry's add hook.
 func (p *Policy) AddBackend(b *registry.Backend) {
 	p.tree.slotFor(b.URL)

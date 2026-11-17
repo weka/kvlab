@@ -39,3 +39,27 @@ func TestPerBackendCacheGaugesAreLabelledByFlow(t *testing.T) {
 		t.Errorf("decode flow entries = %v, want 0", got)
 	}
 }
+
+func TestHeldDepthsAndBackendTokensArePerBackend(t *testing.T) {
+	p, err := New(Config{PoolName: t.Name()}, policy.LeastOutstanding{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New(registry.Options{})
+	a, _ := reg.Add(registry.Spec{URL: "http://depth-a", Prov: registry.ProvStatic, Capacity: 1})
+	b, _ := reg.Add(registry.Spec{URL: "http://depth-b", Prov: registry.ProvStatic, Capacity: 1})
+	c, _ := reg.Add(registry.Spec{URL: "http://depth-c", Prov: registry.ProvStatic, Capacity: 1})
+	for _, x := range []*registry.Backend{a, b, c} {
+		p.AddBackend(x)
+	}
+	p.Commit(a, req(units(1, 2, 3)))
+	p.Commit(b, req(units(1)))
+	got := p.HeldDepths(req(units(1, 2, 3, 4)), []*registry.Backend{a, b, c})
+	if got[0] != 768 || got[1] != 256 || got[2] != 0 {
+		t.Errorf("depths = %v, want [768 256 0]", got)
+	}
+	toks := p.BackendTokens()
+	if toks[a.URL] != 768 || toks[b.URL] != 256 || toks[c.URL] != 0 {
+		t.Errorf("backend tokens = %v", toks)
+	}
+}
