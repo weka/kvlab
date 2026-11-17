@@ -498,6 +498,18 @@ var (
 		Help: "Decode nodes taken out of decode routing to become prefill nodes.",
 	}, []string{"pool"})
 
+	PrefillJobTokens = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "router_prefill_job_tokens",
+		Help:    "Tokens each prefill job is charged against a node's --prefill-node-budget-tokens: the router's estimate of what the prefill node must compute.",
+		Buckets: prometheus.ExponentialBuckets(64, 4, 10),
+	}, []string{"pool"})
+
+	PrefillJobWait = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "router_prefill_job_wait_seconds",
+		Help:    "Router wait of each prefill job: from placement to the slot that lets it be sent (budget room, node concurrency, a drain). The signal --prefill-drain-delay acts on.",
+		Buckets: durationBuckets,
+	}, []string{"pool"})
+
 	PrefillDrainsDeferred = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_prefill_drains_deferred_total",
 		Help: "Prefill jobs that found a decode node due to be drained but held back by --prefill-drain-min-interval; they queued on a prefill node instead.",
@@ -585,6 +597,11 @@ var (
 		Name: "router_pd_prefill_retries_total",
 		Help: "Prefill legs retried after every P node was saturated or the chosen one answered 429.",
 	}, []string{"pool"})
+	PDPrefillServiceSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "router_pd_prefill_service_seconds",
+		Help:    "Service time of each successful prefill leg: from sending it to a P node to its kv_transfer_params, retries on that node included. Router wait before it is router_prefill_job_wait_seconds under --prefill-split-mode=pd.",
+		Buckets: prometheus.ExponentialBuckets(0.01, 2, 14),
+	}, []string{"pool"})
 	PDLegSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "router_pd_leg_duration_seconds",
 		Help:    "Wall time of each prefill/decode leg, including retries; the decode leg runs to the end of its response.",
@@ -598,6 +615,7 @@ type PDMetrics struct {
 	FallbackNoNode, FallbackFailed, FallbackNoParams prometheus.Counter
 	Retries                                          prometheus.Counter
 	PrefillSeconds, DecodeSeconds                    prometheus.Observer
+	ServiceSeconds                                   prometheus.Observer
 }
 
 // ForPD resolves a pool's disaggregation collectors, every series at 0.
@@ -612,6 +630,7 @@ func ForPD(pool string) *PDMetrics {
 		Retries:          PDPrefillRetries.WithLabelValues(pool),
 		PrefillSeconds:   PDLegSeconds.WithLabelValues(pool, "prefill"),
 		DecodeSeconds:    PDLegSeconds.WithLabelValues(pool, "decode"),
+		ServiceSeconds:   PDPrefillServiceSeconds.WithLabelValues(pool),
 	}
 }
 
@@ -634,9 +653,9 @@ func All() []prometheus.Collector {
 		CacheShallowAnchors, CacheShallowAnchorBlocks, CacheGuardRejects, SignalFired, SplitTriggers,
 		CachePoolSize, CacheTreeRuns, CacheTailSet, CacheBlocksExpired, VLLMMetricsEndpoints,
 		RequestsShed, SaturationRejects, BackendCapExceeded, observedShadow,
-		PrefillRejections, PrefillJobs, PrefillConversions, PrefillDrainsDeferred, PrefillReleases,
+		PrefillRejections, PrefillJobs, PrefillConversions, PrefillDrainsDeferred, PrefillReleases, PrefillJobTokens, PrefillJobWait,
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
-		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds,
+		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds, PDPrefillServiceSeconds,
 	}
 }
 
@@ -876,6 +895,7 @@ type PrefillMetrics struct {
 	jobsFailed, jobsCancelled *prometheus.CounterVec
 	Conversions               prometheus.Counter
 	DrainsDeferred            prometheus.Counter
+	JobTokens, JobWait        prometheus.Observer
 	Releases                  prometheus.Counter
 	JobRetries                prometheus.Counter
 	JobMoves                  prometheus.Counter
@@ -908,6 +928,8 @@ func ForPrefill(pool string) *PrefillMetrics {
 		jobsCancelled:   PrefillJobs.MustCurryWith(prometheus.Labels{"pool": pool, "outcome": "cancelled"}),
 		Conversions:     PrefillConversions.WithLabelValues(pool),
 		DrainsDeferred:  PrefillDrainsDeferred.WithLabelValues(pool),
+		JobTokens:       PrefillJobTokens.WithLabelValues(pool),
+		JobWait:         PrefillJobWait.WithLabelValues(pool),
 		Releases:        PrefillReleases.WithLabelValues(pool),
 		JobRetries:      PrefillJobRetries.WithLabelValues(pool),
 		JobMoves:        PrefillJobMoves.WithLabelValues(pool),

@@ -117,6 +117,7 @@ func (s *Server) runPDPrefill(
 		}
 	}
 
+	dispatched := s.cfg.Clock.Now()
 	for attempt := 0; ; attempt++ {
 		cands := cands()
 		if len(cands) == 0 {
@@ -157,6 +158,7 @@ func (s *Server) runPDPrefill(
 			return nil, false
 		}
 		m.LegOK.Inc()
+		m.ServiceSeconds.Observe(s.cfg.Clock.Now().Sub(dispatched).Seconds())
 		if mgr != nil {
 			mgr.CountJob(true)
 		}

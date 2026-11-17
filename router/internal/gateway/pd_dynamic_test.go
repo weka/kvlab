@@ -388,3 +388,66 @@ func TestPDLegChargeIsThePromptLessWhatIsHeldOrStored(t *testing.T) {
 		}
 	}
 }
+
+// The delay rule on the real gateway: P legs bounded to 2 per node, a surge
+// keeps them waiting in the router past --prefill-drain-delay and drains
+// decode nodes into prefill; once quiet, the newest converted nodes go back
+// to decode under the low watermark, down to the floor.
+func TestPDDynamicDelayRuleDrainsOnWaitAndReleasesWhenQuiet(t *testing.T) {
+	const nodes = 6
+	f := newDynFleet(t, nodes, prefill.Config{
+		NodeBudgetTokens: 1 << 30, // the budget does not bind: only time does
+		NodeConcurrency:  2,
+		MaxFleetFraction: 0.5,
+		DrainDelay:       100 * time.Millisecond,
+		ConvertAfter:     150 * time.Millisecond,
+		ReleaseIdle:      300 * time.Millisecond,
+	}, mockvllm.Config{DefaultMaxTokens: 2, ColdInputTPS: 400_000, OutputTPS: 2_000})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go f.mgr.Run(ctx, func() []*registry.Backend { return f.backend })
+	prompt := func(i int) string { return fmt.Sprintf("session %d %s", i, strings.Repeat("lorem ipsum ", 7_000)) }
+
+	var wg sync.WaitGroup
+	var peak atomic.Int64
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+				if n := int64(f.inP()); n > peak.Load() {
+					peak.Store(n)
+				}
+			}
+		}
+	}()
+	for i := range 80 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f.post(t, prompt(i))
+		}()
+		time.Sleep(5 * time.Millisecond)
+	}
+	wg.Wait()
+	close(stop)
+	conv := testutil.ToFloat64(metrics.PrefillConversions.WithLabelValues(f.pool))
+	if conv < 1 || peak.Load() < 2 {
+		t.Fatalf("surge drained %v nodes (peak P set %d), want drains on the wait", conv, peak.Load())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for f.inP() > 1 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := f.inP(); n != 1 {
+		t.Fatalf("P set = %d after going quiet, want the floor alone", n)
+	}
+	f.check(t, true)
+	svc := testutil.CollectAndCount(metrics.PDPrefillServiceSeconds)
+	if svc == 0 {
+		t.Error("no prefill service time observed")
+	}
+	t.Logf("conversions %v, peak P set %d", conv, peak.Load())
+}

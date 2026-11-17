@@ -180,7 +180,9 @@ type Options struct {
 	PrefillConvertAfter time.Duration
 	// PrefillDrainMinInterval is --prefill-drain-min-interval, both modes.
 	PrefillDrainMinInterval time.Duration
-	PrefillReleaseIdle      time.Duration
+	// PrefillDrainDelay is --prefill-drain-delay, --prefill-split-mode=pd only.
+	PrefillDrainDelay  time.Duration
+	PrefillReleaseIdle time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
 	// PrefillSplitMode is --prefill-split-mode: PrefillSplitReject (the
@@ -368,6 +370,7 @@ func (o Options) splitConfig() prefill.Config {
 		ReleaseIdle:      o.PrefillReleaseIdle,
 		StoreUnitTokens:  o.PrefillStoreUnitTokens,
 		DrainMinInterval: o.PrefillDrainMinInterval,
+		DrainDelay:       o.PrefillDrainDelay,
 	}
 }
 

@@ -8,18 +8,29 @@ import (
 
 // Dynamic vanilla P/D (Config.PD).
 //
-// The modes, budget, conversion, drain and release are the prefill split's,
-// unchanged; what differs is which requests become jobs and what a node out of
-// decode mode may serve. Every chat/completions request's prefill leg is a
-// job, so the prefill load the budget measures is the whole fleet's, and a
-// decode node is drained into prefill when the prefill nodes stay over budget
-// for ConvertAfter. A draining node finishes its decodes before it takes a
+// The modes, drain and release are the prefill split's; what differs is which
+// requests become jobs, what drives a drain, and what a node out of decode
+// mode may serve. Every chat/completions request's prefill leg is a job. With
+// DrainDelay set a decode node is drained when the legs' router wait stays
+// high (see control.go): a P node's work is mostly loading KV from the shared
+// tier, which a compute-token budget does not see, while the time a leg waits
+// for a P node does. A draining node finishes its decodes before it takes a
 // leg, so no node runs prefill legs alongside decodes it was given as a
 // decode node. Floor nodes (--pd-prefill-backends) are prefill from the start
 // and never released. A node that is draining or prefill never takes a decode
 // leg, even when no decode node is left.
 
 func normalize(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/") }
+
+func available(bs []*registry.Backend) []*registry.Backend {
+	out := make([]*registry.Backend, 0, len(bs))
+	for _, b := range bs {
+		if b.Available() {
+			out = append(out, b)
+		}
+	}
+	return out
+}
 
 // inPrefillLocked reports whether b is out of decode routing: a node in any
 // mode but Decode, or a floor node the manager has not met yet.
@@ -53,7 +64,7 @@ func (m *Manager) PrefillNodes(cands []*registry.Backend) []*registry.Backend {
 
 // logLocked writes a conversion or release line, with the node's load and the
 // prefill nodes' totals, when Config.Log is set.
-func (m *Manager) logLocked(msg string, n *node, reason string, jobTokens int64) {
+func (m *Manager) logLocked(msg string, n *node, reason string, extra ...any) {
 	if m.cfg.Log == nil {
 		return
 	}
@@ -73,8 +84,5 @@ func (m *Manager) logLocked(msg string, n *node, reason string, jobTokens int64)
 		"prefill_pending_tokens", pending, "prefill_running_tokens", running,
 		"prefill_queued_tokens", pending - running, "prefill_queued_jobs", queuedJobs,
 		"node_budget_tokens", m.cfg.NodeBudgetTokens}
-	if jobTokens > 0 {
-		attrs = append(attrs, "job_tokens", jobTokens)
-	}
-	m.cfg.Log.Info(msg, attrs...)
+	m.cfg.Log.Info(msg, append(attrs, extra...)...)
 }

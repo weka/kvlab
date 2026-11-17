@@ -8,7 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
 	"github.com/weka/kvlab/router/internal/lease"
+	"github.com/weka/kvlab/router/internal/metrics"
 	"github.com/weka/kvlab/router/internal/registry"
 )
 
@@ -74,54 +78,211 @@ func TestPDModeNeverReturnsAPrefillOrDrainingNodeForDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j2.Done()
-	if j2.Backend != f.bs[1] || f.m.ModeOf(f.bs[1]) != Draining {
-		t.Fatalf("leg on %s in mode %v, want node 1 draining", j2.Backend.URL, f.m.ModeOf(f.bs[1]))
+	if f.m.ModeOf(f.bs[1]) != Draining {
+		t.Fatalf("modes %v, want node 1 draining", f.modes())
 	}
 	if got := f.m.DecodeNodes(f.bs); len(got) != 1 || got[0] != f.bs[2] {
 		t.Errorf("decode candidates = %v, want node 2 only", names(got))
 	}
 }
 
-// The drain is the reject mode's: a node drained into prefill runs no leg
-// until the decodes it had have finished.
-func TestPDModeDrainedNodeTakesLegsOnlyAfterItsDecodesFinish(t *testing.T) {
+// A job never waits on a draining node while a prefill node exists: it
+// queues on the prefill node, and moves to the drained node only once that
+// node's decodes have finished and it is a prefill node.
+func TestDrainedNodeTakesNoJobUntilItIsAPrefillNode(t *testing.T) {
+	for _, pd := range []bool{false, true} {
+		f := newFleet(t, 3, Config{MaxFleetFraction: 0.7})
+		if pd {
+			f = pdModeFleet(t, 3, Config{MaxFleetFraction: 0.7})
+		} else {
+			// The reject mode: node 0 is already a prefill node.
+			f.m.mu.Lock()
+			f.m.nodeLocked(f.bs[0]).mode = Prefill
+			f.m.mu.Unlock()
+		}
+		decode := lease.Acquire(f.bs[1])
+		defer lease.Acquire(f.bs[2]).Release()
+		defer lease.Acquire(f.bs[2]).Release()
+		full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
+		_ = f.m.WaitReady(context.Background(), full)
+		j, err := f.m.Reserve(f.bs, 10, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.m.ModeOf(f.bs[1]) != Draining {
+			t.Fatalf("pd=%v: modes %v, want node 1 draining", pd, f.m.ModeOf(f.bs[1]))
+		}
+		if j.Backend != f.bs[0] {
+			t.Errorf("pd=%v: job placed on %s, want queued on the prefill node, not the draining one", pd, j.Backend.URL)
+		}
+		f.m.Tick(f.bs) // still over budget and still decoding: keeps draining
+		if f.m.ModeOf(f.bs[1]) != Draining {
+			t.Errorf("pd=%v: drain abandoned while the overflow lasts (mode %v)", pd, f.m.ModeOf(f.bs[1]))
+		}
+		decode.Release()
+		f.m.Tick(f.bs)
+		if f.m.ModeOf(f.bs[1]) != Prefill || j.Backend != f.bs[1] {
+			t.Errorf("pd=%v: after the drain node 1 is %v and the job on %s; want prefill and the job moved there",
+				pd, f.m.ModeOf(f.bs[1]), j.Backend.URL)
+		}
+		if err := f.m.WaitReady(context.Background(), j); err != nil {
+			t.Fatal(err)
+		}
+		j.Done()
+		full.Done()
+	}
+}
+
+// A drain whose overflow clears before the node's decodes finish is abandoned,
+// not completed.
+func TestDrainIsAbandonedOnlyWhenTheOverflowClears(t *testing.T) {
 	f := pdModeFleet(t, 3, Config{MaxFleetFraction: 0.7})
-	decode := lease.Acquire(f.bs[1])
+	defer lease.Acquire(f.bs[1]).Release() // node 1 keeps decoding
 	defer lease.Acquire(f.bs[2]).Release()
 	defer lease.Acquire(f.bs[2]).Release()
-	j1, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
-	defer j1.Done()
-	j, err := f.m.Reserve(f.bs, 10, nil)
-	if err != nil || j.Backend != f.bs[1] {
-		t.Fatalf("Reserve = %v, %v; want node 1", j, err)
+	full, _ := f.m.Reserve(f.bs, DefaultNodeBudgetTokens, nil)
+	_ = f.m.WaitReady(context.Background(), full)
+	q, _ := f.m.Reserve(f.bs, 10, nil) // drains node 1, queues on the floor
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Draining {
+		t.Fatalf("mode %v while the floor is over, want draining", f.m.ModeOf(f.bs[1]))
 	}
-	ready := make(chan error, 1)
-	go func() { ready <- f.m.WaitReady(context.Background(), j) }()
-	select {
-	case <-ready:
-		t.Fatal("leg started while the drained node still ran a decode")
-	case <-time.After(60 * time.Millisecond):
+	full.Done() // the overflow clears: q runs on the floor
+	if err := f.m.WaitReady(context.Background(), q); err != nil {
+		t.Fatal(err)
 	}
-	decode.Release()
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case err := <-ready:
-			if err != nil {
-				t.Fatal(err)
-			}
-			if f.m.ModeOf(f.bs[1]) != Prefill {
-				t.Errorf("mode = %v after the drain, want prefill", f.m.ModeOf(f.bs[1]))
-			}
-			j.Done()
-			return
-		case <-deadline:
-			t.Fatal("leg never started after the drain")
-		default:
-			f.clk.Advance(drainPoll)
-			time.Sleep(time.Millisecond)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Decode {
+		t.Errorf("mode %v after the overflow cleared, want the drain abandoned (decode)", f.m.ModeOf(f.bs[1]))
+	}
+	q.Done()
+}
+
+// delayFleet runs the delay rule: drain when the p90 wait stays over 1s for
+// 5s, release the newest converted node after 10s at or under 250ms.
+func delayFleet(t *testing.T, n int) *fleet {
+	return pdModeFleet(t, n, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.8, DrainDelay: time.Second,
+		ConvertAfter: 5 * time.Second, ReleaseIdle: 10 * time.Second, CostPick: true})
+}
+
+func TestDelayRuleDrainsOnlyWhenTheWaitStaysHigh(t *testing.T) {
+	f := delayFleet(t, 4)
+	running, _ := f.m.Reserve(f.bs, 100, nil) // the floor's whole budget
+	_ = f.m.WaitReady(context.Background(), running)
+	waiting, _ := f.m.Reserve(f.bs, 50, nil) // over budget: waits in the router
+	if f.m.State().Conversions != 0 {
+		t.Fatal("a job over budget drained a node at once; the delay rule drains from Tick")
+	}
+	f.clk.Advance(2 * time.Second) // the waiting job is 2s old: p90 over 1s
+	f.m.Tick(f.bs)
+	f.clk.Advance(4 * time.Second)
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 0 {
+		t.Fatalf("drained after %v over the delay, want none before ConvertAfter (5s)", 4*time.Second)
+	}
+	f.clk.Advance(time.Second)
+	f.m.Tick(f.bs)
+	if got := f.m.State().Conversions; got != 1 {
+		t.Fatalf("conversions = %d after 5s over the delay, want 1", got)
+	}
+	running.Done()
+	waiting.Done()
+
+	// A short wait that never crosses the delay drains nothing.
+	g := delayFleet(t, 4)
+	r, _ := g.m.Reserve(g.bs, 100, nil)
+	_ = g.m.WaitReady(context.Background(), r)
+	w, _ := g.m.Reserve(g.bs, 50, nil)
+	g.clk.Advance(500 * time.Millisecond)
+	g.m.Tick(g.bs)
+	r.Done()
+	_ = g.m.WaitReady(context.Background(), w)
+	w.Done()
+	g.clk.Advance(time.Minute)
+	g.m.Tick(g.bs)
+	if got := g.m.State().Conversions; got != 0 {
+		t.Errorf("conversions = %d for a 500ms wait, want 0", got)
+	}
+}
+
+// Low load: the newest converted node is left out of placement, and after
+// ReleaseIdle under the low watermark it goes back to decode; the floor stays.
+func TestLowDelaySparesAndReleasesTheNewestConvertedNode(t *testing.T) {
+	f := delayFleet(t, 5)
+	// Two converted nodes, node 1 before node 2.
+	f.m.mu.Lock()
+	for i, b := range f.bs[1:3] {
+		n := f.m.nodeLocked(b)
+		n.mode, n.convertedAt = Prefill, f.clk.Now().Add(time.Duration(i)*time.Second)
+	}
+	f.m.mu.Unlock()
+	// Node 1 has a leg running throughout, so it is never idle: only the
+	// low-delay rule can release a converted node here.
+	busy, _ := f.m.Reserve(f.bs, 10, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
+		return f.bs[1], nil
+	})
+	if err := f.m.WaitReady(context.Background(), busy); err != nil || busy.Backend != f.bs[1] {
+		t.Fatalf("setup: busy leg on %s (%v), want node 1", busy.Backend.URL, err)
+	}
+	f.m.Tick(f.bs) // no waits: the signal is at its low watermark from now
+	var offered []*registry.Backend
+	j, _ := f.m.Reserve(f.bs, 10, func(el []*registry.Backend, _ func(*registry.Backend) int64) (*registry.Backend, error) {
+		offered = el
+		return f.bs[0], nil // the floor: node 1 gets no job, so it is not idle-released
+	})
+	if err := f.m.WaitReady(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	j.Done()
+	for _, b := range offered {
+		if b == f.bs[2] {
+			t.Errorf("the newest converted node was offered while load was low: %v", names(offered))
 		}
 	}
+	f.clk.Advance(9 * time.Second)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[2]) != Prefill {
+		t.Fatal("released before ReleaseIdle under the low watermark")
+	}
+	f.clk.Advance(time.Second)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[2]) != Decode || f.m.ModeOf(f.bs[1]) != Prefill {
+		t.Fatalf("modes %v, want the newest (node 2) released and node 1 kept", f.modes())
+	}
+	// The low clock restarts: node 1 needs a window of its own, and goes
+	// even with a leg running; the floor is never released.
+	f.clk.Advance(10 * time.Second)
+	f.m.Tick(f.bs)
+	f.clk.Advance(time.Hour)
+	f.m.Tick(f.bs)
+	if f.m.ModeOf(f.bs[1]) != Decode || f.m.ModeOf(f.bs[0]) != Prefill {
+		t.Errorf("modes %v, want node 1 released and the floor kept", f.modes())
+	}
+}
+
+func TestJobChargeAndWaitAreObserved(t *testing.T) {
+	f := delayFleet(t, 3)
+	j, _ := f.m.Reserve(f.bs, 70, nil)
+	f.clk.Advance(300 * time.Millisecond)
+	_ = f.m.WaitReady(context.Background(), j)
+	j.Done()
+	tokens := histogram(t, metrics.PrefillJobTokens.WithLabelValues(t.Name()))
+	wait := histogram(t, metrics.PrefillJobWait.WithLabelValues(t.Name()))
+	if tokens.GetSampleCount() != 1 || tokens.GetSampleSum() != 70 {
+		t.Errorf("job tokens count %d sum %v, want 1 and 70", tokens.GetSampleCount(), tokens.GetSampleSum())
+	}
+	if wait.GetSampleCount() != 1 {
+		t.Errorf("job wait count %d, want 1", wait.GetSampleCount())
+	}
+}
+
+func histogram(t *testing.T, o prometheus.Observer) *dto.Histogram {
+	t.Helper()
+	var m dto.Metric
+	if err := o.(prometheus.Metric).Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetHistogram()
 }
 
 func TestPDModeConversionAndReleaseAreLogged(t *testing.T) {
@@ -129,7 +290,7 @@ func TestPDModeConversionAndReleaseAreLogged(t *testing.T) {
 	f := pdModeFleet(t, 3, Config{NodeBudgetTokens: 100, MaxFleetFraction: 0.7, Log: slog.New(slog.NewTextHandler(&buf, nil))})
 	j1, _ := f.m.Reserve(f.bs, 100, nil)
 	_ = f.m.WaitReady(context.Background(), j1)
-	j2, _ := f.m.Reserve(f.bs, 10, nil)
+	j2, _ := f.m.Reserve(f.bs, 10, nil) // drains an idle node and runs there
 	_ = f.m.WaitReady(context.Background(), j2)
 	j2.Done()
 	j1.Done()

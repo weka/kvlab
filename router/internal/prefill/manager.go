@@ -93,6 +93,14 @@ type Config struct {
 	// never holds back the drain that gives the pool its first prefill node.
 	// 0 is no limit.
 	DrainMinInterval time.Duration
+	// DrainDelay (PD only) drives drains by time instead of tokens: when the
+	// 90th percentile of prefill jobs' router wait (reserve to dispatch,
+	// counting jobs still waiting) has stayed above it for ConvertAfter, a
+	// decode node is drained. Below a quarter of it, the low watermark, for
+	// ReleaseIdle, the newest converted node goes back to decode. The budget
+	// then only bounds what is dispatched to a node. 0 leaves PD on the
+	// budget rule, as the reject mode.
+	DrainDelay time.Duration
 
 	// StoreUnitTokens is the granularity the shared KV tier stores a prompt at:
 	// a finished job leaves floor(prompt / unit) * unit tokens loadable by any
@@ -159,8 +167,9 @@ type node struct {
 	// within it); idleSince when a prefill node last ran out of jobs (zero
 	// while it has any).
 	overSince, idleSince time.Time
-	// floor is a Config.Floor node.
-	floor bool
+	// floor is a Config.Floor node; convertedAt when it last left decode.
+	floor       bool
+	convertedAt time.Time
 }
 
 // Manager owns the node modes for one pool.
@@ -174,6 +183,11 @@ type Manager struct {
 	lastDrain time.Time
 	// floor is Config.Floor, normalised.
 	floor map[string]bool
+	// waits is recent jobs' router waits, oldest first, for the delay signal;
+	// delayOver and delayLow are when the signal last went above DrainDelay
+	// and below its low watermark (zero while it is not).
+	waits               []waitSample
+	delayOver, delayLow time.Time
 
 	// Mirrors of the Prometheus counters, which cannot be read back, for the
 	// /router-viz state.
@@ -202,6 +216,8 @@ type Job struct {
 	granted chan struct{}
 	held    bool
 	queued  bool
+	// reservedAt is when Reserve placed it: its router wait runs from here.
+	reservedAt time.Time
 	// Backend is the node the job runs on.
 	Backend *registry.Backend
 }
@@ -296,50 +312,74 @@ func (m *Manager) StoreCut(tokens int64) int64 {
 
 // Reserve picks the node a prefill job of tokens runs on and charges it.
 //
-//  1. Among draining and prefill nodes with budget room, take the one with the
-//     most pending tokens; the routing policy only breaks ties. Packing jobs
-//     onto the fullest node leaves the others to run dry and return to decode,
-//     where spreading them would keep every prefill node busy with a little.
-//  2. Failing that, and while the prefill share is under the cap, take the
-//     least-loaded decode node and start draining it — with ConvertAfter set,
-//     only once the least-loaded prefill node has been over budget that long.
-//  3. Failing that, queue on the prefill node with the least pending tokens.
-//  4. With no prefill node at all, ErrNoPrefillNode.
+//  1. Among prefill nodes with budget room, take the one with the most pending
+//     tokens; the routing policy only breaks ties (with CostPick it chooses
+//     among them all). Draining nodes take no job while a prefill node exists:
+//     a job there would wait for the node's decodes to finish while a prefill
+//     node could run it. With no prefill node yet the draining nodes stand in.
+//     The newest converted node is left out while another has room and the
+//     load is low (see spareNewestLocked), so it can run dry and be released.
+//  2. Failing that, while the prefill share is under the cap, drain the
+//     least-loaded decode node: with ConvertAfter set only once the
+//     least-loaded prefill node has been over budget that long, and no sooner
+//     than DrainMinInterval after the last drain. Under PD with DrainDelay set
+//     only the first prefill node is drained here; Tick drains the rest by
+//     delay. The job goes to the drained node when it has nothing in flight
+//     (its WaitReady makes it a prefill node at once) or there is no prefill
+//     node; otherwise it queues on the least-pending prefill node.
+//  3. Failing that, queue on the prefill node (or, with none, the draining
+//     node) with the least pending tokens.
+//  4. With neither, ErrNoPrefillNode.
 //
 // cands is the pool's healthy backends: the fleet the cap is a share of.
 func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) (*Job, error) {
 	tokens = max(tokens, 1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.m.JobTokens.Observe(float64(tokens))
 
-	var decode, nonDecode, eligible []*registry.Backend
+	var decode, prefillNodes, draining []*registry.Backend
 	for _, b := range cands {
-		n := m.nodeLocked(b)
-		if n.mode == Decode {
+		switch m.nodeLocked(b).mode {
+		case Decode:
 			decode = append(decode, b)
-			continue
+		case Draining:
+			draining = append(draining, b)
+		default:
+			prefillNodes = append(prefillNodes, b)
 		}
-		nonDecode = append(nonDecode, b)
-		if n.pending == 0 || n.pending+tokens <= m.cfg.NodeBudgetTokens {
+	}
+	// The nodes that take jobs: prefill nodes, or the draining ones while
+	// there is no prefill node yet.
+	takers := prefillNodes
+	if len(takers) == 0 {
+		takers = draining
+	}
+	var eligible []*registry.Backend
+	for _, b := range takers {
+		if n := m.nodes[b.URL]; n.pending == 0 || n.pending+tokens <= m.cfg.NodeBudgetTokens {
 			eligible = append(eligible, b)
 		}
 	}
+	eligible = m.spareNewestLocked(eligible)
+	nonDecode := len(prefillNodes) + len(draining)
+	byDelay := m.cfg.PD && m.cfg.DrainDelay > 0
 
 	var chosen *registry.Backend
 	switch {
 	case len(eligible) > 0:
 		chosen = m.pickLocked(eligible, pick)
-	case m.canConvertLocked(len(cands), len(nonDecode), len(decode)) && m.overflowedLongEnoughLocked(nonDecode) &&
-		m.drainAllowedLocked(len(nonDecode)):
-		chosen = leastLoaded(decode)
-		n := m.nodes[chosen.URL]
-		m.setModeLocked(n, Draining)
-		m.lastDrain = m.cfg.Clock.Now()
-		m.conversions.Add(1)
-		m.m.Conversions.Inc()
-		m.logLocked("decode node draining for prefill", n, "no_prefill_room", tokens)
-	case len(nonDecode) > 0:
-		chosen = m.leastPendingLocked(nonDecode)
+	case (!byDelay || nonDecode == 0) && m.canConvertLocked(len(cands), nonDecode, len(decode)) &&
+		m.overflowedLongEnoughLocked(takers) && m.drainAllowedLocked(nonDecode):
+		d := m.drainLocked(decode, "no_prefill_room", "job_tokens", tokens)
+		chosen = d.b
+		// A drained node still decoding would hold the job until it is done;
+		// one with nothing in flight runs it at once.
+		if d.b.Inflight() > 0 && len(prefillNodes) > 0 {
+			chosen = m.leastPendingLocked(prefillNodes)
+		}
+	case len(takers) > 0:
+		chosen = m.leastPendingLocked(takers)
 	default:
 		return nil, ErrNoPrefillNode
 	}
@@ -349,11 +389,26 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	n.idleSince = time.Time{}
 	m.trackBudgetLocked(n)
 	m.publishLocked(n)
-	j := &Job{mgr: m, n: n, tokens: tokens, Backend: chosen, granted: make(chan struct{}), queued: true}
+	j := &Job{mgr: m, n: n, tokens: tokens, Backend: chosen, granted: make(chan struct{}), queued: true,
+		reservedAt: m.cfg.Clock.Now()}
 	n.queue = append(n.queue, j)
 	m.publishQueuedLocked()
 	m.spreadLocked()
 	return j, nil
+}
+
+// drainLocked starts draining the least-loaded of decode, for reason, and
+// logs it with attrs.
+func (m *Manager) drainLocked(decode []*registry.Backend, reason string, attrs ...any) *node {
+	n := m.nodes[leastLoaded(decode).URL]
+	m.setModeLocked(n, Draining)
+	now := m.cfg.Clock.Now()
+	n.convertedAt, m.lastDrain = now, now
+	m.conversions.Add(1)
+	m.m.Conversions.Inc()
+	m.publishLocked(n)
+	m.logLocked("decode node draining for prefill", n, reason, attrs...)
+	return n
 }
 
 func (m *Manager) pickLocked(eligible []*registry.Backend, pick Picker) *registry.Backend {
@@ -529,6 +584,7 @@ func (m *Manager) grantLocked(n *node) {
 		j.queued, j.held = false, true
 		n.running++
 		n.runningTokens += j.tokens
+		m.noteWaitLocked(j)
 		close(j.granted)
 		m.publishQueuedLocked()
 	}
@@ -643,8 +699,9 @@ func (m *Manager) CountJobRetry() {
 
 // releaseIfIdleLocked returns a node to decode once it has no job in flight
 // and none queued: at once, or for a prefill node with ReleaseIdle set, after
-// that long idle (see releaseExpired). A draining node always goes at once:
-// it serves neither decode nor prefill while it waits. It runs under the same
+// that long idle (see releaseExpired). A draining node goes at once once the
+// prefill nodes are no longer over (overLocked): it serves neither decode nor
+// prefill while it waits. It runs under the same
 // lock as every queue change, so a job reserved concurrently either finds the
 // node still in prefill and keeps it, or finds it back in decode and converts
 // it afresh.
@@ -656,6 +713,12 @@ func (m *Manager) releaseIfIdleLocked(n *node) {
 		if n.idleSince.IsZero() {
 			n.idleSince = m.cfg.Clock.Now()
 		}
+		return
+	}
+	// A drain is abandoned only once the overflow that called for it has
+	// cleared; until then the node keeps draining with nothing on it, and
+	// becomes a prefill node when its decodes finish.
+	if n.mode == Draining && m.overLocked() {
 		return
 	}
 	m.releaseLocked(n)
@@ -675,18 +738,26 @@ func (m *Manager) releaseLocked(n *node) {
 	if n.mode == Draining {
 		reason = "drain_abandoned"
 	}
+	m.releaseForLocked(n, reason)
+}
+
+func (m *Manager) releaseForLocked(n *node, reason string) {
 	m.setModeLocked(n, Decode)
 	n.idleSince = time.Time{}
 	m.releases.Add(1)
 	m.m.Releases.Inc()
 	m.publishLocked(n)
-	m.logLocked("prefill node released to decode", n, reason, 0)
+	m.logLocked("prefill node released to decode", n, reason)
 }
 
 // releaseExpired returns to decode every prefill node idle for ReleaseIdle.
 func (m *Manager) releaseExpired() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.releaseExpiredLocked()
+}
+
+func (m *Manager) releaseExpiredLocked() {
 	now := m.cfg.Clock.Now()
 	for _, n := range m.nodes {
 		if n.mode == Prefill && !n.floor && !n.idleSince.IsZero() && now.Sub(n.idleSince) >= m.cfg.ReleaseIdle {
@@ -715,26 +786,21 @@ func (m *Manager) Prune(known []*registry.Backend) {
 // pruneEvery is how often Run forgets departed nodes.
 const pruneEvery = 30 * time.Second
 
-// Run prunes departed nodes and, with ReleaseIdle set, returns idle prefill
-// nodes to decode, until ctx is done. known supplies the pool's current
+// Run prunes departed nodes and runs Tick, until ctx is done. known supplies the pool's current
 // backends.
 func (m *Manager) Run(ctx context.Context, known func() []*registry.Backend) {
 	t := m.cfg.Clock.NewTicker(pruneEvery)
 	defer t.Stop()
-	var release <-chan time.Time
-	if m.cfg.ReleaseIdle > 0 {
-		r := m.cfg.Clock.NewTicker(min(max(m.cfg.ReleaseIdle/4, 100*time.Millisecond), time.Second))
-		defer r.Stop()
-		release = r.C()
-	}
+	tick := m.cfg.Clock.NewTicker(tickEvery)
+	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C():
 			m.Prune(known())
-		case <-release:
-			m.releaseExpired()
+		case <-tick.C():
+			m.Tick(available(known()))
 		}
 	}
 }
