@@ -115,6 +115,14 @@ type Config struct {
 	StarveKV, StarveWaiting             float64
 	StarveFraction                      float64
 	StarvedShrinkGuard, StarvedTTFTHigh time.Duration
+	// Underutilization (PD only, decodestarve.go): a decode node is idle at
+	// KV usage < IdleKV with nothing waiting; the decode side is
+	// underutilized while the mean idle share over UnderutilWindowTime is
+	// >= IdleFraction (> 1 disables it). Then UnderutilWindowTime is the
+	// window, no prefill node is given back, and one is added at
+	// UnderutilTTFTHigh or above.
+	IdleKV, IdleFraction                   float64
+	UnderutilTTFTHigh, UnderutilWindowTime time.Duration
 	// UnknownCostPer1K (PD only) is what a P leg's routing cost adds per 1,000
 	// prompt tokens the candidate node is not known to hold; tokens it holds
 	// are free.

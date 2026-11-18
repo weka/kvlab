@@ -430,6 +430,27 @@ leaves it.
     `decode_starved_hold`, `decode_starved_ttft_high`.
     `router_pd_decode_starved` (0/1) and `router_pd_decode_starved_fraction`
     show the signal.
+  - **Then, unless the decode side is underutilized**, the mirror of
+    starvation from the same samples. A node is idle at a sample with KV usage
+    below `--pd-decode-idle-kv` (0.6) and nothing waiting. The decode side is
+    underutilized while the share of idle decode nodes, averaged over the
+    samples of the last `--pd-underutil-window-time` (10 s) since the last
+    action, is at least `--pd-decode-idle-fraction` (0.5; above 1 turns it
+    off). No sample is not underutilized. Starvation takes precedence. While
+    underutilized:
+    - The window in force (prefill-finish mean, starvation mean, pacing) is
+      `--pd-underutil-window-time` instead of `--pd-ttft-window-time`; it
+      still restarts at every action.
+    - At or above `--pd-underutil-ttft-high` (2 s): one decode node is drained
+      into prefill (`underutil_ttft_high`).
+    - Below it: hold (`underutil_hold`). No prefill node returns to decode.
+    - An empty prefill-finish window still takes no action.
+
+    `router_pd_decode_underutilized` (0/1) and
+    `router_pd_decode_underutilized_fraction` show the signal. Every flag and
+    fraction is published together at each control tick from the one window
+    average the decision read: the flag is exactly its threshold applied to
+    the fraction beside it.
   - Pacing:
     - Time window: the window restarts at every action, and the next action
       waits for a full window of samples taken after it, and for
@@ -488,7 +509,9 @@ leaves it.
     despite the name) and `router_pd_ttft_window_samples`:
     the signal.
   - `router_pd_provision_actions_total{action=drain|abandon|release|hold,reason}`.
-  - `router_pd_decode_starved` and `router_pd_decode_starved_fraction`.
+  - `router_pd_decode_starved` and `router_pd_decode_starved_fraction`;
+    `router_pd_decode_underutilized` and
+    `router_pd_decode_underutilized_fraction`.
   - `router_pd_prefill_node_est_seconds{backend}`: the time part of each
     prefill node's cost.
   - `router_prefill_nodes{mode}`, conversions and releases.

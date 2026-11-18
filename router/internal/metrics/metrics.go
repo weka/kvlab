@@ -611,11 +611,19 @@ var (
 	}, []string{"pool", "action", "reason"})
 	PDDecodeStarved = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_pd_decode_starved",
-		Help: "Under --prefill-split-mode=pd: 1 while the decode side counts as starved (the provisioning window's mean starved fraction is at least --pd-decode-starve-fraction), else 0.",
+		Help: "Under --prefill-split-mode=pd: 1 while the decode side counts as starved, router_pd_decode_starved_fraction at or above --pd-decode-starve-fraction, else 0. Published with it, from the same window, at every control tick: the values the last provisioning decision read.",
+	}, []string{"pool"})
+	PDDecodeUnderutilized = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_decode_underutilized",
+		Help: "Under --prefill-split-mode=pd: 1 while the decode side counts as underutilized, router_pd_decode_underutilized_fraction at or above --pd-decode-idle-fraction, else 0. Published with it, from the same window, at every control tick.",
+	}, []string{"pool"})
+	PDDecodeUnderutilizedFraction = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_decode_underutilized_fraction",
+		Help: "Under --prefill-split-mode=pd: the mean share of decode nodes found idle (KV cache usage below --pd-decode-idle-kv and nothing waiting) over the samples of the last --pd-underutil-window-time since the last provisioning action.",
 	}, []string{"pool"})
 	PDDecodeStarvedFraction = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_pd_decode_starved_fraction",
-		Help: "Under --prefill-split-mode=pd: the provisioning window's mean share of decode nodes found starved (KV cache usage at or above --pd-decode-starve-kv and requests waiting at or above --pd-decode-starve-waiting) at each --pd-decode-sample-interval.",
+		Help: "Under --prefill-split-mode=pd: the mean share of decode nodes found starved (KV cache usage at or above --pd-decode-starve-kv and requests waiting at or above --pd-decode-starve-waiting) over the samples of the window in force since the last provisioning action (--pd-ttft-window-time, or --pd-underutil-window-time while underutilized).",
 	}, []string{"pool"})
 	PDPrefillNodeEst = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_pd_prefill_node_est_seconds",
@@ -648,6 +656,7 @@ type PDMetrics struct {
 	HeldPrefill, HeldDecode, HeldStored              prometheus.Observer
 	TTFTMean, TTFTSamples                            prometheus.Gauge
 	DecodeStarved, DecodeStarvedFraction             prometheus.Gauge
+	DecodeUnderutilized, DecodeUnderutilizedFraction prometheus.Gauge
 	actions                                          *prometheus.CounterVec
 	nodeEst                                          *prometheus.GaugeVec
 }
@@ -659,25 +668,27 @@ func ForPD(pool string) *PDMetrics {
 		actions.WithLabelValues(ar[0], ar[1])
 	}
 	return &PDMetrics{
-		LegOK:                 PDPrefillLegs.WithLabelValues(pool, "ok"),
-		LegFailed:             PDPrefillLegs.WithLabelValues(pool, "failed"),
-		LegNoParams:           PDPrefillLegs.WithLabelValues(pool, "no_params"),
-		FallbackNoNode:        PDFallbacks.WithLabelValues(pool, "no_prefill_node"),
-		FallbackFailed:        PDFallbacks.WithLabelValues(pool, "prefill_failed"),
-		FallbackNoParams:      PDFallbacks.WithLabelValues(pool, "no_params"),
-		Retries:               PDPrefillRetries.WithLabelValues(pool),
-		PrefillSeconds:        PDLegSeconds.WithLabelValues(pool, "prefill"),
-		DecodeSeconds:         PDLegSeconds.WithLabelValues(pool, "decode"),
-		ServiceSeconds:        PDPrefillServiceSeconds.WithLabelValues(pool),
-		HeldPrefill:           PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
-		HeldDecode:            PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
-		HeldStored:            PDPrefillHeldTokens.WithLabelValues(pool, "stored"),
-		DecodeStarved:         PDDecodeStarved.WithLabelValues(pool),
-		DecodeStarvedFraction: PDDecodeStarvedFraction.WithLabelValues(pool),
-		TTFTMean:              PDTTFTWindowMean.WithLabelValues(pool),
-		TTFTSamples:           PDTTFTWindowSamples.WithLabelValues(pool),
-		actions:               actions,
-		nodeEst:               PDPrefillNodeEst.MustCurryWith(prometheus.Labels{"pool": pool}),
+		LegOK:                       PDPrefillLegs.WithLabelValues(pool, "ok"),
+		LegFailed:                   PDPrefillLegs.WithLabelValues(pool, "failed"),
+		LegNoParams:                 PDPrefillLegs.WithLabelValues(pool, "no_params"),
+		FallbackNoNode:              PDFallbacks.WithLabelValues(pool, "no_prefill_node"),
+		FallbackFailed:              PDFallbacks.WithLabelValues(pool, "prefill_failed"),
+		FallbackNoParams:            PDFallbacks.WithLabelValues(pool, "no_params"),
+		Retries:                     PDPrefillRetries.WithLabelValues(pool),
+		PrefillSeconds:              PDLegSeconds.WithLabelValues(pool, "prefill"),
+		DecodeSeconds:               PDLegSeconds.WithLabelValues(pool, "decode"),
+		ServiceSeconds:              PDPrefillServiceSeconds.WithLabelValues(pool),
+		HeldPrefill:                 PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
+		HeldDecode:                  PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
+		HeldStored:                  PDPrefillHeldTokens.WithLabelValues(pool, "stored"),
+		DecodeUnderutilized:         PDDecodeUnderutilized.WithLabelValues(pool),
+		DecodeUnderutilizedFraction: PDDecodeUnderutilizedFraction.WithLabelValues(pool),
+		DecodeStarved:               PDDecodeStarved.WithLabelValues(pool),
+		DecodeStarvedFraction:       PDDecodeStarvedFraction.WithLabelValues(pool),
+		TTFTMean:                    PDTTFTWindowMean.WithLabelValues(pool),
+		TTFTSamples:                 PDTTFTWindowSamples.WithLabelValues(pool),
+		actions:                     actions,
+		nodeEst:                     PDPrefillNodeEst.MustCurryWith(prometheus.Labels{"pool": pool}),
 	}
 }
 
@@ -688,6 +699,7 @@ var PDProvisionActionReasons = [][2]string{
 	{"abandon", "ttft_low_abandon"}, {"abandon", "decode_starved_shrink"},
 	{"release", "ttft_low"}, {"release", "decode_starved_shrink"},
 	{"hold", "decode_starved_hold"},
+	{"drain", "underutil_ttft_high"}, {"hold", "underutil_hold"},
 }
 
 // Action counts a provisioning decision, one of PDProvisionActionReasons.
@@ -721,7 +733,7 @@ func All() []prometheus.Collector {
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds, PDPrefillServiceSeconds, PDPrefillHeldTokens,
 		PDTTFTWindowMean, PDTTFTWindowSamples, PDProvisionActions, PDPrefillNodeEst,
-		PDDecodeStarved, PDDecodeStarvedFraction,
+		PDDecodeStarved, PDDecodeStarvedFraction, PDDecodeUnderutilized, PDDecodeUnderutilizedFraction,
 	}
 }
 

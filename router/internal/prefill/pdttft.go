@@ -83,17 +83,21 @@ func (w *ttftWindow) pruneTimed(span time.Duration, now time.Time) {
 	}
 }
 
-// meanTimed is the mean and size of the samples in the last span.
+// meanTimed is the mean and size of the samples in the last span. It keeps
+// older samples: a shorter span is read while a longer one is stored.
 func (w *ttftWindow) meanTimed(span time.Duration, now time.Time) (time.Duration, int) {
-	w.pruneTimed(span, now)
-	if len(w.timed) == 0 {
+	var sum time.Duration
+	k := 0
+	for _, s := range w.timed {
+		if now.Sub(s.at) <= span {
+			sum += s.d
+			k++
+		}
+	}
+	if k == 0 {
 		return 0, 0
 	}
-	var sum time.Duration
-	for _, s := range w.timed {
-		sum += s.d
-	}
-	return sum / time.Duration(len(w.timed)), len(w.timed)
+	return sum / time.Duration(k), k
 }
 
 func (w *ttftWindow) add(d time.Duration, n int, now time.Time) {
@@ -129,18 +133,69 @@ func (m *Manager) ObserveTTFT(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cfg.TTFTWindowTime > 0 {
-		m.ttft.addTimed(d, m.cfg.TTFTWindowTime, m.cfg.Clock.Now())
+		m.ttft.addTimed(d, max(m.cfg.TTFTWindowTime, m.cfg.UnderutilWindowTime), m.cfg.Clock.Now())
 		return
 	}
 	m.ttft.add(d, m.cfg.TTFTWindow, m.cfg.Clock.Now())
 }
 
-// windowMeanLocked is the provisioning signal now and its sample count.
-func (m *Manager) windowMeanLocked(now time.Time) (time.Duration, int) {
-	if m.cfg.TTFTWindowTime > 0 {
-		return m.ttft.meanTimed(m.cfg.TTFTWindowTime, now)
+// windowMeanLocked is the prefill-finish signal over span (the count window
+// when span is 0) and its sample count.
+func (m *Manager) windowMeanLocked(now time.Time, span time.Duration) (time.Duration, int) {
+	if span > 0 {
+		return m.ttft.meanTimed(span, now)
 	}
 	return m.ttft.mean(now)
+}
+
+// snapshot is everything one provisioning decision reads, taken once per
+// tick: the decision and the published gauges see the same values.
+type snapshot struct {
+	// span is the window in force: --pd-underutil-window-time while the
+	// decode side is underutilized, else --pd-ttft-window-time; 0 is the
+	// count window.
+	span    time.Duration
+	mean    time.Duration
+	samples int
+	decode  decodeSignals
+	under   decodeSignals // over the underutilization window
+}
+
+// snapshotLocked takes the provisioning snapshot. Underutilization is judged
+// on the short window, and while it holds that window is the one in force.
+func (m *Manager) snapshotLocked(now time.Time) snapshot {
+	s := snapshot{span: m.cfg.TTFTWindowTime}
+	s.under = m.decodeSignalsLocked(now, m.underSpan())
+	if s.under.under && s.span > 0 && m.cfg.UnderutilWindowTime > 0 {
+		s.span = m.cfg.UnderutilWindowTime
+	}
+	ds := s.span
+	if ds == 0 {
+		ds = defaultStarveSpan
+	}
+	s.decode = m.decodeSignalsLocked(now, ds)
+	s.mean, s.samples = m.windowMeanLocked(now, s.span)
+	return s
+}
+
+func (m *Manager) publishSnapshotLocked(s snapshot) {
+	pm := m.cfg.PDMetrics
+	if pm == nil {
+		return
+	}
+	pm.TTFTMean.Set(s.mean.Seconds())
+	pm.TTFTSamples.Set(float64(s.samples))
+	pm.DecodeStarvedFraction.Set(s.decode.starvedFrac)
+	pm.DecodeStarved.Set(boolGauge(s.decode.starved))
+	pm.DecodeUnderutilizedFraction.Set(s.under.idleFrac)
+	pm.DecodeUnderutilized.Set(boolGauge(s.under.under))
+}
+
+func boolGauge(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // ObserveCharge records a leg's estimated compute tokens.
@@ -287,26 +342,16 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 			nonDecode++
 		}
 	}
+	snap := m.snapshotLocked(now)
 	if nonDecode < m.cfg.MinPrefill && len(decode) > 0 && m.canConvertLocked(len(cands), nonDecode, len(decode)) {
 		// Below the minimum (a prefill node gone unhealthy, or none named
 		// initially): drain toward it, one node per tick.
 		m.drainLocked(decode, "min_nodes")
 		m.actionLocked("drain", "min_nodes")
 	} else {
-		m.provisionLocked(now, cands, decode, nonDecode)
+		m.provisionLocked(now, cands, decode, nonDecode, snap)
 	}
-	mean, k := m.windowMeanLocked(now)
-	if m.cfg.PDMetrics != nil {
-		m.cfg.PDMetrics.TTFTMean.Set(mean.Seconds())
-		m.cfg.PDMetrics.TTFTSamples.Set(float64(k))
-		starved, frac, _ := m.decodeStarvedLocked(now)
-		m.cfg.PDMetrics.DecodeStarvedFraction.Set(frac)
-		if starved {
-			m.cfg.PDMetrics.DecodeStarved.Set(1)
-		} else {
-			m.cfg.PDMetrics.DecodeStarved.Set(0)
-		}
-	}
+	m.publishSnapshotLocked(snap)
 	for _, n := range m.nodes {
 		if n.mode == Prefill {
 			m.publishEstLocked(n)
@@ -316,12 +361,12 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 }
 
 // provisionLocked takes at most one provisioning action.
-func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backend, nonDecode int) {
-	mean, k := m.windowMeanLocked(now)
+func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backend, nonDecode int, snap snapshot) {
+	mean, k := snap.mean, snap.samples
 	if k == 0 {
 		return // no recent request: nothing to act on, either way
 	}
-	if span := m.cfg.TTFTWindowTime; span > 0 {
+	if span := snap.span; span > 0 {
 		// Time mode: the window restarted at the last action, so the next
 		// one waits for a full window of samples taken after it, and for
 		// DrainMinInterval. A drain changes the prefill-finish time only once
@@ -341,9 +386,11 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 			return // the window has not refreshed since the last action
 		}
 	}
-	starved, frac, sn := m.decodeStarvedLocked(now)
+	starved := snap.decode.starved
 	attrs := []any{"prefill_finish_mean", mean.Round(time.Millisecond), "prefill_finish_samples", k,
-		"decode_starved", starved, "decode_starved_fraction", frac, "decode_samples", sn}
+		"window", snap.span, "decode_starved", starved, "decode_starved_fraction", snap.decode.starvedFrac,
+		"decode_underutilized", snap.under.under, "decode_idle_fraction", snap.under.idleFrac,
+		"decode_samples", snap.decode.n}
 	grow := func(reason string) {
 		if len(decode) == 0 || !m.canConvertLocked(len(cands), nonDecode, len(decode)) {
 			return
@@ -367,6 +414,19 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 			}
 			m.actedLocked(now, "hold", "decode_starved_hold")
 		}
+		return
+	}
+	if snap.under.under {
+		// Decode has room to spare: never give it prefill nodes back, add
+		// one if prefill is slow, else hold.
+		if mean >= m.cfg.UnderutilTTFTHigh {
+			grow("underutil_ttft_high")
+			return
+		}
+		if m.cfg.Log != nil {
+			m.cfg.Log.Info("prefill set holds: decode underutilized", append([]any{"reason", "underutil_hold"}, attrs...)...)
+		}
+		m.actedLocked(now, "hold", "underutil_hold")
 		return
 	}
 	switch {

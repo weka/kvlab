@@ -25,14 +25,29 @@ import (
 // the decode side is starved while that mean is at least StarveFraction. No
 // sample is not starved. It changes the provisioning rules (pdttft.go): a
 // starved decode side gets prefill nodes back unless prefill is very slow.
+//
+// The same samples give its mirror, underutilization: a node is idle at a
+// sample with KV usage below IdleKV and nothing waiting, and the decode side
+// is underutilized while the mean idle share over UnderutilWindowTime is at
+// least IdleFraction (0, or above 1, turns it off). Then the window in force is
+// UnderutilWindowTime, prefill nodes are never given back, and one is added
+// only when prefill is slow (UnderutilTTFTHigh).
 
 // DecodeProbe reads a decode node's KV cache usage (0 to 1) and the requests
 // waiting on it.
 type DecodeProbe func(ctx context.Context, b *registry.Backend) (kvUsage, waiting float64, err error)
 
 type starveSample struct {
-	at   time.Time
-	frac float64
+	at         time.Time
+	frac, idle float64 // starved and idle shares of the decode nodes
+}
+
+// decodeSignals is the decode side over one window: the mean starved and idle
+// shares, each with its flag, the threshold applied to that same mean.
+type decodeSignals struct {
+	starved, under        bool
+	starvedFrac, idleFrac float64
+	n                     int
 }
 
 // defaultStarveSpan is the starvation window under a count TTFT window.
@@ -44,6 +59,17 @@ func (m *Manager) starveSpan() time.Duration {
 	}
 	return defaultStarveSpan
 }
+
+// underSpan is the window underutilization is judged on.
+func (m *Manager) underSpan() time.Duration {
+	if m.cfg.UnderutilWindowTime > 0 {
+		return m.cfg.UnderutilWindowTime
+	}
+	return m.starveSpan()
+}
+
+// storeSpan is how long samples are kept: the longest window read.
+func (m *Manager) storeSpan() time.Duration { return max(m.starveSpan(), m.underSpan()) }
 
 // SampleDecode probes every decode node of cands once, concurrently, and adds
 // the starved share to the window. A node that cannot be probed counts as not
@@ -64,15 +90,19 @@ func (m *Manager) SampleDecode(ctx context.Context, cands []*registry.Backend) {
 	if len(decode) == 0 {
 		return
 	}
-	var starved atomic.Int64
+	var starved, idle atomic.Int64
 	var wg sync.WaitGroup
 	for _, b := range decode {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			kv, waiting, err := probe(ctx, b)
-			if err == nil && kv >= m.cfg.StarveKV && waiting >= m.cfg.StarveWaiting {
+			switch {
+			case err != nil:
+			case kv >= m.cfg.StarveKV && waiting >= m.cfg.StarveWaiting:
 				starved.Add(1)
+			case kv < m.cfg.IdleKV && waiting == 0:
+				idle.Add(1)
 			}
 		}()
 	}
@@ -80,13 +110,15 @@ func (m *Manager) SampleDecode(ctx context.Context, cands []*registry.Backend) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.cfg.Clock.Now()
-	m.starve = append(m.starve, starveSample{at: now, frac: float64(starved.Load()) / float64(len(decode))})
+	n := float64(len(decode))
+	m.starve = append(m.starve, starveSample{at: now,
+		frac: float64(starved.Load()) / n, idle: float64(idle.Load()) / n})
 	m.pruneStarveLocked(now)
 }
 
 func (m *Manager) pruneStarveLocked(now time.Time) {
 	i := 0
-	for i < len(m.starve) && now.Sub(m.starve[i].at) > m.starveSpan() {
+	for i < len(m.starve) && now.Sub(m.starve[i].at) > m.storeSpan() {
 		i++
 	}
 	if i > 0 {
@@ -94,19 +126,33 @@ func (m *Manager) pruneStarveLocked(now time.Time) {
 	}
 }
 
-// decodeStarvedLocked is the starvation signal now: whether the decode side
-// counts as starved, the window's mean starved share, and its sample count.
-func (m *Manager) decodeStarvedLocked(now time.Time) (bool, float64, int) {
+// decodeSignalsLocked is the decode side over the samples of the last span
+// (all taken since the last action, which restarts the window). No sample is
+// neither starved nor underutilized.
+func (m *Manager) decodeSignalsLocked(now time.Time, span time.Duration) decodeSignals {
 	m.pruneStarveLocked(now)
-	if len(m.starve) == 0 {
-		return false, 0, 0
+	var s decodeSignals
+	for _, x := range m.starve {
+		if now.Sub(x.at) <= span {
+			s.starvedFrac += x.frac
+			s.idleFrac += x.idle
+			s.n++
+		}
 	}
-	var sum float64
-	for _, s := range m.starve {
-		sum += s.frac
+	if s.n == 0 {
+		return s
 	}
-	mean := sum / float64(len(m.starve))
-	return mean >= m.cfg.StarveFraction, mean, len(m.starve)
+	s.starvedFrac /= float64(s.n)
+	s.idleFrac /= float64(s.n)
+	s.starved = s.starvedFrac >= m.cfg.StarveFraction
+	s.under = m.cfg.IdleFraction > 0 && m.cfg.IdleFraction <= 1 && s.idleFrac >= m.cfg.IdleFraction
+	return s
+}
+
+// decodeStarvedLocked is the starvation signal over the normal window.
+func (m *Manager) decodeStarvedLocked(now time.Time) (bool, float64, int) {
+	s := m.decodeSignalsLocked(now, m.starveSpan())
+	return s.starved, s.starvedFrac, s.n
 }
 
 // runDecodeSampler samples every DecodeSampleInterval until ctx is done.

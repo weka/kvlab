@@ -171,6 +171,9 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 		c.StarvedShrinkGuard != 5*time.Second || c.StarvedTTFTHigh != 10*time.Second || c.TTFTHigh != 5*time.Second || c.TTFTLow != time.Second {
 		t.Errorf("starvation defaults %+v", c)
 	}
+	if c.IdleKV != 0.6 || c.IdleFraction != 0.5 || c.UnderutilTTFTHigh != 2*time.Second || c.UnderutilWindowTime != 10*time.Second {
+		t.Errorf("underutilization defaults %v %v %v %v", c.IdleKV, c.IdleFraction, c.UnderutilTTFTHigh, c.UnderutilWindowTime)
+	}
 	if c.TTFTWindow != DefaultPDTTFTWindow || c.TTFTHigh != DefaultPDTTFTHigh || c.TTFTLow != DefaultPDTTFTLow ||
 		c.UnknownCostPer1K != DefaultPDUnknownCostPer1K {
 		t.Errorf("TTFT settings %d %v %v %v, want the defaults", c.TTFTWindow, c.TTFTHigh, c.TTFTLow, c.UnknownCostPer1K)

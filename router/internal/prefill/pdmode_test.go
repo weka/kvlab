@@ -350,7 +350,7 @@ func TestPDModeTimeWindowAveragesTheLastSpanOnly(t *testing.T) {
 	f.spread(40, time.Second, 30*time.Second)   // the last 30s: 1s
 	f.clk.Advance(time.Millisecond)             // the last old sample is now just outside
 	f.m.mu.Lock()
-	mean, k := f.m.windowMeanLocked(f.clk.Now())
+	mean, k := f.m.windowMeanLocked(f.clk.Now(), 30*time.Second)
 	f.m.mu.Unlock()
 	if mean != time.Second || k != 40 {
 		t.Errorf("window mean %v over %d samples, want 1s over the last 30s' 40", mean, k)

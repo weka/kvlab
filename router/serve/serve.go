@@ -196,9 +196,13 @@ type Options struct {
 	PDDecodeStarveKV, PDDecodeStarveWaiting float64
 	PDDecodeStarveFraction                  float64
 	PDStarvedShrinkGuard, PDStarvedTTFTHigh time.Duration
-	PDTTFTHigh, PDTTFTLow                   time.Duration
-	PDUnknownCostPer1K                      time.Duration
-	PrefillReleaseIdle                      time.Duration
+	// Decode underutilization (--pd-decode-idle-kv, --pd-decode-idle-fraction,
+	// --pd-underutil-ttft-high, --pd-underutil-window-time).
+	PDDecodeIdleKV, PDDecodeIdleFraction       float64
+	PDUnderutilTTFTHigh, PDUnderutilWindowTime time.Duration
+	PDTTFTHigh, PDTTFTLow                      time.Duration
+	PDUnknownCostPer1K                         time.Duration
+	PrefillReleaseIdle                         time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
 	// PrefillSplitMode is --prefill-split-mode: PrefillSplitReject (the
@@ -345,6 +349,11 @@ const (
 	DefaultPDDecodeStarveFraction = 0.5
 	DefaultPDStarvedShrinkGuard   = 5 * time.Second
 	DefaultPDStarvedTTFTHigh      = 10 * time.Second
+
+	DefaultPDDecodeIdleKV        = 0.6
+	DefaultPDDecodeIdleFraction  = 0.5
+	DefaultPDUnderutilTTFTHigh   = 2 * time.Second
+	DefaultPDUnderutilWindowTime = 10 * time.Second
 )
 
 // dynamicPD reports whether the prefill split runs as dynamic vanilla P/D.
@@ -389,6 +398,10 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	c.StarveKV = orf(o.PDDecodeStarveKV, DefaultPDDecodeStarveKV)
 	c.StarveWaiting = orf(o.PDDecodeStarveWaiting, DefaultPDDecodeStarveWaiting)
 	c.StarveFraction = orf(o.PDDecodeStarveFraction, DefaultPDDecodeStarveFraction)
+	c.IdleKV = orf(o.PDDecodeIdleKV, DefaultPDDecodeIdleKV)
+	c.IdleFraction = orf(o.PDDecodeIdleFraction, DefaultPDDecodeIdleFraction)
+	c.UnderutilTTFTHigh = or(o.PDUnderutilTTFTHigh, DefaultPDUnderutilTTFTHigh)
+	c.UnderutilWindowTime = or(o.PDUnderutilWindowTime, DefaultPDUnderutilWindowTime)
 	return &c
 }
 
