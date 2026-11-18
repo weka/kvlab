@@ -243,14 +243,18 @@ func (m *Manager) LegDone(b *registry.Backend, svc time.Duration, ok bool) {
 }
 
 func (m *Manager) finishReleaseLocked(n *node) {
-	n.releasing = false
-	m.releaseForLocked(n, "ttft_low")
-	m.actionLocked("release")
+	reason := n.releaseReason
+	if reason == "" {
+		reason = "ttft_low"
+	}
+	n.releasing, n.releaseReason = false, ""
+	m.releaseForLocked(n, reason)
+	m.actionLocked("release", reason)
 }
 
-func (m *Manager) actionLocked(action string) {
+func (m *Manager) actionLocked(action, reason string) {
 	if m.cfg.PDMetrics != nil {
-		m.cfg.PDMetrics.Action(action)
+		m.cfg.PDMetrics.Action(action, reason)
 	}
 }
 
@@ -287,7 +291,7 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 		// Below the minimum (a prefill node gone unhealthy, or none named
 		// initially): drain toward it, one node per tick.
 		m.drainLocked(decode, "min_nodes")
-		m.actionLocked("drain")
+		m.actionLocked("drain", "min_nodes")
 	} else {
 		m.provisionLocked(now, cands, decode, nonDecode)
 	}
@@ -295,6 +299,13 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 	if m.cfg.PDMetrics != nil {
 		m.cfg.PDMetrics.TTFTMean.Set(mean.Seconds())
 		m.cfg.PDMetrics.TTFTSamples.Set(float64(k))
+		starved, frac, _ := m.decodeStarvedLocked(now)
+		m.cfg.PDMetrics.DecodeStarvedFraction.Set(frac)
+		if starved {
+			m.cfg.PDMetrics.DecodeStarved.Set(1)
+		} else {
+			m.cfg.PDMetrics.DecodeStarved.Set(0)
+		}
 	}
 	for _, n := range m.nodes {
 		if n.mode == Prefill {
@@ -330,45 +341,77 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 			return // the window has not refreshed since the last action
 		}
 	}
-	attrs := []any{"prefill_finish_mean", mean.Round(time.Millisecond), "prefill_finish_samples", k}
-	switch {
-	case mean > m.cfg.TTFTHigh:
+	starved, frac, sn := m.decodeStarvedLocked(now)
+	attrs := []any{"prefill_finish_mean", mean.Round(time.Millisecond), "prefill_finish_samples", k,
+		"decode_starved", starved, "decode_starved_fraction", frac, "decode_samples", sn}
+	grow := func(reason string) {
 		if len(decode) == 0 || !m.canConvertLocked(len(cands), nonDecode, len(decode)) {
 			return
 		}
-		m.drainLocked(decode, "ttft_high", attrs...)
-		m.actedLocked(now, "drain")
-	case mean < m.cfg.TTFTLow:
-		if d := m.newestDrainLocked(); d != nil {
-			m.releaseForLocked(d, "ttft_low_abandon")
-			m.actedLocked(now, "abandon")
-			return
+		m.drainLocked(decode, reason, attrs...)
+		m.actedLocked(now, "drain", reason)
+	}
+	if starved {
+		// The decode side is out of room: give it prefill nodes back unless
+		// prefill is very slow, and add one only then.
+		switch {
+		case mean >= m.cfg.StarvedTTFTHigh:
+			grow("decode_starved_ttft_high")
+		case mean < m.cfg.StarvedShrinkGuard:
+			m.shrinkLocked(now, "decode_starved_shrink", "decode_starved_shrink", attrs)
+		default:
+			// A decision too: it takes the window, so it is logged and
+			// counted once per window rather than at every tick.
+			if m.cfg.Log != nil {
+				m.cfg.Log.Info("prefill set holds: decode starved", append([]any{"reason", "decode_starved_hold"}, attrs...)...)
+			}
+			m.actedLocked(now, "hold", "decode_starved_hold")
 		}
-		if m.releasingLocked() || m.activeLocked() <= m.cfg.MinPrefill {
-			return
-		}
-		v := m.releaseCandidateLocked()
-		if v == nil {
-			return
-		}
-		v.releasing = true
-		m.logLocked("prefill node returning to decode", v, "ttft_low", append(attrs, "legs_in_flight", v.legs)...)
-		m.restartWindowLocked(now)
-		if v.legs == 0 {
-			m.finishReleaseLocked(v)
-		}
+		return
+	}
+	switch {
+	case mean >= m.cfg.TTFTHigh:
+		grow("ttft_high")
+	case mean <= m.cfg.TTFTLow:
+		m.shrinkLocked(now, "ttft_low", "ttft_low_abandon", attrs)
 	}
 }
 
-func (m *Manager) actedLocked(now time.Time, action string) {
+// shrinkLocked takes one prefill node away: the newest drain still in
+// progress, abandoned, or else the active prefill node holding the fewest
+// prefix tokens, which takes no new leg and becomes a decode node when its
+// legs end. Never below MinPrefill.
+func (m *Manager) shrinkLocked(now time.Time, reason, abandonReason string, attrs []any) {
+	if d := m.newestDrainLocked(); d != nil {
+		m.releaseForLocked(d, abandonReason)
+		m.actedLocked(now, "abandon", abandonReason)
+		return
+	}
+	if m.releasingLocked() || m.activeLocked() <= m.cfg.MinPrefill {
+		return
+	}
+	v := m.releaseCandidateLocked()
+	if v == nil {
+		return
+	}
+	v.releasing, v.releaseReason = true, reason
+	m.logLocked("prefill node returning to decode", v, reason, append(attrs, "legs_in_flight", v.legs)...)
 	m.restartWindowLocked(now)
-	m.actionLocked(action)
+	if v.legs == 0 {
+		m.finishReleaseLocked(v)
+	}
+}
+
+func (m *Manager) actedLocked(now time.Time, action, reason string) {
+	m.restartWindowLocked(now)
+	m.actionLocked(action, reason)
 }
 
 // restartWindowLocked marks an action: the window counts afresh from now.
 func (m *Manager) restartWindowLocked(now time.Time) {
 	m.lastAction, m.ttft.since = now, 0
 	m.ttft.timed = m.ttft.timed[:0]
+	m.starve = m.starve[:0]
 }
 
 func (m *Manager) newestDrainLocked() *node {

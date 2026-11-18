@@ -607,8 +607,16 @@ var (
 	}, []string{"pool"})
 	PDProvisionActions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "router_pd_provision_actions_total",
-		Help: "Provisioning actions under --prefill-split-mode=pd: drain (a decode node starts draining into prefill), abandon (a drain returns to decode), release (a prefill node returned to decode).",
-	}, []string{"pool", "action"})
+		Help: "Provisioning decisions under --prefill-split-mode=pd, by action: drain (a decode node starts draining into prefill), abandon (a drain returns to decode), release (a prefill node returned to decode), hold (a decode-starved window where neither is due); and by reason (ttft_high, ttft_low, ttft_low_abandon, min_nodes, decode_starved_ttft_high, decode_starved_shrink, decode_starved_hold).",
+	}, []string{"pool", "action", "reason"})
+	PDDecodeStarved = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_decode_starved",
+		Help: "Under --prefill-split-mode=pd: 1 while the decode side counts as starved (the provisioning window's mean starved fraction is at least --pd-decode-starve-fraction), else 0.",
+	}, []string{"pool"})
+	PDDecodeStarvedFraction = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "router_pd_decode_starved_fraction",
+		Help: "Under --prefill-split-mode=pd: the provisioning window's mean share of decode nodes found starved (KV cache usage at or above --pd-decode-starve-kv and requests waiting at or above --pd-decode-starve-waiting) at each --pd-decode-sample-interval.",
+	}, []string{"pool"})
 	PDPrefillNodeEst = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "router_pd_prefill_node_est_seconds",
 		Help: "Under --prefill-split-mode=pd: a prefill node's estimated time for one more P leg, its service EWMA (or the fleet's) times 1 + legs in flight / 4; the time part of the leg's routing cost.",
@@ -639,6 +647,7 @@ type PDMetrics struct {
 	ServiceSeconds                                   prometheus.Observer
 	HeldPrefill, HeldDecode, HeldStored              prometheus.Observer
 	TTFTMean, TTFTSamples                            prometheus.Gauge
+	DecodeStarved, DecodeStarvedFraction             prometheus.Gauge
 	actions                                          *prometheus.CounterVec
 	nodeEst                                          *prometheus.GaugeVec
 }
@@ -646,36 +655,43 @@ type PDMetrics struct {
 // ForPD resolves a pool's disaggregation collectors, every series at 0.
 func ForPD(pool string) *PDMetrics {
 	actions := PDProvisionActions.MustCurryWith(prometheus.Labels{"pool": pool})
-	for _, a := range PDProvisionActionNames {
-		actions.WithLabelValues(a)
+	for _, ar := range PDProvisionActionReasons {
+		actions.WithLabelValues(ar[0], ar[1])
 	}
 	return &PDMetrics{
-		LegOK:            PDPrefillLegs.WithLabelValues(pool, "ok"),
-		LegFailed:        PDPrefillLegs.WithLabelValues(pool, "failed"),
-		LegNoParams:      PDPrefillLegs.WithLabelValues(pool, "no_params"),
-		FallbackNoNode:   PDFallbacks.WithLabelValues(pool, "no_prefill_node"),
-		FallbackFailed:   PDFallbacks.WithLabelValues(pool, "prefill_failed"),
-		FallbackNoParams: PDFallbacks.WithLabelValues(pool, "no_params"),
-		Retries:          PDPrefillRetries.WithLabelValues(pool),
-		PrefillSeconds:   PDLegSeconds.WithLabelValues(pool, "prefill"),
-		DecodeSeconds:    PDLegSeconds.WithLabelValues(pool, "decode"),
-		ServiceSeconds:   PDPrefillServiceSeconds.WithLabelValues(pool),
-		HeldPrefill:      PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
-		HeldDecode:       PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
-		HeldStored:       PDPrefillHeldTokens.WithLabelValues(pool, "stored"),
-		TTFTMean:         PDTTFTWindowMean.WithLabelValues(pool),
-		TTFTSamples:      PDTTFTWindowSamples.WithLabelValues(pool),
-		actions:          actions,
-		nodeEst:          PDPrefillNodeEst.MustCurryWith(prometheus.Labels{"pool": pool}),
+		LegOK:                 PDPrefillLegs.WithLabelValues(pool, "ok"),
+		LegFailed:             PDPrefillLegs.WithLabelValues(pool, "failed"),
+		LegNoParams:           PDPrefillLegs.WithLabelValues(pool, "no_params"),
+		FallbackNoNode:        PDFallbacks.WithLabelValues(pool, "no_prefill_node"),
+		FallbackFailed:        PDFallbacks.WithLabelValues(pool, "prefill_failed"),
+		FallbackNoParams:      PDFallbacks.WithLabelValues(pool, "no_params"),
+		Retries:               PDPrefillRetries.WithLabelValues(pool),
+		PrefillSeconds:        PDLegSeconds.WithLabelValues(pool, "prefill"),
+		DecodeSeconds:         PDLegSeconds.WithLabelValues(pool, "decode"),
+		ServiceSeconds:        PDPrefillServiceSeconds.WithLabelValues(pool),
+		HeldPrefill:           PDPrefillHeldTokens.WithLabelValues(pool, "prefill"),
+		HeldDecode:            PDPrefillHeldTokens.WithLabelValues(pool, "decode"),
+		HeldStored:            PDPrefillHeldTokens.WithLabelValues(pool, "stored"),
+		DecodeStarved:         PDDecodeStarved.WithLabelValues(pool),
+		DecodeStarvedFraction: PDDecodeStarvedFraction.WithLabelValues(pool),
+		TTFTMean:              PDTTFTWindowMean.WithLabelValues(pool),
+		TTFTSamples:           PDTTFTWindowSamples.WithLabelValues(pool),
+		actions:               actions,
+		nodeEst:               PDPrefillNodeEst.MustCurryWith(prometheus.Labels{"pool": pool}),
 	}
 }
 
-// PDProvisionActionNames is the closed enum of router_pd_provision_actions_total's
-// action label.
-var PDProvisionActionNames = []string{"drain", "abandon", "release"}
+// PDProvisionActionReasons is the closed enum of router_pd_provision_actions_total's
+// (action, reason) pairs.
+var PDProvisionActionReasons = [][2]string{
+	{"drain", "ttft_high"}, {"drain", "min_nodes"}, {"drain", "decode_starved_ttft_high"},
+	{"abandon", "ttft_low_abandon"}, {"abandon", "decode_starved_shrink"},
+	{"release", "ttft_low"}, {"release", "decode_starved_shrink"},
+	{"hold", "decode_starved_hold"},
+}
 
-// Action counts a provisioning action, one of PDProvisionActionNames.
-func (m *PDMetrics) Action(action string) { m.actions.WithLabelValues(action).Inc() }
+// Action counts a provisioning decision, one of PDProvisionActionReasons.
+func (m *PDMetrics) Action(action, reason string) { m.actions.WithLabelValues(action, reason).Inc() }
 
 // SetNodeEst publishes a prefill node's estimated leg time.
 func (m *PDMetrics) SetNodeEst(backend string, seconds float64) {
@@ -705,6 +721,7 @@ func All() []prometheus.Collector {
 		PrefillBypassFallbacks, PrefillFallbacksSkipped, PrefillJobRetries, PrefillJobMoves, PrefillQueuedJobs, PrefillNodes, PrefillNodeMode, PrefillPendingTokens,
 		PDPrefillLegs, PDFallbacks, PDPrefillRetries, PDLegSeconds, PDPrefillServiceSeconds, PDPrefillHeldTokens,
 		PDTTFTWindowMean, PDTTFTWindowSamples, PDProvisionActions, PDPrefillNodeEst,
+		PDDecodeStarved, PDDecodeStarvedFraction,
 	}
 }
 

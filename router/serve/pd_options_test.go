@@ -167,6 +167,10 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 	if c.MaxFleetFraction != 0.4 || c.DrainMinInterval != 5*time.Second || c.MinPrefill != 2 {
 		t.Errorf("config = %+v, want the split flags", c)
 	}
+	if c.StarveKV != 0.95 || c.StarveWaiting != 1 || c.StarveFraction != 0.5 || c.DecodeSampleInterval != 5*time.Second ||
+		c.StarvedShrinkGuard != 5*time.Second || c.StarvedTTFTHigh != 10*time.Second || c.TTFTHigh != 5*time.Second || c.TTFTLow != time.Second {
+		t.Errorf("starvation defaults %+v", c)
+	}
 	if c.TTFTWindow != DefaultPDTTFTWindow || c.TTFTHigh != DefaultPDTTFTHigh || c.TTFTLow != DefaultPDTTFTLow ||
 		c.UnknownCostPer1K != DefaultPDUnknownCostPer1K {
 		t.Errorf("TTFT settings %d %v %v %v, want the defaults", c.TTFTWindow, c.TTFTHigh, c.TTFTLow, c.UnknownCostPer1K)

@@ -187,10 +187,18 @@ type Options struct {
 	// --pd-prefill-unknown-cost-per-1k. --prefill-split-mode=pd only.
 	PDTTFTWindow int
 	// PDTTFTWindowTime is --pd-ttft-window-time; 0 uses the count window.
-	PDTTFTWindowTime      time.Duration
-	PDTTFTHigh, PDTTFTLow time.Duration
-	PDUnknownCostPer1K    time.Duration
-	PrefillReleaseIdle    time.Duration
+	PDTTFTWindowTime time.Duration
+	// The decode-starvation signal and its rules (--pd-decode-sample-interval,
+	// --pd-decode-starve-kv, --pd-decode-starve-waiting,
+	// --pd-decode-starve-fraction, --pd-starved-shrink-guard,
+	// --pd-starved-ttft-high). --prefill-split-mode=pd only.
+	PDDecodeSampleInterval                  time.Duration
+	PDDecodeStarveKV, PDDecodeStarveWaiting float64
+	PDDecodeStarveFraction                  float64
+	PDStarvedShrinkGuard, PDStarvedTTFTHigh time.Duration
+	PDTTFTHigh, PDTTFTLow                   time.Duration
+	PDUnknownCostPer1K                      time.Duration
+	PrefillReleaseIdle                      time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
 	// PrefillSplitMode is --prefill-split-mode: PrefillSplitReject (the
@@ -327,9 +335,16 @@ const (
 // leg time).
 const (
 	DefaultPDTTFTWindow       = 32
-	DefaultPDTTFTHigh         = 1500 * time.Millisecond
-	DefaultPDTTFTLow          = 500 * time.Millisecond
+	DefaultPDTTFTHigh         = 5 * time.Second
+	DefaultPDTTFTLow          = time.Second
 	DefaultPDUnknownCostPer1K = 10 * time.Millisecond
+
+	DefaultPDDecodeSampleInterval = 5 * time.Second
+	DefaultPDDecodeStarveKV       = 0.95
+	DefaultPDDecodeStarveWaiting  = 1
+	DefaultPDDecodeStarveFraction = 0.5
+	DefaultPDStarvedShrinkGuard   = 5 * time.Second
+	DefaultPDStarvedTTFTHigh      = 10 * time.Second
 )
 
 // dynamicPD reports whether the prefill split runs as dynamic vanilla P/D.
@@ -362,6 +377,18 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	c.TTFTHigh = or(o.PDTTFTHigh, DefaultPDTTFTHigh)
 	c.TTFTLow = or(o.PDTTFTLow, DefaultPDTTFTLow)
 	c.UnknownCostPer1K = or(o.PDUnknownCostPer1K, DefaultPDUnknownCostPer1K)
+	c.DecodeSampleInterval = or(o.PDDecodeSampleInterval, DefaultPDDecodeSampleInterval)
+	c.StarvedShrinkGuard = or(o.PDStarvedShrinkGuard, DefaultPDStarvedShrinkGuard)
+	c.StarvedTTFTHigh = or(o.PDStarvedTTFTHigh, DefaultPDStarvedTTFTHigh)
+	orf := func(v, def float64) float64 {
+		if v > 0 {
+			return v
+		}
+		return def
+	}
+	c.StarveKV = orf(o.PDDecodeStarveKV, DefaultPDDecodeStarveKV)
+	c.StarveWaiting = orf(o.PDDecodeStarveWaiting, DefaultPDDecodeStarveWaiting)
+	c.StarveFraction = orf(o.PDDecodeStarveFraction, DefaultPDDecodeStarveFraction)
 	return &c
 }
 
@@ -502,6 +529,9 @@ func (o Options) validatePD() error {
 		}
 		if o.PDTTFTLow > 0 && o.PDTTFTHigh > 0 && o.PDTTFTLow >= o.PDTTFTHigh {
 			return errors.New("router: --pd-ttft-low must be below --pd-ttft-high")
+		}
+		if o.PDStarvedShrinkGuard > 0 && o.PDStarvedTTFTHigh > 0 && o.PDStarvedShrinkGuard > o.PDStarvedTTFTHigh {
+			return errors.New("router: --pd-starved-shrink-guard must not be above --pd-starved-ttft-high")
 		}
 	default:
 		return fmt.Errorf("router: --prefill-split-mode %q: want %s or %s", o.PrefillSplitMode, PrefillSplitReject, PrefillSplitPD)

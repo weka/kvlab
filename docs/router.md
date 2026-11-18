@@ -397,16 +397,39 @@ leaves it.
   decode side is saturated, end-to-end TTFT would keep calling for more prefill
   nodes, taking them from decode. A static 9-of-48 prefill set on Kimi-Linear-48B runs its legs in
   ~0.3 s; an overloaded one in ~3 s.
-  - Above `--pd-ttft-high` (default 1.5 s): one decode node is drained into
+  - At or above `--pd-ttft-high` (default 5 s): one decode node is drained into
     prefill. It is the one whose decodes should end soonest: nothing in flight
     first, then the one whose oldest in-flight request started last, then fewer
     in flight. It becomes a prefill node when they have.
-  - Below `--pd-ttft-low` (default 0.5 s): the newest drain still in progress is
+  - At or below `--pd-ttft-low` (default 1 s): the newest drain still in progress is
     abandoned (it returns to decode). Otherwise one prefill node is chosen to
     return to decode: the one holding the fewest tokens in the prefill tree
     (least affinity lost), then the fewest legs in flight, then the newest. It
     takes no new leg, finishes the legs it has, and then becomes a decode node.
   - In between: nothing.
+  - **Unless the decode side is starved.** Every `--pd-decode-sample-interval`
+    (5 s) each decode node's `/metrics` is read:
+    - `vllm:kv_cache_usage_perc`, the highest across its engines;
+    - `vllm:num_requests_waiting`, summed.
+
+    A node is starved at a sample with KV usage at least `--pd-decode-starve-kv`
+    (0.95) and at least `--pd-decode-starve-waiting` (1) requests waiting. A
+    node that cannot be read is not. The decode side is starved while the share
+    of starved decode nodes, averaged over the provisioning window (restarting
+    at every action like it), is at least `--pd-decode-starve-fraction` (0.5).
+    No sample is not starved. While starved, the high/low rule above is
+    replaced:
+    - Below `--pd-starved-shrink-guard` (5 s): a prefill node returns to decode,
+      on the same path as the low case (the newest drain is abandoned first).
+    - At or above `--pd-starved-ttft-high` (10 s): one decode node is drained
+      into prefill.
+    - In between: hold. It counts as the window's decision, logged once.
+    - An empty prefill-finish window still takes no action.
+
+    Reasons on the action counters and log lines: `decode_starved_shrink`,
+    `decode_starved_hold`, `decode_starved_ttft_high`.
+    `router_pd_decode_starved` (0/1) and `router_pd_decode_starved_fraction`
+    show the signal.
   - Pacing:
     - Time window: the window restarts at every action, and the next action
       waits for a full window of samples taken after it, and for
@@ -464,7 +487,8 @@ leaves it.
   - `router_pd_ttft_window_mean_seconds` (the time to the prefill's finish,
     despite the name) and `router_pd_ttft_window_samples`:
     the signal.
-  - `router_pd_provision_actions_total{action=drain|abandon|release}`.
+  - `router_pd_provision_actions_total{action=drain|abandon|release|hold,reason}`.
+  - `router_pd_decode_starved` and `router_pd_decode_starved_fraction`.
   - `router_pd_prefill_node_est_seconds{backend}`: the time part of each
     prefill node's cost.
   - `router_prefill_nodes{mode}`, conversions and releases.

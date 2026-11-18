@@ -469,7 +469,13 @@ func TestPDDynamicTTFTRampFromOneExpandsUnderLoadAndShrinksUnderLightTraffic(t *
 
 func pdCounter(t *testing.T, pool, action string) float64 {
 	t.Helper()
-	return testutil.ToFloat64(metrics.PDProvisionActions.WithLabelValues(pool, action))
+	var sum float64
+	for _, ar := range metrics.PDProvisionActionReasons {
+		if ar[0] == action {
+			sum += testutil.ToFloat64(metrics.PDProvisionActions.WithLabelValues(pool, ar[0], ar[1]))
+		}
+	}
+	return sum
 }
 
 // The provisioning signal is the time to the prefill's finish: arrival to the

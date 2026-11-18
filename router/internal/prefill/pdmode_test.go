@@ -322,7 +322,7 @@ func TestPDModeProvisioningIsLoggedAndCounted(t *testing.T) {
 		}
 	}
 	var m dto.Metric
-	_ = metrics.PDProvisionActions.WithLabelValues(t.Name(), "drain").Write(&m)
+	_ = metrics.PDProvisionActions.WithLabelValues(t.Name(), "drain", "ttft_high").Write(&m)
 	if m.GetCounter().GetValue() < 1 {
 		t.Error("drain action not counted")
 	}

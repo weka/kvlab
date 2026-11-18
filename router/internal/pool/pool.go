@@ -217,6 +217,9 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 			ec.PoolName, ec.Clock = cfg.Name, clk
 			ec.CostPick = false // P legs are placed by prefill.Manager.PickPrefill
 			ec.PrefixValues = pflow.BackendTokens
+			if ec.DecodeProbe == nil {
+				ec.DecodeProbe = prefill.HTTPDecodeProbe(nil)
+			}
 			ec.PDMetrics = p.PD.M
 			if ec.Log == nil {
 				ec.Log = p.log

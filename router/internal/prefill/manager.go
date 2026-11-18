@@ -103,6 +103,18 @@ type Config struct {
 	// TTFTWindowTime, when set, makes the window the samples of the last
 	// TTFTWindowTime instead of the last TTFTWindow (see pdttft.go).
 	TTFTWindowTime time.Duration
+	// The decode-starvation signal (PD only, decodestarve.go): DecodeProbe
+	// reads a decode node every DecodeSampleInterval; it is starved at KV
+	// usage >= StarveKV with >= StarveWaiting waiting; the decode side is
+	// starved while the window's mean starved share is >= StarveFraction.
+	// Then a prefill node returns to decode while the prefill-finish mean is
+	// below StarvedShrinkGuard, one is added at StarvedTTFTHigh or above, and
+	// in between the decision is to hold.
+	DecodeProbe                         DecodeProbe
+	DecodeSampleInterval                time.Duration
+	StarveKV, StarveWaiting             float64
+	StarveFraction                      float64
+	StarvedShrinkGuard, StarvedTTFTHigh time.Duration
 	// UnknownCostPer1K (PD only) is what a P leg's routing cost adds per 1,000
 	// prompt tokens the candidate node is not known to hold; tokens it holds
 	// are free.
@@ -189,9 +201,11 @@ type node struct {
 	// decode, which takes no new leg; legs is its P legs in flight; svc an
 	// EWMA of their service time in seconds, last updated at svcAt.
 	releasing bool
-	legs      int
-	svc       float64
-	svcAt     time.Time
+	// releaseReason is why a releasing node returns to decode.
+	releaseReason string
+	legs          int
+	svc           float64
+	svcAt         time.Time
 }
 
 // Manager owns the node modes for one pool.
@@ -210,6 +224,7 @@ type Manager struct {
 	// provisioning action and svcFleet the fleet's P-leg service EWMA
 	// (pdttft.go).
 	ttft       ttftWindow
+	starve     []starveSample
 	lastAction time.Time
 	svcFleet   float64
 
@@ -837,6 +852,9 @@ func (m *Manager) Run(ctx context.Context, known func() []*registry.Backend) {
 	defer t.Stop()
 	tick := m.cfg.Clock.NewTicker(tickEvery)
 	defer tick.Stop()
+	if m.cfg.PD && m.cfg.DecodeProbe != nil && m.cfg.DecodeSampleInterval > 0 {
+		go m.runDecodeSampler(ctx, known)
+	}
 	for {
 		select {
 		case <-ctx.Done():
