@@ -343,11 +343,19 @@ func (m *Manager) tickPDLocked(cands []*registry.Backend) {
 		}
 	}
 	snap := m.snapshotLocked(now)
+	eligible := m.drainCandidatesLocked(decode)
+	if m.cfg.PDMetrics != nil {
+		m.cfg.PDMetrics.DrainCandidates.Set(float64(len(eligible)))
+	}
 	if nonDecode < m.cfg.MinPrefill && len(decode) > 0 && m.canConvertLocked(len(cands), nonDecode, len(decode)) {
 		// Below the minimum (a prefill node gone unhealthy, or none named
 		// initially): drain toward it, one node per tick.
-		m.drainLocked(decode, "min_nodes")
-		m.actionLocked("drain", "min_nodes")
+		if len(eligible) > 0 {
+			m.drainLocked(eligible, "min_nodes")
+			m.actionLocked("drain", "min_nodes")
+		} else if m.lastAction.IsZero() || now.Sub(m.lastAction) >= max(snap.span, m.cfg.DrainMinInterval) {
+			m.blockedLocked(now, "min_nodes")
+		}
 	} else {
 		m.provisionLocked(now, cands, decode, nonDecode, snap)
 	}
@@ -395,7 +403,12 @@ func (m *Manager) provisionLocked(now time.Time, cands, decode []*registry.Backe
 		if len(decode) == 0 || !m.canConvertLocked(len(cands), nonDecode, len(decode)) {
 			return
 		}
-		m.drainLocked(decode, reason, attrs...)
+		eligible := m.drainCandidatesLocked(decode)
+		if len(eligible) == 0 {
+			m.blockedLocked(now, reason, attrs...)
+			return
+		}
+		m.drainLocked(eligible, reason, attrs...)
 		m.actedLocked(now, "drain", reason)
 	}
 	if starved {
@@ -468,6 +481,31 @@ func (m *Manager) actedLocked(now time.Time, action, reason string) {
 }
 
 // restartWindowLocked marks an action: the window counts afresh from now.
+// drainCandidatesLocked is the decode nodes a drain may pick: under
+// DrainSkipStarved, those whose latest sample was not starved.
+func (m *Manager) drainCandidatesLocked(decode []*registry.Backend) []*registry.Backend {
+	if !m.cfg.DrainSkipStarved {
+		return decode
+	}
+	var out []*registry.Backend
+	for _, b := range decode {
+		if !m.nodes[b.URL].starved {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// blockedLocked is a drain wanted for reason with every decode node starved:
+// none is taken from where room is short; the window holds and restarts.
+func (m *Manager) blockedLocked(now time.Time, reason string, attrs ...any) {
+	if m.cfg.Log != nil {
+		m.cfg.Log.Info("prefill set holds: every decode node starved, none drained",
+			append([]any{"reason", "drain_blocked_all_starved", "wanted", reason}, attrs...)...)
+	}
+	m.actedLocked(now, "hold", "drain_blocked_all_starved")
+}
+
 func (m *Manager) restartWindowLocked(now time.Time) {
 	m.lastAction, m.ttft.since = now, 0
 	m.ttft.timed = m.ttft.timed[:0]

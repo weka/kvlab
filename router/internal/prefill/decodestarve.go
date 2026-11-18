@@ -91,8 +91,9 @@ func (m *Manager) SampleDecode(ctx context.Context, cands []*registry.Backend) {
 		return
 	}
 	var starved, idle atomic.Int64
+	nodeStarved := make([]bool, len(decode))
 	var wg sync.WaitGroup
-	for _, b := range decode {
+	for i, b := range decode {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -101,6 +102,7 @@ func (m *Manager) SampleDecode(ctx context.Context, cands []*registry.Backend) {
 			case err != nil:
 			case kv >= m.cfg.StarveKV && waiting >= m.cfg.StarveWaiting:
 				starved.Add(1)
+				nodeStarved[i] = true
 			case kv < m.cfg.IdleKV && waiting == 0:
 				idle.Add(1)
 			}
@@ -110,6 +112,9 @@ func (m *Manager) SampleDecode(ctx context.Context, cands []*registry.Backend) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.cfg.Clock.Now()
+	for i, b := range decode {
+		m.nodeLocked(b).starved = nodeStarved[i]
+	}
 	n := float64(len(decode))
 	m.starve = append(m.starve, starveSample{at: now,
 		frac: float64(starved.Load()) / n, idle: float64(idle.Load()) / n})

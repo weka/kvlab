@@ -200,9 +200,12 @@ type Options struct {
 	// --pd-underutil-ttft-high, --pd-underutil-window-time).
 	PDDecodeIdleKV, PDDecodeIdleFraction       float64
 	PDUnderutilTTFTHigh, PDUnderutilWindowTime time.Duration
-	PDTTFTHigh, PDTTFTLow                      time.Duration
-	PDUnknownCostPer1K                         time.Duration
-	PrefillReleaseIdle                         time.Duration
+	// PDDrainIncludeStarved is --pd-drain-skip-starved=false: drains may
+	// pick a decode node whose latest sample was starved. Zero skips them.
+	PDDrainIncludeStarved bool
+	PDTTFTHigh, PDTTFTLow time.Duration
+	PDUnknownCostPer1K    time.Duration
+	PrefillReleaseIdle    time.Duration
 	// PrefillStoreUnitTokens is --prefill-store-unit-tokens.
 	PrefillStoreUnitTokens int64
 	// PrefillSplitMode is --prefill-split-mode: PrefillSplitReject (the
@@ -402,6 +405,7 @@ func (o Options) pdDynamicConfig(transparent bool) *prefill.Config {
 	c.IdleFraction = orf(o.PDDecodeIdleFraction, DefaultPDDecodeIdleFraction)
 	c.UnderutilTTFTHigh = or(o.PDUnderutilTTFTHigh, DefaultPDUnderutilTTFTHigh)
 	c.UnderutilWindowTime = or(o.PDUnderutilWindowTime, DefaultPDUnderutilWindowTime)
+	c.DrainSkipStarved = !o.PDDrainIncludeStarved
 	return &c
 }
 

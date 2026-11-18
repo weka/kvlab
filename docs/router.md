@@ -451,6 +451,12 @@ leaves it.
     fraction is published together at each control tick from the one window
     average the decision read: the flag is exactly its threshold applied to
     the fraction beside it.
+  - **Never drain a starved node.** Under `--pd-drain-skip-starved` (default
+    true) no drain, for any reason including `min_nodes`, picks a decode node
+    starved by its latest sample (same KV/waiting thresholds; no sample = not
+    starved). With every decode node starved nothing is drained: the window
+    holds (`drain_blocked_all_starved`) and restarts.
+    `router_pd_drain_candidates` counts the decode nodes a drain may pick.
   - Pacing:
     - Time window: the window restarts at every action, and the next action
       waits for a full window of samples taken after it, and for

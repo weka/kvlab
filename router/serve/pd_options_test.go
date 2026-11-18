@@ -174,6 +174,14 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 	if c.IdleKV != 0.6 || c.IdleFraction != 0.5 || c.UnderutilTTFTHigh != 2*time.Second || c.UnderutilWindowTime != 10*time.Second {
 		t.Errorf("underutilization defaults %v %v %v %v", c.IdleKV, c.IdleFraction, c.UnderutilTTFTHigh, c.UnderutilWindowTime)
 	}
+	if !c.DrainSkipStarved {
+		t.Error("drains pick starved decode nodes by default")
+	}
+	o.PDDrainIncludeStarved = true
+	if o.pdDynamicConfig(false).DrainSkipStarved {
+		t.Error("--pd-drain-skip-starved=false still skips starved nodes")
+	}
+	o.PDDrainIncludeStarved = false
 	if c.TTFTWindow != DefaultPDTTFTWindow || c.TTFTHigh != DefaultPDTTFTHigh || c.TTFTLow != DefaultPDTTFTLow ||
 		c.UnknownCostPer1K != DefaultPDUnknownCostPer1K {
 		t.Errorf("TTFT settings %d %v %v %v, want the defaults", c.TTFTWindow, c.TTFTHigh, c.TTFTLow, c.UnknownCostPer1K)

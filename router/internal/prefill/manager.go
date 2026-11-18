@@ -115,6 +115,10 @@ type Config struct {
 	StarveKV, StarveWaiting             float64
 	StarveFraction                      float64
 	StarvedShrinkGuard, StarvedTTFTHigh time.Duration
+	// DrainSkipStarved (PD): a drain never picks a decode node whose latest
+	// sample was starved, whatever the reason; with all of them starved the
+	// window holds (drain_blocked_all_starved).
+	DrainSkipStarved bool
 	// Underutilization (PD only, decodestarve.go): a decode node is idle at
 	// KV usage < IdleKV with nothing waiting; the decode side is
 	// underutilized while the mean idle share over UnderutilWindowTime is
@@ -211,9 +215,12 @@ type node struct {
 	releasing bool
 	// releaseReason is why a releasing node returns to decode.
 	releaseReason string
-	legs          int
-	svc           float64
-	svcAt         time.Time
+	// starved is the node's latest decode sample (PD): KV usage >= StarveKV
+	// and waiting >= StarveWaiting. No sample, or an unread one, is false.
+	starved bool
+	legs    int
+	svc     float64
+	svcAt   time.Time
 }
 
 // Manager owns the node modes for one pool.
@@ -448,6 +455,7 @@ func (m *Manager) drainLocked(decode []*registry.Backend, reason string, attrs .
 		target = soonestDrained(decode)
 	}
 	n := m.nodes[target.URL]
+	n.starved = false // its decode samples no longer apply
 	m.setModeLocked(n, Draining)
 	now := m.cfg.Clock.Now()
 	n.convertedAt, m.lastDrain = now, now
