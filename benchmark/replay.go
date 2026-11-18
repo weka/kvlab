@@ -597,6 +597,7 @@ func recordReplayRequest(
 			CachedTokens:            metrics.UsageData.CachedTokens.Count,
 			IsError:                 isErr,
 			ErrorMessage:            errMsg,
+			ErrorKind:               errorKindOf(metrics.Error),
 			IsEmpty:                 metrics.IsEmpty,
 			LocalCacheRatio:         metrics.LocalCacheRatio,
 			UUIDExpected:            uuidExpectedCount,
@@ -646,6 +647,7 @@ func recordReplayRequest(
 	st.totalCompleted.Add(1)
 	if isErr {
 		st.totalErrors.Add(1)
+		st.errorKinds.add(errorKindOf(metrics.Error))
 		st.consecutiveFailures.Add(1)
 		if cfg.PrintErrorsThreshold > 0 {
 			nowNs := time.Now().UnixNano()

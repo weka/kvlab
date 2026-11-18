@@ -66,7 +66,9 @@ Mechanics are in [replay.md](replay.md#session-admission).
 | `--replay-chars-per-token` | 0 (off) | Size synthesized content as block tokens times this many chars, so the serving tokenizer lands near the original token counts. |
 | `--limit-context` | 0 (none) | Skip requests whose recorded prompt tokens exceed this, to avoid 400 storms on small-context models. |
 | `--replay-max-requests-per-session` | 0 (off) | Replay only the first N requests of each session, chronologically across the whole session (can remove a sub-agent, never orphan one). A capped run is not comparable with an uncapped one. Helm: `replay.maxRequestsPerSession`. |
-| `--request-timeout` | 5m | Per-request timeout. Helm: `replay.requestTimeout`. |
+| `--request-timeout` | 5m | Overall per-request deadline, the safety net behind the two below; fails with `request timeout (global) ...` (`error_kind` `global`). Helm: `replay.requestTimeout`. |
+| `--ttft-timeout` | 300s | Replay: a streamed request with no first token by then fails with `ttft timeout Xs` (`error_kind` `ttft`). Independent of `--ttft-limit`. 0 = off. |
+| `--stream-idle-timeout` | 300s | Replay: after the first token, no new chunk for this long fails the request with `stream idle Xs after N tokens` (`error_kind` `idle`); a stream that keeps producing is never cut by it. 0 = off. |
 | `--max-concurrency` | 0 | With `--concurrency` unset: upper bound for the concurrency hill-climber (see fixed-pool). Helm: `replay.maxConcurrency`. |
 | `--concurrency` | unset | In-flight request gate. Unset under RT leaves it out of the way; setting it is a deliberate ceiling. Helm: `replay.concurrencyCap`. |
 

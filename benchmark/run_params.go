@@ -58,6 +58,8 @@ type runParamsRecord struct {
 	Timeout           string  `json:"timeout,omitempty"`
 	RequestTimeoutSec float64 `json:"request_timeout_sec,omitempty"`
 	RequestTimeout    string  `json:"request_timeout,omitempty"`
+	TTFTTimeout       string  `json:"ttft_timeout,omitempty"`
+	StreamIdleTimeout string  `json:"stream_idle_timeout,omitempty"`
 	TotalRequests     int     `json:"total_requests,omitempty"`
 	MaxOutputTokens   int     `json:"max_output_tokens,omitempty"`
 
@@ -139,6 +141,12 @@ func buildRunParams(cfg AutoBenchmarkConfig, now time.Time) runParamsRecord {
 	if cfg.RequestTimeout > 0 {
 		p.RequestTimeoutSec = cfg.RequestTimeout.Seconds()
 		p.RequestTimeout = cfg.RequestTimeout.String()
+	}
+	if cfg.TTFTTimeout > 0 {
+		p.TTFTTimeout = cfg.TTFTTimeout.String()
+	}
+	if cfg.StreamIdleTimeout > 0 {
+		p.StreamIdleTimeout = cfg.StreamIdleTimeout.String()
 	}
 	return p
 }

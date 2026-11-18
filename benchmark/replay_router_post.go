@@ -600,6 +600,11 @@ func (p *replayPoster) do(
 		reqLimit = dl.Sub(startTime)
 	}
 	gotResponse := false
+	watch := watchFrom(ctx)
+	if !req.Stream {
+		// A plain response has no tokens to watch: only the global deadline.
+		watch.stop()
+	}
 
 	sessionIdx := seriesNum - 1
 	// One id per request (shared by its 429 retries and the /v1 fallback):
@@ -665,7 +670,7 @@ func (p *replayPoster) do(
 		for i, u := range attempts {
 			resp, err = p.sendOnce(ctx, u, bodyBytes, req.Stream, xRequestID)
 			if err != nil {
-				err = classifyDeadline(err, reqLimit, time.Since(startTime), gotResponse, &RequestMetrics{})
+				err = classifyRequestErr(ctx, err, reqLimit, time.Since(startTime), gotResponse, &RequestMetrics{})
 				return RequestMetrics{
 					RequestNum:        int(st.totalCompleted.Load()) + 1,
 					SeriesNum:         seriesNum,
@@ -721,7 +726,7 @@ func (p *replayPoster) do(
 				CycleNum:          turnIdx,
 				SeriesGUID:        sessionID + ":" + instanceID,
 				XRequestID:        xRequestID,
-				Error:             ctx.Err(),
+				Error:             classifyRequestErr(ctx, ctx.Err(), reqLimit, time.Since(startTime), gotResponse, &RequestMetrics{}),
 				Retries429:        retries,
 				RetryWait:         retryWait,
 				TotalResponseTime: time.Since(startTime),
@@ -742,6 +747,7 @@ func (p *replayPoster) do(
 		XRequestID:   xRequestID,
 		OutputTarget: outputTarget,
 		progress:     progressFrom(ctx),
+		watch:        watch,
 	}
 
 	if resp.StatusCode/100 != 2 {
@@ -808,7 +814,7 @@ func (p *replayPoster) do(
 	m.TotalResponseTime += retryWait
 	// One classification point for every path out of here: the consumers know
 	// the error but not which deadline was set, and do() knows both.
-	m.Error = classifyDeadline(m.Error, reqLimit, time.Since(startTime), gotResponse, &m)
+	m.Error = classifyRequestErr(ctx, m.Error, reqLimit, time.Since(startTime), gotResponse, &m)
 	if m.TimeToFirstToken > 0 {
 		m.TimeToFirstToken += retryWait
 	}
@@ -1018,6 +1024,7 @@ func consumeSSE(body io.Reader, startTime time.Time, m *RequestMetrics) {
 		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 			continue
 		}
+		m.watch.chunk()
 		var ev map[string]json.RawMessage
 		if err := json.Unmarshal(data, &ev); err != nil {
 			continue
@@ -1054,6 +1061,7 @@ func consumeSSE(body io.Reader, startTime time.Time, m *RequestMetrics) {
 						firstToken.Do(func() {
 							m.TimeToFirstToken = time.Since(startTime)
 						})
+						m.watch.token()
 					}
 					resp.WriteString(d.Text)
 					resp.WriteString(d.Thinking)
@@ -1131,6 +1139,7 @@ func consumeOpenAISSE(body io.Reader, startTime time.Time, m *RequestMetrics) {
 			continue
 		}
 
+		m.watch.chunk()
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
@@ -1195,6 +1204,7 @@ func consumeOpenAISSE(body io.Reader, startTime time.Time, m *RequestMetrics) {
 				if !exactOut {
 					m.progress.addOut(1)
 				}
+				m.watch.token()
 			}
 			resp.WriteString(content)
 			resp.WriteString(reasoning)
@@ -1471,8 +1481,26 @@ func classifyDeadline(err error, limit time.Duration, elapsed time.Duration, got
 	// whenever something OTHER than this deadline cut the request — and a gap
 	// between them is the signal that the limit named here is not the one that
 	// fired.
-	return fmt.Errorf("exceeded request timeout %s after %s: died %s",
-		limit.Round(time.Second), elapsed.Round(time.Millisecond), phase)
+	return &timeoutError{kind: ErrorKindGlobal, msg: fmt.Sprintf("request timeout (global) %s after %s: died %s",
+		limit.Round(time.Second), elapsed.Round(time.Millisecond), phase)}
+}
+
+// classifyRequestErr names the client deadline that ended a request: the
+// TTFT or stream-idle watch when one fired, else the global deadline
+// (classifyDeadline); any other error is returned as is.
+func classifyRequestErr(ctx context.Context, err error, limit, elapsed time.Duration, gotResponse bool, m *RequestMetrics) error {
+	if err == nil {
+		return nil
+	}
+	if te := requestTimeoutCause(ctx); te != nil {
+		return te
+	}
+	if errors.Is(err, globalCause{}) || errors.Is(context.Cause(ctx), globalCause{}) && ctx.Err() != nil {
+		// The transport reports the deadline's cause rather than
+		// context.DeadlineExceeded.
+		err = context.DeadlineExceeded
+	}
+	return classifyDeadline(err, limit, elapsed, gotResponse, m)
 }
 
 // errString renders an error for the dump metadata without a nil check at

@@ -1235,7 +1235,7 @@ func runRouterReplayInstance(
 		}
 
 		st.decode.begin(prog)
-		reqCtx, reqCancel := context.WithTimeout(withProgress(ctx, prog), reqTimeout)
+		reqCtx, reqCancel := withRequestDeadlines(withProgress(ctx, prog), reqTimeout, cfg.TTFTTimeout, cfg.StreamIdleTimeout)
 		var metrics RequestMetrics
 		// Per-request endpoint selection: prefer this series' home endpoint,
 		// fail over only if it is overloaded. The slot is held for exactly this

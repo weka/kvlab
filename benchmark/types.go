@@ -56,6 +56,9 @@ type RequestMetrics struct {
 	// progress reports a running request\'s first token and stream deltas to the
 	// live view; nil when no live view is attached.
 	progress *liveProgress
+	// watch enforces --ttft-timeout and --stream-idle-timeout on a streamed
+	// request; the consumers report its tokens and chunks. nil when unset.
+	watch *streamWatch
 	// Slot is the concurrency slot that issued the request (see slotInfo).
 	Slot slotInfo
 	// ReadyAt is when the request became eligible to send (its turn was due /

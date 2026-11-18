@@ -400,6 +400,19 @@ func (c *BenchmarkAutoCommand) Execute(args []string) error {
 		}
 		cfg.RequestTimeout = d
 	}
+	for _, f := range []struct {
+		name, v string
+		dst     *time.Duration
+	}{{"--ttft-timeout", c.TTFTTimeout, &cfg.TTFTTimeout}, {"--stream-idle-timeout", c.StreamIdleTimeout, &cfg.StreamIdleTimeout}} {
+		if f.v == "" {
+			continue
+		}
+		d, err := time.ParseDuration(f.v)
+		if err != nil || d < 0 {
+			return fmt.Errorf("invalid %s %q", f.name, f.v)
+		}
+		*f.dst = d
+	}
 
 	if c.PrintErrorsThreshold != "" && c.PrintErrorsThreshold != "0" {
 		d, err := time.ParseDuration(c.PrintErrorsThreshold)

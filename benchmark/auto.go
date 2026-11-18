@@ -65,7 +65,9 @@ type AutoBenchmarkConfig struct {
 	Total                     int           // stop after N total completed requests (0 = unlimited)
 	HotSeriesConcurrency      int           // H of the --series workers run as a 'hot' pool with a dedicated gate; 0 = no hot pool.
 	EndpointOverloadThreshold float64       // Multi-endpoint only: fail over off an endpoint once its in-flight exceeds this multiple of its fair share. 0 = default (1.5).
-	RequestTimeout            time.Duration // per-request timeout (default 5m)
+	RequestTimeout            time.Duration // per-request timeout (default 5m): the overall safety net
+	TTFTTimeout               time.Duration // replay: no first token within this fails the request (kind ttft); 0 = off
+	StreamIdleTimeout         time.Duration // replay: no new chunk for this after the first token fails it (kind idle); 0 = off
 	Step                      int           // 0=disabled; token step size for prefix growth per request
 	StepStartingTokens        int           // 0=start at Step; initial prefix token size for each series when Step > 0
 	Tokens                    int           // upper bound on per-request prompt tokens (caps Step growth and DocsDir source). 0 = bounded only by len(fullDocs)/4.
@@ -398,7 +400,9 @@ type requestDataRecord struct {
 	// Status
 	IsError      bool   `json:"is_error"`
 	ErrorMessage string `json:"error_message,omitempty"`
-	IsEmpty      bool   `json:"is_empty"`
+	// ErrorKind is ttft | idle | global | http | other for a failed request.
+	ErrorKind string `json:"error_kind,omitempty"`
+	IsEmpty   bool   `json:"is_empty"`
 
 	LocalCacheRatio float64 `json:"local_cache_ratio"`
 
@@ -1237,6 +1241,7 @@ type autoState struct {
 	totalCompleted atomic.Int64
 	totalEmitted   atomic.Int64
 	totalErrors    atomic.Int64
+	errorKinds     errorKindCounts
 
 	// Client-side 429 backoff: how many sheds were waited out, and the total
 	// time spent waiting. A router with a per-backend concurrency cap sheds by
@@ -1516,6 +1521,7 @@ type displaySnapshot struct {
 	ttftDegradedCount int64         // requests disqualified by TTFT cutoff
 	totalCompleted    int64
 	totalErrors       int64
+	errorKinds        string // per-kind error counts, " (ttft=.. ..)" or ""
 	totalRetries429   int64
 	totalRetryWait    time.Duration
 	elapsed           time.Duration
@@ -1946,7 +1952,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 		}
 		return fmt.Sprintf("DONE(%s) %s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s in=%s warm=%s scached=%s out=%s%s",
 			snap.termReason, replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
-			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, verifyInfo,
+			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+verifyInfo,
 			formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
 	}
 	hotInfo := ""
@@ -1955,7 +1961,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 	}
 	return fmt.Sprintf("%s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s elapsed=%s in=%s warm=%s scached=%s out=%s%s",
 		replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
-		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, verifyInfo,
+		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+verifyInfo,
 		formatDuration(snap.elapsed),
 		formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
 }
@@ -2185,6 +2191,7 @@ func runSingleModelBenchmark(
 			ttftDegradedCount:    st.ttftDegradedCount.Load(),
 			totalCompleted:       total,
 			totalErrors:          errors,
+			errorKinds:           st.errorKinds.String(),
 			totalRetries429:      retries429,
 			totalRetryWait:       retryWait,
 			elapsed:              time.Since(startTime),
@@ -2739,6 +2746,7 @@ func runSingleModelBenchmark(
 						CachedTokens:         metrics.UsageData.CachedTokens.Count,
 						IsError:              isErr,
 						ErrorMessage:         errMsg,
+						ErrorKind:            errorKindOf(metrics.Error),
 						IsEmpty:              metrics.IsEmpty,
 						LocalCacheRatio:      ratio,
 					}
@@ -2777,6 +2785,7 @@ func runSingleModelBenchmark(
 				}
 				if isErr {
 					st.totalErrors.Add(1)
+					st.errorKinds.add(errorKindOf(metrics.Error))
 					st.consecutiveFailures.Add(1)
 					if cfg.PrintErrorsThreshold > 0 && metrics.Error != nil {
 						nowNs := time.Now().UnixNano()
