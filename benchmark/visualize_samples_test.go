@@ -960,8 +960,8 @@ function expect(si, mi, want, label) {
   const got = sumCells[si][mi].textContent;
   assert(got === want, label + ": want " + JSON.stringify(want) + ", got " + JSON.stringify(got));
 }
-assert(SUMMARY_METRICS.length === 9, "nine metric columns, got " + SUMMARY_METRICS.length);
-assert(sumCells.length === DATA.length && sumCells[0].length === 9, "one row per variant, nine cells each");
+assert(SUMMARY_METRICS.length === 10, "ten metric columns, got " + SUMMARY_METRICS.length);
+assert(sumCells.length === DATA.length && sumCells[0].length === 10, "one row per variant, ten cells each");
 assert(sumRows.length === DATA.length, "one <tr> per variant");
 expect(0, 0, "2.5k", "input tokens");
 expect(0, 1, "250",  "output tokens");

@@ -1242,6 +1242,8 @@ type autoState struct {
 	totalEmitted   atomic.Int64
 	totalErrors    atomic.Int64
 	errorKinds     errorKindCounts
+	// overflow tallies replay instances retired over the context limit.
+	overflow overflowCounts
 
 	// Client-side 429 backoff: how many sheds were waited out, and the total
 	// time spent waiting. A router with a per-backend concurrency cap sheds by
@@ -1439,6 +1441,7 @@ type autoBenchmarkResult struct {
 	sglangTiers       sglangTierSnapshot
 	totalCompleted    int64
 	totalErrors       int64
+	overflow          overflowSummary
 	totalRetries429   int64
 	totalRetryWait    time.Duration
 	ttftP50           time.Duration
@@ -1522,6 +1525,7 @@ type displaySnapshot struct {
 	totalCompleted    int64
 	totalErrors       int64
 	errorKinds        string // per-kind error counts, " (ttft=.. ..)" or ""
+	overflow          int64  // replay instances retired over the context limit
 	totalRetries429   int64
 	totalRetryWait    time.Duration
 	elapsed           time.Duration
@@ -1675,6 +1679,10 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 	fmt.Println(strings.Repeat("-", 62))
 	fmt.Printf(" Total completed    : %d\n", res.totalCompleted)
 	fmt.Printf(" Total errors       : %d\n", res.totalErrors)
+	if line := res.overflow.String(); line != "" {
+		fmt.Printf(" Context overflow   : %s\n", line)
+		fmt.Printf(" WARNING            : %s\n", res.overflow.Warning)
+	}
 	if res.totalRetries429 > 0 {
 		// A router enforcing a per-backend concurrency cap sheds on purpose, so
 		// this is the run's cost of that policy: sheds waited out, and the wall
@@ -1952,7 +1960,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 		}
 		return fmt.Sprintf("DONE(%s) %s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s in=%s warm=%s scached=%s out=%s%s",
 			snap.termReason, replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
-			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+verifyInfo,
+			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+overflowTok(snap.overflow)+verifyInfo,
 			formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
 	}
 	hotInfo := ""
@@ -1961,7 +1969,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 	}
 	return fmt.Sprintf("%s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s elapsed=%s in=%s warm=%s scached=%s out=%s%s",
 		replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
-		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+verifyInfo,
+		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+overflowTok(snap.overflow)+verifyInfo,
 		formatDuration(snap.elapsed),
 		formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
 }
@@ -2192,6 +2200,7 @@ func runSingleModelBenchmark(
 			totalCompleted:       total,
 			totalErrors:          errors,
 			errorKinds:           st.errorKinds.String(),
+			overflow:             st.overflow.sessions.Load(),
 			totalRetries429:      retries429,
 			totalRetryWait:       retryWait,
 			elapsed:              time.Since(startTime),
@@ -2424,6 +2433,9 @@ func runSingleModelBenchmark(
 		}
 		st.routerReplay = stream
 		defer stream.Close()
+		if !cfg.DryRun {
+			go checkContextFit(cfg)
+		}
 		fmt.Fprintf(os.Stderr, "[auto][%s] router-replay streaming %d sessions (chan cap=8)\n",
 			shortModelName(cfg.Model), stream.Total())
 	}
@@ -3349,6 +3361,7 @@ func runSingleModelBenchmark(
 		}
 	}
 	res.totalErrors = st.totalErrors.Load()
+	res.overflow = st.overflow.summary()
 	res.totalRetries429 = st.totalRetries429.Load()
 	res.totalRetryWait = time.Duration(st.totalRetryWaitNs.Load())
 	res.ttftP50 = tm.ttftP50
@@ -3877,4 +3890,12 @@ func pctOf(num, den int64) string {
 		return "n/a"
 	}
 	return fmt.Sprintf("%.1f%%", 100*float64(num)/float64(den))
+}
+
+// overflowTok is the progress line's " overflow=N", "" with nothing retired.
+func overflowTok(n int64) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" overflow=%d", n)
 }

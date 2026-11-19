@@ -159,13 +159,16 @@ func prepareMergedSources(dirs []string, labels []string, outputDir string, maxE
 		var dirSamples []cacheMetricsSample
 		var dirParams runParamsRecord
 		var dirHasParams bool
+		var dirOverflows []overflowRecord
 		for _, f := range files {
-			records, samples, params, hasParams, err := readJSONLFileWithParams(f)
+			c, err := readJSONLContents(f)
 			if err != nil {
 				return "", fmt.Errorf("read %s: %w", f, err)
 			}
+			records, samples, params, hasParams := c.records, c.samples, c.params, c.hasParams
 			dirRecords = append(dirRecords, records...)
 			dirSamples = append(dirSamples, samples...)
+			dirOverflows = append(dirOverflows, c.overflows...)
 			// First header in the directory wins — an arm is one run, and a
 			// dir holding several files is that run split across models.
 			if hasParams && !dirHasParams {
@@ -231,6 +234,13 @@ func prepareMergedSources(dirs []string, labels []string, outputDir string, maxE
 			if err := enc.Encode(s); err != nil {
 				out.Close()
 				return "", fmt.Errorf("write metrics sample to %s: %w", outFile, err)
+			}
+		}
+		// And the context-overflow rows, so the merged report counts them.
+		for _, o := range dirOverflows {
+			if err := enc.Encode(o); err != nil {
+				out.Close()
+				return "", fmt.Errorf("write overflow record to %s: %w", outFile, err)
 			}
 		}
 		out.Close()

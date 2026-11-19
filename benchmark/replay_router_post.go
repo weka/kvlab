@@ -49,6 +49,7 @@ type replayPoster struct {
 	// errors on a valid path.
 	epPrimary  string
 	epFallback string
+	base       string // the spec's base URL, as given
 	epMu       sync.Mutex
 	epResolved string // latched endpoint; "" until the first success
 	epFellBack bool
@@ -287,6 +288,7 @@ func newReplayPoster(modelSpec string, keys llm.APIKeys, endpointOverride string
 	return &replayPoster{
 		model:           model,
 		epPrimary:       epPrimary,
+		base:            base,
 		epFallback:      epFallback,
 		apiKey:          apiKey,
 		apiType:         dyn.Type,

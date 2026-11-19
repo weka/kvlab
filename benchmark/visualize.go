@@ -213,6 +213,9 @@ type seriesData struct {
 	// back to the report-wide CONCURRENCY and then to deriving a window from
 	// the observed series count — exactly the pre-run_params behaviour.
 	Conc int `json:"conc,omitempty"`
+	// Overflow is the whole run's context-overflow retirements (replay
+	// instances cut short at the context limit); nil when there were none.
+	Overflow *overflowSummary `json:"overflow,omitempty"`
 	// Params is the recorded run configuration, rendered in the report so a
 	// reader can see the workload shape without a side file. Omitted entirely
 	// for legacy data.
@@ -343,10 +346,11 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 	var allSeries []seriesData
 	for _, f := range files {
 		name := strings.TrimSuffix(filepath.Base(f), ".jsonl")
-		records, samples, params, hasParams, err := readJSONLFileWithParams(f)
+		c, err := readJSONLContents(f)
 		if err != nil {
 			return "", fmt.Errorf("read %s: %w", f, err)
 		}
+		records, samples, params, hasParams := c.records, c.samples, c.params, c.hasParams
 		records, samples = truncateToElapsed(records, samples, maxElapsed)
 		// Prefer the clean model alias (e.g. "DS3H_weka-64r8w") over the raw
 		// sanitized filename (e.g. "dynamic_http___..._alias_DS3H_weka-64r8w")
@@ -412,6 +416,13 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 			hostEngine = hostBandEngine(samples)
 		}
 		sd := seriesData{Name: name, T0: t0, Records: vr, Mix: mix, Adt: adt, BandOrder: bandOrder, HostEngine: hostEngine, GuidTable: guidTable}
+		if len(c.overflows) > 0 {
+			var o overflowSummary
+			for _, r := range c.overflows {
+				o.addRecord(r)
+			}
+			sd.Overflow = &o
+		}
 		if hasParams {
 			sd.Conc = params.effectiveConcurrency()
 			sd.Params = buildVizRunParams(params)
@@ -552,9 +563,23 @@ func readJSONLFile(path string) ([]requestDataRecord, []cacheMetricsSample, erro
 // must keep working in that case rather than treating the zero record as a run
 // that was configured with zeroes.
 func readJSONLFileWithParams(path string) ([]requestDataRecord, []cacheMetricsSample, runParamsRecord, bool, error) {
+	c, err := readJSONLContents(path)
+	return c.records, c.samples, c.params, c.hasParams, err
+}
+
+// jsonlContents is everything a request-data file holds, by record type.
+type jsonlContents struct {
+	records   []requestDataRecord
+	samples   []cacheMetricsSample
+	params    runParamsRecord
+	hasParams bool
+	overflows []overflowRecord
+}
+
+func readJSONLContents(path string) (jsonlContents, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, runParamsRecord{}, false, err
+		return jsonlContents{}, err
 	}
 	defer f.Close()
 	// Sized from the line count so appending never doubles a 100MB+ slice (the
@@ -563,6 +588,7 @@ func readJSONLFileWithParams(path string) ([]requestDataRecord, []cacheMetricsSa
 	var samples []cacheMetricsSample
 	var params runParamsRecord
 	var hasParams bool
+	var overflows []overflowRecord
 	// Every row repeats the (long) model spec and a session GUID that recurs
 	// across turns. Interning them keeps a 300k-row file from holding a private
 	// copy of each in memory while the report is built.
@@ -616,9 +642,14 @@ func readJSONLFileWithParams(path string) ([]requestDataRecord, []cacheMetricsSa
 			if p, ok := parseRunParams(sc.Bytes()); ok && !hasParams {
 				params, hasParams = p, true
 			}
+		case recordTypeOverflow:
+			var o overflowRecord
+			if err := json.Unmarshal(sc.Bytes(), &o); err == nil {
+				overflows = append(overflows, o)
+			}
 		}
 	}
-	return records, samples, params, hasParams, sc.Err()
+	return jsonlContents{records: records, samples: samples, params: params, hasParams: hasParams, overflows: overflows}, sc.Err()
 }
 
 // countLines returns the number of newline-terminated lines in path, 0 on error.
@@ -693,6 +724,7 @@ var vizTemplate = template.Must(template.New("viz").Parse(`<!DOCTYPE html>
      10-variant report can never squeeze the controls out. */
   .topgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 780px); gap: 12px; align-items: start; margin-bottom: 12px; }
   @media (max-width: 1100px) { .topgrid { grid-template-columns: minmax(0, 1fr); } }
+  .overflow-warn { background: #3a1d12; border: 1px solid #FF6B6B; color: #FFD2C2; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
   .panel { background: #171C20; border: 1px solid #42464A; border-radius: 8px; padding: 10px 12px; min-width: 0; }
   .panel-title { font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.07em; color: #8a9096; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
   .panel-title .range { color: #C79FF1; text-transform: none; letter-spacing: 0; }
@@ -879,6 +911,7 @@ var vizTemplate = template.Must(template.New("viz").Parse(`<!DOCTYPE html>
     </div>
     </div>
   </div>
+  <div class="overflow-warn" id="overflowWarn" hidden></div>
   <div class="panel" id="summaryPanel">
     <div class="panel-title">Summary<span class="range" id="sumRange"></span><span class="zoom-reset-hint" id="zoomResetHint" hidden>Esc to reset</span><button class="zoom-reset" id="resetZoom" hidden>Reset</button><span class="spacer"></span><button class="panel-toggle" id="summaryToggle" title="Collapse">&minus;</button></div>
     <div class="panel-body">
@@ -1109,6 +1142,20 @@ function sortKey(name) {
 const sortedIndices = RAW_DATA.map((_, i) => i);
 sortedIndices.sort((a, b) => sortKey(RAW_DATA[a].name).localeCompare(sortKey(RAW_DATA[b].name)));
 const DATA = sortedIndices.map(i => RAW_DATA[i]);
+
+// Context-overflow warning: arms whose replay lost sessions at the context
+// limit, shown above the panels so a run that dropped most of its corpus
+// cannot pass for a clean one.
+(() => {
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const lines = DATA.filter(s => s.overflow && s.overflow.warning)
+    .map(s => "<b>" + esc(s.name) + "</b>: " + esc(s.overflow.warning));
+  const el = document.getElementById("overflowWarn");
+  if (el && lines.length) {
+    el.innerHTML = "&#9888; Context overflow<br>" + lines.join("<br>");
+    el.hidden = false;
+  }
+})();
 
 // Normalize timestamps: align each series to start at t=0. Metrics-sample
 // overlays (mix segments / active-dataset points) shift by the same offset so
@@ -1633,7 +1680,11 @@ let statsEpoch = 0;
 function seriesStats() {
   const key = viewTMin + "|" + viewTMax + "|" + statsEpoch;
   if (statsCache && statsCacheKey === key) return statsCache;
-  statsCache = DATA.map(s => windowStats(s._view, viewTMin, viewTMax));
+  statsCache = DATA.map(s => {
+    const st = windowStats(s._view, viewTMin, viewTMax);
+    if (st) st.overflow = s.overflow ? s.overflow.sessions : 0;
+    return st;
+  });
   statsCacheKey = key;
   return statsCache;
 }
@@ -1746,6 +1797,8 @@ const SUMMARY_METRICS = [
   { key: "cached",  short: "Cached input", label: "Share of prompt tokens served from cache rather than recomputed. Token share, not the share of requests that hit.", better: "up",
     val: st => st.prompt > 0 ? st.caTok / st.prompt * 100 : 0,
     fmt: st => st.prompt > 0 ? (st.caTok / st.prompt * 100).toFixed(1) + "%" : "-" },
+  { key: "overflow", short: "Overflow", label: "Replay sessions retired at the context limit over the whole run: the prompt outgrew the server's max context (or --limit-context), and the rest of that session was never sent. Not counted in Reqs or Err/1k.", better: "down",
+    val: st => st.overflow || 0, fmt: st => st.overflow == null ? "-" : st.overflow.toLocaleString() },
 ];
 
 // --- Ratio to a baseline arm ---
@@ -3927,7 +3980,7 @@ const SUMMARY_CSV_COLUMNS = {
   in: "input_tokens", out: "output_tokens", reqs: "requests",
   inrate: "input_tokens_per_sec", outrate: "output_tokens_per_sec",
   ttft50: "ttft_p50_ms", ttft95: "ttft_p95_ms", err1k: "errors_per_1k",
-  cached: "cached_input_pct",
+  cached: "cached_input_pct", overflow: "context_overflow_sessions",
 };
 
 // summaryRatioPct mirrors fmtRatio's own gating exactly (a zero/negative/
