@@ -180,6 +180,8 @@ type Options struct {
 	PrefillConvertAfter time.Duration
 	// PrefillDrainMinInterval is --prefill-drain-min-interval, both modes.
 	PrefillDrainMinInterval time.Duration
+	// PrefillMaxDraining is --prefill-max-draining (reject mode); 0 = no cap.
+	PrefillMaxDraining int
 	// PrefillMinNodes is --prefill-min-nodes, --prefill-split-mode=pd only.
 	PrefillMinNodes int
 	// PDTTFTWindow, PDTTFTHigh and PDTTFTLow are --pd-ttft-window,
@@ -449,6 +451,7 @@ func (o Options) splitConfig() prefill.Config {
 		ReleaseIdle:      o.PrefillReleaseIdle,
 		StoreUnitTokens:  o.PrefillStoreUnitTokens,
 		DrainMinInterval: o.PrefillDrainMinInterval,
+		MaxDraining:      o.PrefillMaxDraining,
 	}
 }
 

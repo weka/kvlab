@@ -93,6 +93,9 @@ type Config struct {
 	// never holds back the drain that gives the pool its first prefill node.
 	// 0 is no limit.
 	DrainMinInterval time.Duration
+	// MaxDraining (reject mode) caps how many nodes drain at once; 0 is no
+	// cap.
+	MaxDraining int
 	// TTFTWindow, TTFTHigh and TTFTLow (PD only) drive provisioning: the
 	// mean time to the prefill's finish (arrival to the P leg's
 	// kv_transfer_params) of the last TTFTWindow P/D requests above TTFTHigh
@@ -374,8 +377,11 @@ func (m *Manager) StoreCut(tokens int64) int64 {
 //     node could run it. With no prefill node yet the draining nodes stand in.
 //  2. Failing that, while the prefill share is under the cap, drain the
 //     least-loaded decode node: with ConvertAfter set only once the
-//     least-loaded prefill node has been over budget that long, and no sooner
-//     than DrainMinInterval after the last drain. The job goes to the drained
+//     least-loaded prefill node has been over budget that long, no sooner
+//     than DrainMinInterval after the last drain, with fewer than MaxDraining
+//     nodes draining, and only while the pending tokens exceed the budget of
+//     the prefill and draining nodes together (a draining node is a budget of
+//     room on its way). The job goes to the drained
 //     node when it has nothing in flight
 //     (its WaitReady makes it a prefill node at once) or there is no prefill
 //     node; otherwise it queues on the least-pending prefill node.
@@ -420,7 +426,8 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	case len(eligible) > 0:
 		chosen = m.pickLocked(eligible, pick)
 	case m.canConvertLocked(len(cands), nonDecode, len(decode)) &&
-		m.overflowedLongEnoughLocked(takers) && m.drainAllowedLocked(nonDecode):
+		m.overflowedLongEnoughLocked(takers) && m.drainNeededLocked(prefillNodes, draining, tokens) &&
+		m.drainAllowedLocked(nonDecode, len(draining)):
 		d := m.drainLocked(decode, "no_prefill_room", "job_tokens", tokens)
 		chosen = d.b
 		// A drained node still decoding would hold the job until it is done;
@@ -503,10 +510,32 @@ func (m *Manager) pendingLocked(b *registry.Backend) int64 {
 	return 0
 }
 
-// drainAllowedLocked applies DrainMinInterval to a drain that is otherwise due,
+// drainNeededLocked is whether the work waiting for prefill, this job
+// included, is more than the prefill nodes and the nodes already draining can
+// take within their budgets: each draining node counts as a budget of room,
+// so a sustained overflow drains toward its size instead of one node per
+// DrainMinInterval for as long as it lasts.
+func (m *Manager) drainNeededLocked(prefillNodes, draining []*registry.Backend, tokens int64) bool {
+	pending := tokens
+	for _, b := range prefillNodes {
+		pending += m.nodes[b.URL].pending
+	}
+	for _, b := range draining {
+		pending += m.nodes[b.URL].pending
+	}
+	return pending > m.cfg.NodeBudgetTokens*int64(len(prefillNodes)+len(draining))
+}
+
+// drainAllowedLocked applies MaxDraining and DrainMinInterval to a drain that
+// is otherwise due, counting the one it defers.
 // counting the one it defers. With no prefill node at all the drain goes
 // ahead: there is nowhere for the job to queue.
-func (m *Manager) drainAllowedLocked(nonDecode int) bool {
+func (m *Manager) drainAllowedLocked(nonDecode, draining int) bool {
+	if m.cfg.MaxDraining > 0 && draining >= m.cfg.MaxDraining {
+		m.drainsDeferred.Add(1)
+		m.m.DrainsDeferred.Inc()
+		return false
+	}
 	if m.cfg.DrainMinInterval <= 0 || nonDecode == 0 || m.lastDrain.IsZero() ||
 		m.cfg.Clock.Now().Sub(m.lastDrain) >= m.cfg.DrainMinInterval {
 		return true

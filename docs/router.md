@@ -256,6 +256,14 @@ quickly, gets that long to clear before another decode node is given up. Jobs
 queue on the prefill nodes meanwhile, and `router_prefill_drains_deferred_total`
 counts the jobs held back. The pool's first prefill node is never delayed.
 
+In reject mode a node already draining counts as a budget of room on its way:
+another drain happens only while the pending prefill tokens exceed
+`--prefill-node-budget-tokens` times the prefill plus draining nodes, and never
+with `--prefill-max-draining` (default 2; 0 = no cap) nodes draining already.
+A sustained overflow then drains toward its size, not one node per interval
+for as long as it lasts. Drains, promotions and releases are logged with their
+reason, as in pd mode.
+
 In both modes a draining node takes no job while a prefill node exists, since
 a job there would wait for the node's decodes to finish. The job queues on the
 least-pending prefill node instead, and moves to the drained node once that
@@ -1274,7 +1282,7 @@ So alert on all three:
 | `router_pd_fallbacks_total{reason}` | requests sent to a D node without `kv_transfer_params`, so it recomputes: `no_prefill_node`, `prefill_failed` or `no_params` |
 | `router_pd_prefill_retries_total` | prefill legs retried after every P node was saturated or the chosen one answered 429 |
 | `router_prefill_job_tokens` / `router_prefill_job_wait_seconds` | per prefill job (both split modes): the tokens it is charged against the budget, and its router wait from placement to dispatch |
-| `router_prefill_drains_deferred_total` | jobs that found a drain due but held back by `--prefill-drain-min-interval` |
+| `router_prefill_drains_deferred_total` | jobs that found a drain due but held back by `--prefill-drain-min-interval` or `--prefill-max-draining` |
 | `router_pd_prefill_held_tokens{tree}` | `--prefill-split-mode=pd`, per prefill leg: the deepest prefix of its prompt the router's tree records, `tree="prefill"` (any P node) or `tree="decode"` (any D node); the leg is charged its prompt less the larger, the decode depth cut to `--prefill-store-unit-tokens` |
 | `router_pd_prefill_service_seconds` | per successful prefill leg: from sending it to a P node to its `kv_transfer_params` |
 | `router_pd_leg_duration_seconds{leg}` | wall time of the `prefill` leg (retries included) and the `decode` leg (to the end of its response) |

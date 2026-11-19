@@ -187,6 +187,9 @@ func New(cfg Config, clk clock.Clock, log *slog.Logger) (*Pool, error) {
 	if cfg.PrefillSplit != nil {
 		sc := *cfg.PrefillSplit
 		sc.PoolName, sc.Clock = cfg.Name, clk
+		if sc.Log == nil {
+			sc.Log = p.log
+		}
 		sc.CostPick = p.SplitFlow != nil
 		if p.SplitFlow != nil {
 			// A node's marks only count while it is in the role that made them:
