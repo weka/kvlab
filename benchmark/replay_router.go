@@ -1295,7 +1295,6 @@ func runRouterReplayInstance(
 			// run hangs drained forever.
 			st.totalEmitted.Add(-1)
 			st.live.abandon(liveTok)
-			recordOverflow(cfg, st, rdw, metrics, req, seriesNum, sessionID+":"+inst.InstanceID, ti+1, len(inst.Requests)-ti-1)
 			return
 		}
 
