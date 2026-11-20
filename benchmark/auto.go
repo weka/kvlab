@@ -200,6 +200,9 @@ type AutoBenchmarkConfig struct {
 	// first, and it would still produce a cache hit rate — just a meaningless
 	// one. That is why the stamp is per pass and never per session.
 	ReplayReuseSessions bool
+	// ReplaySendNoUsage is --replay-skip-no-usage=false: send requests whose
+	// usage was never captured (output_tokens 0) instead of skipping them.
+	ReplaySendNoUsage bool
 	// ReplayStrategy and ReplayFrom choose which sessions each lap over the
 	// corpus dispatches and in what order; see routerReplayStreamOpts.
 	ReplayStrategy string
@@ -1242,6 +1245,9 @@ type autoState struct {
 	totalEmitted   atomic.Int64
 	totalErrors    atomic.Int64
 	errorKinds     errorKindCounts
+	// skippedNoUsage counts replay requests not sent for lack of captured
+	// usage (skipNoUsage).
+	skippedNoUsage atomic.Int64
 
 	// Client-side 429 backoff: how many sheds were waited out, and the total
 	// time spent waiting. A router with a per-backend concurrency cap sheds by
@@ -1439,6 +1445,7 @@ type autoBenchmarkResult struct {
 	sglangTiers       sglangTierSnapshot
 	totalCompleted    int64
 	totalErrors       int64
+	skippedNoUsage    int64
 	totalRetries429   int64
 	totalRetryWait    time.Duration
 	ttftP50           time.Duration
@@ -1522,6 +1529,7 @@ type displaySnapshot struct {
 	totalCompleted    int64
 	totalErrors       int64
 	errorKinds        string // per-kind error counts, " (ttft=.. ..)" or ""
+	skippedNoUsage    int64  // replay requests skipped for lack of captured usage
 	totalRetries429   int64
 	totalRetryWait    time.Duration
 	elapsed           time.Duration
@@ -1675,6 +1683,9 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 	fmt.Println(strings.Repeat("-", 62))
 	fmt.Printf(" Total completed    : %d\n", res.totalCompleted)
 	fmt.Printf(" Total errors       : %d\n", res.totalErrors)
+	if res.skippedNoUsage > 0 {
+		fmt.Printf(" Skipped (no usage) : %d replay requests with output_tokens 0, not sent\n", res.skippedNoUsage)
+	}
 	if res.totalRetries429 > 0 {
 		// A router enforcing a per-backend concurrency cap sheds on purpose, so
 		// this is the run's cost of that policy: sheds waited out, and the wall
@@ -1952,7 +1963,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 		}
 		return fmt.Sprintf("DONE(%s) %s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s in=%s warm=%s scached=%s out=%s%s",
 			snap.termReason, replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
-			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+verifyInfo,
+			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+skippedTok(snap.skippedNoUsage)+verifyInfo,
 			formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
 	}
 	hotInfo := ""
@@ -1961,7 +1972,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 	}
 	return fmt.Sprintf("%s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s elapsed=%s in=%s warm=%s scached=%s out=%s%s",
 		replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
-		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+verifyInfo,
+		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+skippedTok(snap.skippedNoUsage)+verifyInfo,
 		formatDuration(snap.elapsed),
 		formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
 }
@@ -2192,6 +2203,7 @@ func runSingleModelBenchmark(
 			totalCompleted:       total,
 			totalErrors:          errors,
 			errorKinds:           st.errorKinds.String(),
+			skippedNoUsage:       st.skippedNoUsage.Load(),
 			totalRetries429:      retries429,
 			totalRetryWait:       retryWait,
 			elapsed:              time.Since(startTime),
@@ -3349,6 +3361,7 @@ func runSingleModelBenchmark(
 		}
 	}
 	res.totalErrors = st.totalErrors.Load()
+	res.skippedNoUsage = st.skippedNoUsage.Load()
 	res.totalRetries429 = st.totalRetries429.Load()
 	res.totalRetryWait = time.Duration(st.totalRetryWaitNs.Load())
 	res.ttftP50 = tm.ttftP50
@@ -3637,6 +3650,12 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 		fmt.Printf("Header: %d sessions / %d instances / %d requests / %d fan-out turns / max fan-out %d\n\n",
 			hdr.Summary.Sessions, hdr.Summary.Instances, hdr.Summary.Requests,
 			hdr.Summary.FanOutTurns, hdr.Summary.MaxFanOutInOneTurn)
+		if !cfg.ReplaySendNoUsage {
+			if n, total, err := countNoUsageRequests(cfg.RouterReplayFile); err == nil {
+				fmt.Printf("Replay: %d of %d requests have no captured usage (output_tokens 0) and are skipped (--replay-skip-no-usage)\n\n",
+					n, total)
+			}
+		}
 
 		// Both of these are properties of the run, not of a model, and every
 		// model streams the same file — so they belong here, where the header is
@@ -3877,4 +3896,13 @@ func pctOf(num, den int64) string {
 		return "n/a"
 	}
 	return fmt.Sprintf("%.1f%%", 100*float64(num)/float64(den))
+}
+
+// skippedTok is the progress line's " skipped=N" (replay requests not sent
+// for lack of captured usage), "" with none.
+func skippedTok(n int64) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" skipped=%d", n)
 }

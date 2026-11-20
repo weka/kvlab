@@ -1120,6 +1120,21 @@ func runRouterReplayInstance(
 	pacer := newSessionPacer(sessionStartTs, sessionOrigin, cfg.ReplayRealtime, st.skipClk)
 	pacer.think = cfg.replayThink
 	var prevEnd time.Time // when this instance's previous request finished, on our clock
+	// thinkRefEnd is the end of the reference a think-paced turn counts its
+	// think time from.
+	thinkRefEnd := func(req RouterReplayRequest) time.Time {
+		switch req.ThinkRef {
+		case ThinkRefPrev:
+			return prevEnd
+		case ThinkRefSpawn:
+			if e := requestEnd[inst.ParentSpawnRequestID]; e != nil && e.Load() != 0 {
+				return time.Unix(0, e.Load())
+			}
+		case ThinkRefSessionStart:
+			return sessionOrigin
+		}
+		return time.Time{}
+	}
 
 	for ti, req := range inst.Requests {
 		if ctx.Err() != nil {
@@ -1129,6 +1144,24 @@ func runRouterReplayInstance(
 			return
 		}
 		req.passStamp = passStamp
+		if skipNoUsage(cfg, req) {
+			// No usage was captured for this request, so its output size is
+			// unknown; sending it would fall back to max_tokens. It is not
+			// sent, and the session flows on as captured: the turn is taken to
+			// end at its due time plus its captured duration, so a turn timed
+			// from it (think_ref prev or spawn) keeps its captured offset, and
+			// anything waiting on it is released.
+			end := pacer.skippedEnd(req, thinkRefEnd(req))
+			prevEnd = end
+			if e := requestEnd[req.RequestID]; e != nil {
+				e.Store(end.UnixNano())
+			}
+			if ch, ok := requestDone[req.RequestID]; ok {
+				closeOnce(ch)
+			}
+			st.skippedNoUsage.Add(1)
+			continue
+		}
 		loopTop := time.Now() // the previous turn is done: the earliest this one can be eligible
 		// Hold until this turn is due. Already-late turns return at once, which
 		// is the normal case on a fleet slower than the capture: the session
@@ -1142,16 +1175,7 @@ func runRouterReplayInstance(
 		thinkPaced := false
 		thinkSlot, thinking := slotOf(ctx), false
 		if pacer.think {
-			switch req.ThinkRef {
-			case ThinkRefPrev:
-				refEnd = prevEnd
-			case ThinkRefSpawn:
-				if e := requestEnd[inst.ParentSpawnRequestID]; e != nil && e.Load() != 0 {
-					refEnd = time.Unix(0, e.Load())
-				}
-			case ThinkRefSessionStart:
-				refEnd = sessionOrigin
-			}
+			refEnd = thinkRefEnd(req)
 			due, thinkPaced = pacer.thinkDue(req, refEnd)
 			if thinkPaced {
 				thinking = st.live.thinkUntil(thinkSlot, pacer.clk.Now(), due)
@@ -1355,4 +1379,48 @@ func BuildReplayRequestPrefix(req RouterReplayRequest) (hashes []string, tokens 
 		tokens = append(tokens, m.Tokens)
 	}
 	return
+}
+
+// skipNoUsage reports whether a replay request is left out: one whose usage
+// was never captured (output_tokens 0) has no output size to reproduce, and
+// would fall back to its max_tokens -- up to 128k forced tokens under
+// ignore_eos. --replay-skip-no-usage=false sends them.
+func skipNoUsage(cfg AutoBenchmarkConfig, req RouterReplayRequest) bool {
+	return !cfg.ReplaySendNoUsage && req.OutputTokens == 0
+}
+
+// countNoUsageRequests counts the requests of a replay file that skipNoUsage
+// leaves out, and all of its requests.
+func countNoUsageRequests(path string) (noUsage, total int, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	br := bufio.NewReaderSize(f, 1<<20)
+	for first := true; ; first = false {
+		line, rerr := br.ReadBytes('\n')
+		if !first && len(line) > 0 {
+			var sess struct {
+				Instances []struct {
+					Requests []struct {
+						OutputTokens int `json:"output_tokens"`
+					} `json:"requests"`
+				} `json:"instances"`
+			}
+			if json.Unmarshal(line, &sess) == nil {
+				for _, inst := range sess.Instances {
+					for _, r := range inst.Requests {
+						total++
+						if r.OutputTokens == 0 {
+							noUsage++
+						}
+					}
+				}
+			}
+		}
+		if rerr != nil {
+			return noUsage, total, nil
+		}
+	}
 }

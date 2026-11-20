@@ -893,3 +893,16 @@ func admissionGate(cfg AutoBenchmarkConfig, st *autoState, admitStart time.Time)
 	}
 	return g
 }
+
+// skippedEnd is when a turn that is not sent counts as finished: its due time
+// (think schedule, else absolute, else now) plus its captured duration.
+func (p *sessionPacer) skippedEnd(req RouterReplayRequest, ref time.Time) time.Time {
+	due, ok := p.thinkDue(req, ref)
+	if !ok {
+		due, ok = p.dueAt(req.Ts)
+	}
+	if !ok {
+		due = p.clk.Now()
+	}
+	return due.Add(time.Duration(req.TotalMs) * time.Millisecond)
+}
