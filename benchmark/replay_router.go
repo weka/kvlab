@@ -1384,17 +1384,37 @@ func BuildReplayRequestPrefix(req RouterReplayRequest) (hashes []string, tokens 
 // skipNoUsage reports whether a replay request is left out: one whose usage
 // was never captured (output_tokens 0) has no output size to reproduce, and
 // would fall back to its max_tokens -- up to 128k forced tokens under
-// ignore_eos. --replay-skip-no-usage=false sends them.
+// ignore_eos. --replay-skip-no-usage=false sends them all. One whose captured
+// max_tokens is small (keptNoUsage) is still sent, with that budget.
 func skipNoUsage(cfg AutoBenchmarkConfig, req RouterReplayRequest) bool {
-	return !cfg.ReplaySendNoUsage && req.OutputTokens == 0
+	return !cfg.ReplaySendNoUsage && req.OutputTokens == 0 &&
+		!keptNoUsage(cfg.ReplayNoUsageKeepMaxTokens, req.MaxTokens)
 }
 
-// countNoUsageRequests counts the requests of a replay file that skipNoUsage
-// leaves out, and all of its requests.
-func countNoUsageRequests(path string) (noUsage, total int, err error) {
+// keptNoUsage reports whether a no-usage request with captured max_tokens
+// maxTokens is sent anyway under --replay-no-usage-keep-max-tokens=keep: its
+// output budget then falls back to that max_tokens (pickMaxTokensRaw), so it
+// costs at most keep decode tokens. keep 0 keeps none.
+func keptNoUsage(keep, maxTokens int) bool {
+	return keep > 0 && maxTokens > 0 && maxTokens <= keep
+}
+
+// noUsageStartupLine is the start-of-run report of the no-usage requests.
+func noUsageStartupLine(noUsage, kept, total, keep int) string {
+	if keep <= 0 {
+		return fmt.Sprintf("Replay: %d of %d requests have no captured usage (output_tokens 0) and are skipped (--replay-skip-no-usage)",
+			noUsage, total)
+	}
+	return fmt.Sprintf("Replay: %d of %d requests have no captured usage: %d kept (max_tokens<=%d, sent with that budget), %d skipped (--replay-skip-no-usage)",
+		noUsage, total, kept, keep, noUsage-kept)
+}
+
+// countNoUsageRequests counts the requests of a replay file with no captured
+// usage, how many of them keptNoUsage still sends, and all of its requests.
+func countNoUsageRequests(path string, keep int) (noUsage, kept, total int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	defer f.Close()
 	br := bufio.NewReaderSize(f, 1<<20)
@@ -1405,6 +1425,7 @@ func countNoUsageRequests(path string) (noUsage, total int, err error) {
 				Instances []struct {
 					Requests []struct {
 						OutputTokens int `json:"output_tokens"`
+						MaxTokens    int `json:"max_tokens"`
 					} `json:"requests"`
 				} `json:"instances"`
 			}
@@ -1414,13 +1435,16 @@ func countNoUsageRequests(path string) (noUsage, total int, err error) {
 						total++
 						if r.OutputTokens == 0 {
 							noUsage++
+							if keptNoUsage(keep, r.MaxTokens) {
+								kept++
+							}
 						}
 					}
 				}
 			}
 		}
 		if rerr != nil {
-			return noUsage, total, nil
+			return noUsage, kept, total, nil
 		}
 	}
 }

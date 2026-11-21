@@ -141,12 +141,91 @@ func TestCountNoUsageRequests(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n, total, err := countNoUsageRequests(path)
-	if err != nil || n != 2 || total != 4 {
-		t.Errorf("count %d of %d, %v; want 2 of 4", n, total, err)
+	n, kept, total, err := countNoUsageRequests(path, 64)
+	if err != nil || n != 2 || kept != 0 || total != 4 {
+		t.Errorf("count %d (kept %d) of %d, %v; want 2 (kept 0) of 4", n, kept, total, err)
 	}
 	line := renderModelOneLiner(&displaySnapshot{skippedNoUsage: 3})
 	if !strings.Contains(line, " skipped=3") {
 		t.Errorf("progress line %q lacks skipped=3", line)
+	}
+}
+
+// --replay-no-usage-keep-max-tokens: a no-usage request with a small captured
+// max_tokens is sent with that budget; a larger one is skipped; 0 skips all.
+func TestReplayNoUsageKeepMaxTokens(t *testing.T) {
+	for _, tc := range []struct {
+		keep, maxTokens int
+		skip            bool
+	}{
+		{64, 64, false}, {64, 32, false}, {64, 65, true}, {64, 128000, true},
+		{64, 0, true}, {0, 64, true}, {100, 64, false},
+	} {
+		cfg := AutoBenchmarkConfig{ReplayNoUsageKeepMaxTokens: tc.keep}
+		req := RouterReplayRequest{OutputTokens: 0, MaxTokens: tc.maxTokens}
+		if got := skipNoUsage(cfg, req); got != tc.skip {
+			t.Errorf("keep=%d max_tokens=%d: skip %v, want %v", tc.keep, tc.maxTokens, got, tc.skip)
+		}
+		// A request with captured usage is never skipped; =false sends all.
+		if skipNoUsage(cfg, RouterReplayRequest{OutputTokens: 5, MaxTokens: tc.maxTokens}) {
+			t.Errorf("keep=%d: a request with captured usage was skipped", tc.keep)
+		}
+		cfg.ReplaySendNoUsage = true
+		if skipNoUsage(cfg, req) {
+			t.Errorf("keep=%d --replay-skip-no-usage=false: skipped", tc.keep)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "r.jsonl")
+	body := `{"_schema":"replay-v5","summary":{}}` + "\n" +
+		`{"session_id":"a","instances":[{"requests":[{"output_tokens":5,"max_tokens":64},{"output_tokens":0,"max_tokens":64}]}]}` + "\n" +
+		`{"session_id":"b","instances":[{"requests":[{"output_tokens":0,"max_tokens":32000}]},{"requests":[{"output_tokens":0,"max_tokens":64},{"output_tokens":0}]}]}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, kept, total, err := countNoUsageRequests(path, 64)
+	if err != nil || n != 4 || kept != 2 || total != 5 {
+		t.Errorf("count %d (kept %d) of %d, %v; want 4 (kept 2) of 5", n, kept, total, err)
+	}
+	want := "Replay: 4 of 5 requests have no captured usage: 2 kept (max_tokens<=64, sent with that budget), 2 skipped (--replay-skip-no-usage)"
+	if got := noUsageStartupLine(n, kept, total, 64); got != want {
+		t.Errorf("startup line\n got %q\nwant %q", got, want)
+	}
+	if n0, k0, _, _ := countNoUsageRequests(path, 0); n0 != 4 || k0 != 0 {
+		t.Errorf("keep 0: %d kept of %d, want 0 of 4", k0, n0)
+	}
+
+	// End to end: the kept request goes out with max_tokens 64 and the
+	// 32k one is skipped.
+	var mu sync.Mutex
+	var bodies []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}`)
+	}))
+	t.Cleanup(ts.Close)
+	sess := RouterReplaySession{SessionID: "s", StartTs: "2026-05-12T08:50:06Z",
+		Instances: []RouterReplayInstance{{InstanceID: "i1", Role: "main", Requests: []RouterReplayRequest{
+			{RequestID: 1, Ts: "2026-05-12T08:50:06Z", TotalMs: 10, OutputTokens: 0, MaxTokens: 64,
+				Messages: []RouterReplayMessage{userText("turn-a", 40)}},
+			{RequestID: 2, Ts: "2026-05-12T08:50:06.020Z", TotalMs: 10, OutputTokens: 0, MaxTokens: 32000,
+				Messages: []RouterReplayMessage{userText("turn-a", 40), userText("turn-b", 40)}},
+		}}}}
+	cfg := skipCfg(ts, false)
+	cfg.ReplayNoUsageKeepMaxTokens = 64
+	st := newTestAutoState(4)
+	runRouterReplaySession(context.Background(), cfg, st, nil, sess, 1,
+		endpointPicker{}, 30*time.Second, strings.Repeat("docs ", 100), newConcurrencyGate(4, false))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 || st.skippedNoUsage.Load() != 1 {
+		t.Fatalf("sent %d skipped %d, want 1 and 1", len(bodies), st.skippedNoUsage.Load())
+	}
+	if !strings.Contains(bodies[0], `"max_tokens":64`) {
+		t.Errorf("kept request body lacks max_tokens 64: %.300s", bodies[0])
 	}
 }

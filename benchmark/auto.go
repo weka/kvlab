@@ -203,6 +203,12 @@ type AutoBenchmarkConfig struct {
 	// ReplaySendNoUsage is --replay-skip-no-usage=false: send requests whose
 	// usage was never captured (output_tokens 0) instead of skipping them.
 	ReplaySendNoUsage bool
+	// ReplayNoUsageKeepMaxTokens is --replay-no-usage-keep-max-tokens: a
+	// no-usage request whose captured max_tokens is in (0, N] is still sent,
+	// with that max_tokens as its output budget (cheap side calls, e.g.
+	// max_tokens 64, that carry real prefill load). 0 skips every no-usage
+	// request.
+	ReplayNoUsageKeepMaxTokens int
 	// ReplayStrategy and ReplayFrom choose which sessions each lap over the
 	// corpus dispatches and in what order; see routerReplayStreamOpts.
 	ReplayStrategy string
@@ -3651,9 +3657,9 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 			hdr.Summary.Sessions, hdr.Summary.Instances, hdr.Summary.Requests,
 			hdr.Summary.FanOutTurns, hdr.Summary.MaxFanOutInOneTurn)
 		if !cfg.ReplaySendNoUsage {
-			if n, total, err := countNoUsageRequests(cfg.RouterReplayFile); err == nil {
-				fmt.Printf("Replay: %d of %d requests have no captured usage (output_tokens 0) and are skipped (--replay-skip-no-usage)\n\n",
-					n, total)
+			if n, kept, total, err := countNoUsageRequests(cfg.RouterReplayFile, cfg.ReplayNoUsageKeepMaxTokens); err == nil {
+				fmt.Println(noUsageStartupLine(n, kept, total, cfg.ReplayNoUsageKeepMaxTokens))
+				fmt.Println()
 			}
 		}
 
