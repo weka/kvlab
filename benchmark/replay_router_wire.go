@@ -116,6 +116,15 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 		"type": "text",
 		"text": verboseOutputInstruction,
 	})
+	hoisted, convMsgs := splitHoistedSystem(req)
+	hoistedText := make([]string, len(hoisted))
+	for i, m := range hoisted {
+		hoistedText[i] = hoistedSystemText(m, docs, charsPerToken)
+		systemArr = append(systemArr, map[string]interface{}{
+			"type": "text",
+			"text": hoistedText[i],
+		})
+	}
 	if len(systemArr) > 0 {
 		body["system"] = systemArr
 	}
@@ -123,8 +132,8 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 		body["tools"] = prependRunStampTool(buildTools(req.Tools, docs, charsPerToken), runID)
 	}
 	var msgs []map[string]interface{}
-	if len(req.Messages) > 0 {
-		msgs = buildMessages(req.Messages, docs, charsPerToken, stampByHash)
+	if len(convMsgs) > 0 {
+		msgs = buildMessages(convMsgs, docs, charsPerToken, stampByHash)
 	}
 	tail := ""
 	if inj != nil {
@@ -149,6 +158,10 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 	for _, b := range effectiveSystemBlocks(req.SystemBlocks) {
 		canonical.WriteString(synthText(b.Hash, sizeBudget(b.Bytes, b.Tokens, charsPerToken), docs))
 	}
+	// Hoisted system messages ride in the system array, ahead of the tools.
+	for _, t := range hoistedText {
+		canonical.WriteString(t)
+	}
 	if req.Tools != nil && req.Tools.Count > 0 {
 		n := req.Tools.Count
 		if n <= 0 {
@@ -165,7 +178,7 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 			canonical.WriteString(synthText(fmt.Sprintf("%s:tool:%d", req.Tools.Hash, i), perDesc, docs))
 		}
 	}
-	for _, m := range req.Messages {
+	for _, m := range convMsgs {
 		blocks := buildMessageContent(m, docs, charsPerToken, stampByHash)
 		for _, blk := range blocks {
 			if t, ok := blk["text"]; ok {
@@ -192,6 +205,80 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 
 	bodyBytes, err := json.Marshal(body)
 	return bodyBytes, canonical.String(), err
+}
+
+// isSystemRole reports whether a captured message role is an instruction
+// role: "system", or OpenAI's "developer" (the same thing under its newer
+// name).
+func isSystemRole(role string) bool {
+	return role == "system" || role == "developer"
+}
+
+// hoistSystemMessages implements --replay-system-first. It returns req with
+// every system/developer message moved, in captured order, to the front of
+// Messages (developer renamed system) and records how many it moved in
+// hoistedSystem. The remaining messages keep their captured order.
+//
+// Captures place a system message wherever the client sent it, so a per-turn
+// reminder lands after tool-use turns; chat templates that accept a system
+// message only at the start reject such a request. Both body builders put the
+// hoisted messages straight after the request's own system blocks and the
+// output instruction: OpenAI as one system message each (consecutive with
+// the leading system run), Anthropic as one text block each in the system
+// array. Each hoisted message keeps its own entry rather than being joined
+// into one, so its synthesized bytes are the same as when it is sent in place.
+//
+// A request with no system/developer message comes back unchanged.
+func hoistSystemMessages(req RouterReplayRequest) RouterReplayRequest {
+	n := 0
+	for _, m := range req.Messages {
+		if isSystemRole(m.Role) {
+			n++
+		}
+	}
+	if n == 0 {
+		return req
+	}
+	out := make([]RouterReplayMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		if isSystemRole(m.Role) {
+			m.Role = "system"
+			out = append(out, m)
+		}
+	}
+	for _, m := range req.Messages {
+		if !isSystemRole(m.Role) {
+			out = append(out, m)
+		}
+	}
+	req.Messages = out
+	req.hoistedSystem = n
+	return req
+}
+
+// splitHoistedSystem splits req.Messages into the messages hoistSystemMessages
+// moved to the front and the conversation that follows them.
+func splitHoistedSystem(req RouterReplayRequest) (hoisted, conv []RouterReplayMessage) {
+	n := req.hoistedSystem
+	if n > len(req.Messages) {
+		n = len(req.Messages)
+	}
+	return req.Messages[:n], req.Messages[n:]
+}
+
+// hoistedSystemText flattens a hoisted system message to the one string the
+// Anthropic system array carries for it, joining its blocks with a newline as
+// the OpenAI builder does for a system-role message.
+func hoistedSystemText(m RouterReplayMessage, docs string, charsPerToken float64) string {
+	var parts []string
+	for _, blk := range buildMessageContent(m, docs, charsPerToken, nil) {
+		for _, k := range []string{"text", "content", "thinking"} {
+			if t, ok := blk[k]; ok {
+				parts = append(parts, fmt.Sprintf("%v", t))
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // pickMaxTokens picks the per-request max_tokens cap. When outputRatio > 0

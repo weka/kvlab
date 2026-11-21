@@ -100,6 +100,10 @@ type AutoBenchmarkConfig struct {
 	// count, so the serving tokenizer's counts land near the original
 	// capture's. 0 = byte-faithful sizing (default).
 	ReplayCharsPerToken float64
+	// ReplaySystemFirst: --replay-system-first. Router replay moves every
+	// system/developer message into the leading system block (see
+	// hoistSystemMessages).
+	ReplaySystemFirst bool
 	// VLLMMetricsURLs overrides where upstream counters are scraped from.
 	//
 	// By default the sampler derives /metrics from the serving spec, which only
@@ -2383,6 +2387,7 @@ func runSingleModelBenchmark(
 			pp.minOutputTokens = cfg.ReplayMinOutputTokens
 			pp.limitContext = cfg.LimitContext
 			pp.replayCharsPerToken = cfg.ReplayCharsPerToken
+			pp.systemFirst = cfg.ReplaySystemFirst
 			pp.forceVolume = cfg.forceVolume()
 			// UUID cache-coherency injection (--verify). Same
 			// global/read-only refs set on the per-instance poster in

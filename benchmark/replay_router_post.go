@@ -97,6 +97,10 @@ type replayPoster struct {
 	// count, so the serving tokenizer's counts land near the original
 	// capture's. 0 = byte-faithful sizing (default).
 	replayCharsPerToken float64
+	// systemFirst: --replay-system-first. Every system/developer message is
+	// moved into the leading system block before the body is built, so no
+	// system message follows a user/assistant/tool turn on the wire.
+	systemFirst bool
 
 	// UUID cache-coherency injection (--verify, router path —
 	// see replay_router_uuid.go). Set directly on the poster after
@@ -611,6 +615,9 @@ func (p *replayPoster) do(
 	// series, turn and a random suffix, since a session can be replayed again
 	// under the same series number on a later pass.
 	xRequestID := fmt.Sprintf("wk-s%d-t%d-%08x", seriesNum, turnIdx, rand.Uint32())
+	if p.systemFirst {
+		req = hoistSystemMessages(req)
+	}
 	inj := p.buildInjection(req, su)
 	outputTarget := pickMaxTokens(req, p.outputRatio, p.minOutputTokens)
 
@@ -1383,6 +1390,9 @@ func (p *replayPoster) dryDo(
 	// cache-ratio estimate) stays consistent with a real do() call for the
 	// same request — dry-run never makes a real request, so there's no
 	// response to validate.
+	if p.systemFirst {
+		req = hoistSystemMessages(req)
+	}
 	inj := p.buildInjection(req, su)
 	var canonical string
 	switch p.apiType {

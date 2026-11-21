@@ -127,9 +127,14 @@ type RouterReplayRequest struct {
 	// dispatch from the session's pass, because a poster is shared across a
 	// series and cannot hold a value that varies per pass.
 	passStamp string
-	Model     string `json:"model"`
-	Stream    bool   `json:"stream"`
-	MaxTokens int    `json:"max_tokens"`
+	// hoistedSystem is the number of leading Messages that hoistSystemMessages
+	// moved there (--replay-system-first). The Anthropic body builder emits
+	// them as system text blocks rather than as messages; the OpenAI builder
+	// needs nothing, since they already sit in the leading system run.
+	hoistedSystem int
+	Model         string `json:"model"`
+	Stream        bool   `json:"stream"`
+	MaxTokens     int    `json:"max_tokens"`
 
 	InputTokens         int `json:"input_tokens"`
 	PrefillTokens       int `json:"prefill_tokens"`
@@ -1078,6 +1083,7 @@ func runRouterReplayInstance(
 		poster.dumper = cfg.dumper
 		poster.limitContext = cfg.LimitContext
 		poster.replayCharsPerToken = cfg.ReplayCharsPerToken
+		poster.systemFirst = cfg.ReplaySystemFirst
 		// UUID cache-coherency injection (--verify, router
 		// path). Everything set here is global and read-only — the same seed
 		// and the same registry go on every poster in the run (see also the
