@@ -172,6 +172,8 @@ type Options struct {
 	// PrefillNodeBudgetTokens bounds the prefill tokens queued plus in flight
 	// on one prefill node.
 	PrefillNodeBudgetTokens int64
+	// PrefillBudgetSoft is --prefill-budget-soft: prefill.Config's BudgetSoft.
+	PrefillBudgetSoft bool
 	// PrefillMaxFleetFraction caps the share of a pool that may be prefill
 	// nodes; at least one node always stays in decode.
 	PrefillMaxFleetFraction float64
@@ -446,6 +448,7 @@ func (o Options) splitConfig() prefill.Config {
 	return prefill.Config{
 		NodeConcurrency:  o.NodeConcurrency,
 		NodeBudgetTokens: o.PrefillNodeBudgetTokens,
+		BudgetSoft:       o.PrefillBudgetSoft,
 		MaxFleetFraction: o.PrefillMaxFleetFraction,
 		ConvertAfter:     o.PrefillConvertAfter,
 		ReleaseIdle:      o.PrefillReleaseIdle,
@@ -1065,8 +1068,16 @@ func runServers(ctx context.Context, opts Options, handler http.Handler) error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("router listening", "listen", opts.Listen,
-			"metrics", opts.MetricsListen, "signals", opts.signalsLog())
+		attrs := []any{"listen", opts.Listen,
+			"metrics", opts.MetricsListen, "signals", opts.signalsLog()}
+		if opts.prefillConfig() != nil {
+			budget := "hard"
+			if opts.PrefillBudgetSoft {
+				budget = "soft"
+			}
+			attrs = append(attrs, "prefill_budget", budget)
+		}
+		log.Info("router listening", attrs...)
 		errCh <- srv.ListenAndServe()
 	}()
 

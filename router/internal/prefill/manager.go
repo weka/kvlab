@@ -68,6 +68,11 @@ type Config struct {
 	// NodeBudgetTokens bounds the prefill tokens queued plus in flight on one
 	// node. A job bigger than the budget still runs on an otherwise empty node.
 	NodeBudgetTokens int64
+	// BudgetSoft (reject mode) makes the budget steer placement and conversion
+	// only: a job on a prefill node is sent to the engine at once, whatever the
+	// node's running tokens, instead of waiting in the router for room (see
+	// canRunLocked).
+	BudgetSoft bool
 	// MaxFleetFraction caps the share of the fleet that is draining or
 	// prefill. At least one node always stays in decode.
 	MaxFleetFraction float64
@@ -692,14 +697,24 @@ func (m *Manager) grantLocked(n *node) {
 }
 
 // canRunLocked reports whether j may start on n now: n is not draining, has a
-// slot under the concurrency limit, and its running jobs leave room for j in
-// the token budget. A job bigger than the budget runs alone.
+// slot under the concurrency limit, and — with a hard budget — its running
+// jobs leave room for j in the token budget. A job bigger than the budget runs
+// alone.
 //
-// The budget bounds what is SENT to a node, not only what is placed on it.
-// Jobs placed over it — queued on the least-pending node while ConvertAfter
-// holds back a conversion — wait in the manager, where spreadLocked can still
-// move them to a node that frees room or finishes converting. Sent to the
-// engine they would be bound to that node until it ran them all.
+// With a hard budget (the default) the budget bounds what is SENT to a node,
+// not only what is placed on it. Jobs placed over it — queued on the
+// least-pending node while ConvertAfter holds back a conversion — wait in the
+// manager, where spreadLocked can still move them to a node that frees room or
+// finishes converting. Sent to the engine they would be bound to that node
+// until it ran them all.
+//
+// With BudgetSoft the budget bounds only placement and conversion (Reserve,
+// trackBudgetLocked, overLocked): a job starts as soon as its node is a
+// prefill node with a free concurrency slot, and the engine's own scheduler
+// queues what the node cannot run at once. Running tokens may then exceed the
+// budget. The trade is the reverse of the hard budget's: no router wait in
+// front of an engine with spare capacity, but a job sent over budget stays on
+// its node even when a conversion later frees room elsewhere.
 func (m *Manager) canRunLocked(n *node, j *Job) bool {
 	if n.mode == Draining {
 		return false
@@ -707,7 +722,7 @@ func (m *Manager) canRunLocked(n *node, j *Job) bool {
 	if limit := m.cfg.NodeConcurrency; limit > 0 && (int64(n.running) >= limit || n.b.Inflight() >= limit) {
 		return false
 	}
-	return n.running == 0 || n.runningTokens+j.tokens <= m.cfg.NodeBudgetTokens
+	return m.cfg.BudgetSoft || n.running == 0 || n.runningTokens+j.tokens <= m.cfg.NodeBudgetTokens
 }
 
 // spreadLocked moves jobs waiting on a node that cannot start them onto
@@ -985,7 +1000,8 @@ type NodeState struct {
 	RunningJobs   int    `json:"running_jobs"`
 	QueuedJobs    int    `json:"queued_jobs"`
 	// RunningTokens is the tokens of the running jobs: what the node has been
-	// sent, at most the budget unless one job exceeds it.
+	// sent. With a hard budget it is at most the budget unless one job exceeds
+	// it; with a soft one it may be any amount.
 	RunningTokens int64 `json:"running_tokens"`
 }
 

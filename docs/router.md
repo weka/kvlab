@@ -256,6 +256,16 @@ quickly, gets that long to clear before another decode node is given up. Jobs
 queue on the prefill nodes meanwhile, and `router_prefill_drains_deferred_total`
 counts the jobs held back. The pool's first prefill node is never delayed.
 
+The budget also bounds what is sent to a node: a job placed over it waits in
+the router (`router_prefill_queued_jobs`) until the node's running jobs leave
+room, and can still move to a node that frees room or finishes converting.
+With `--prefill-budget-soft` (reject mode) the budget only steers placement and
+conversion as above; a job on a prefill node is sent to its engine at once,
+whatever the node is already running, and the engine's scheduler queues it
+instead. The router then queues only jobs waiting on a draining node or for
+`--max-node-concurrency`, and a job sent over budget stays on its node even
+when a later conversion frees room elsewhere.
+
 In reject mode a node already draining counts as a budget of room on its way:
 another drain happens only while the pending prefill tokens exceed
 `--prefill-node-budget-tokens` times the prefill plus draining nodes, and never
@@ -1275,7 +1285,7 @@ So alert on all three:
 | `router_prefill_bypass_fallbacks_total{reason}` | requests served with the bypass and no prefill: `no_node` (none could be added) or `job_failed` |
 | `router_prefill_nodes{mode}` / `router_prefill_node_mode{backend}` | backends per mode, and each backend's mode (0 decode, 1 draining, 2 prefill); under `--prefill-split-mode=pd` these, and every other `router_prefill_*` series, describe the dynamic P set |
 | `router_prefill_queued_jobs` / `router_prefill_job_retries_total` | prefill jobs waiting for a slot under `--max-node-concurrency` (a prefill node never runs more jobs than that, counting its other in-flight requests), and jobs retried on the same node after it answered 429 |
-| `router_prefill_pending_tokens{backend}` | queued plus in-flight prefill tokens on a backend. A node is sent at most `--prefill-node-budget-tokens` of it at once; the rest waits in the router (`router_prefill_queued_jobs`) and may move. `/router-viz` shows each node's `running_tokens` |
+| `router_prefill_pending_tokens{backend}` | queued plus in-flight prefill tokens on a backend. A node is sent at most `--prefill-node-budget-tokens` of it at once (any amount with `--prefill-budget-soft`); the rest waits in the router (`router_prefill_queued_jobs`) and may move. `/router-viz` shows each node's `running_tokens` |
 | `router_prefill_fallbacks_skipped_total` | rejected requests whose bypass fallback (no prefill node, or a job that did not succeed) was not sent because the caller had already left; not in `router_prefill_bypass_fallbacks_total` |
 | `router_prefill_job_moves_total` | queued prefill jobs moved to another prefill node that could start them at once |
 | `router_pd_prefill_legs_total{outcome}` | prefill legs sent to a P node (`--pd-prefill-backends` only): `ok`, `failed` (non-2xx or transport error) or `no_params` (answered without `kv_transfer_params`) |
