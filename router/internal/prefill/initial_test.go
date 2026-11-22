@@ -2,6 +2,7 @@ package prefill
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -141,19 +142,42 @@ func TestInitialNodesReleasedByIdleLikeAnyOther(t *testing.T) {
 	if got := count(f.modes(), Prefill); got != 2 {
 		t.Fatalf("prefill nodes = %d, want 2", got)
 	}
+	// No job yet: the idle clock does not run, however long the wait.
+	for range 3 {
+		f.clk.Advance(time.Minute)
+		f.m.Tick(f.bs)
+	}
+	if got := count(f.modes(), Prefill); got != 2 {
+		t.Fatalf("modes = %v: an initial node with no job was released", f.modes())
+	}
+	j, err := f.m.Reserve(f.bs, 50_000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.WaitReady(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	served := j.Backend
+	j.Done()
 	f.clk.Advance(29 * time.Second)
 	f.m.Tick(f.bs)
-	if got := count(f.modes(), Prefill); got != 2 {
-		t.Fatalf("released before the grace: %v", f.modes())
+	if f.m.ModeOf(served) != Prefill {
+		t.Fatalf("%s released before the grace", served.URL)
 	}
 	f.clk.Advance(time.Second)
 	f.m.Tick(f.bs)
 	f.m.Tick(f.bs)
-	if got := count(f.modes(), Decode); got != 4 {
-		t.Fatalf("modes = %v, want all released to decode, none taken again", f.modes())
+	if f.m.ModeOf(served) != Decode {
+		t.Fatalf("modes = %v, want %s released after ReleaseIdle", f.modes(), served.URL)
 	}
-	if got := f.m.State().Releases; got != 2 {
-		t.Errorf("releases = %d, want 2", got)
+	if got := f.m.State().Releases; got != 1 {
+		t.Errorf("releases = %d, want 1", got)
+	}
+	// The other initial node, never used, stays; nothing new is taken.
+	f.clk.Advance(time.Minute)
+	f.m.Tick(f.bs)
+	if p, d := count(f.modes(), Prefill), count(f.modes(), Decode); p != 1 || d != 3 {
+		t.Errorf("modes = %v, want the unused initial node only", f.modes())
 	}
 }
 

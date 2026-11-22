@@ -221,6 +221,10 @@ type node struct {
 	// within it); idleSince when a prefill node last ran out of jobs (zero
 	// while it has any).
 	overSince, idleSince time.Time
+	// unproven marks an InitialNodes node that has not finished a job yet:
+	// its idle clock does not run, so it waits for the first burst however
+	// late that comes (initial.go).
+	unproven bool
 	// convertedAt is when it last left decode; zero for an initial node, so
 	// initial nodes count as the oldest.
 	convertedAt time.Time
@@ -306,6 +310,7 @@ func (j *Job) Done() {
 		m.dequeueLocked(j)
 		m.unholdLocked(j)
 		j.n.pending -= j.tokens
+		j.n.unproven = false
 		// A node pruned while the job ran is no longer the manager's: its
 		// counters settle, but its mode, metrics and release belong to
 		// whichever node now has the URL.

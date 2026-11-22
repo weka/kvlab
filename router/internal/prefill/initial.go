@@ -24,8 +24,10 @@ import (
 // released the count is dropped, so a release never makes another node
 // prefill in its place.
 //
-// The node's idle clock starts at the conversion: with ReleaseIdle set it
-// returns to decode after that long without a job, like any prefill node.
+// The node's idle clock does not start until its first job is done: the
+// first rejects can come a minute or more after the router starts, and an
+// initial node released before them would be no use. From then on
+// ReleaseIdle returns it to decode like any prefill node.
 func (m *Manager) provisionInitialLocked(cands []*registry.Backend) {
 	if m.initialLeft <= 0 || m.cfg.PD {
 		return
@@ -46,7 +48,6 @@ func (m *Manager) provisionInitialLocked(cands []*registry.Backend) {
 		}
 	}
 	sort.Slice(idle, func(i, j int) bool { return idle[i].b.URL < idle[j].b.URL })
-	now := m.cfg.Clock.Now()
 	for m.initialLeft > 0 && len(idle) > 0 && m.canConvertLocked(len(cands), nonDecode, decode) {
 		best := 0
 		for i, n := range idle {
@@ -63,7 +64,7 @@ func (m *Manager) provisionInitialLocked(cands []*registry.Backend) {
 		decode--
 		m.setModeLocked(n, Prefill)
 		// Zero convertedAt: an initial node counts as the oldest.
-		n.convertedAt, n.idleSince = time.Time{}, now
+		n.convertedAt, n.idleSince, n.unproven = time.Time{}, time.Time{}, true
 		m.publishLocked(n)
 		// The promotion's message, so a log reader counting conversions
 		// sees these too; reason=initial tells them apart.

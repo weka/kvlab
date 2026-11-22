@@ -37,7 +37,8 @@ func (m *Manager) overLocked() bool {
 //   - Otherwise a draining node whose decodes have finished becomes a prefill
 //     node, and jobs waiting elsewhere move to it.
 //   - Prefill nodes idle for ReleaseIdle go back to decode, a node that has
-//     never had a job counting as idle from the first Tick that sees it so.
+//     never had a job counting as idle from the first Tick that sees it so;
+//     an InitialNodes node only from the end of its first job.
 func (m *Manager) Tick(cands []*registry.Backend) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -59,7 +60,7 @@ func (m *Manager) Tick(cands []*registry.Backend) {
 		case n.mode == Prefill:
 			// A node that became a prefill node with no job, or whose idle
 			// start was never stamped, is idle from now.
-			if n.idleSince.IsZero() && n.pending == 0 && n.running == 0 && len(n.queue) == 0 {
+			if n.idleSince.IsZero() && !n.unproven && n.pending == 0 && n.running == 0 && len(n.queue) == 0 {
 				n.idleSince = now
 			}
 		case n.mode != Draining:
