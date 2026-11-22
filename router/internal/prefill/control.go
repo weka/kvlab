@@ -30,6 +30,8 @@ func (m *Manager) overLocked() bool {
 // call it directly). cands is the pool's healthy backends. Under PD it is
 // tickPD; otherwise:
 //
+//   - InitialNodes not yet provisioned are taken from the idle decode nodes
+//     (initial.go).
 //   - A draining node with no job on it goes back to decode once the overflow
 //     has cleared (overLocked).
 //   - Otherwise a draining node whose decodes have finished becomes a prefill
@@ -43,6 +45,7 @@ func (m *Manager) Tick(cands []*registry.Backend) {
 		m.tickPDLocked(cands)
 		return
 	}
+	m.provisionInitialLocked(cands)
 	now := m.cfg.Clock.Now()
 	nonDecode := 0
 	for _, b := range cands {

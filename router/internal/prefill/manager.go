@@ -171,6 +171,13 @@ type Config struct {
 	// MinPrefill is the fewest prefill nodes: none is released below it, and
 	// decode nodes are drained to reach it.
 	MinPrefill int
+	// InitialNodes (reject mode only) is how many nodes become prefill nodes
+	// as soon as the manager sees them healthy and idle, spread across hosts
+	// (see initial.go), so a cold-start burst of rejected prefills finds
+	// prefill nodes ready instead of piling onto the first drain. It is
+	// capped by MaxFleetFraction. They are ordinary prefill nodes afterwards:
+	// released like any other, and never made prefill by it again.
+	InitialNodes int
 	// Log, when set, gets a line for every conversion and release with the
 	// load behind it.
 	Log *slog.Logger
@@ -243,6 +250,10 @@ type Manager struct {
 	// initial is Config.Initial, normalised, less the nodes already met: a
 	// node is made a prefill node by it once, when first seen.
 	initial map[string]bool
+	// initialLeft is how many more nodes InitialNodes makes prefill, and
+	// initialTaken the nodes it has made prefill (reject mode).
+	initialLeft  int
+	initialTaken map[string]bool
 	// ttft is the provisioning window, lastAction the time of the last
 	// provisioning action and svcFleet the fleet's P-leg service EWMA
 	// (pdttft.go).
@@ -264,6 +275,8 @@ func New(cfg Config) *Manager {
 		for _, u := range cfg.Initial {
 			m.initial[normalize(u)] = true
 		}
+	} else if cfg.InitialNodes > 0 {
+		m.initialLeft, m.initialTaken = cfg.InitialNodes, map[string]bool{}
 	}
 	return m
 }
@@ -400,6 +413,7 @@ func (m *Manager) Reserve(cands []*registry.Backend, tokens int64, pick Picker) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.m.JobTokens.Observe(float64(tokens))
+	m.provisionInitialLocked(cands)
 
 	var decode, prefillNodes, draining []*registry.Backend
 	for _, b := range cands {
@@ -862,6 +876,10 @@ func (m *Manager) releaseLocked(n *node) {
 
 func (m *Manager) releaseForLocked(n *node, reason string) {
 	m.setModeLocked(n, Decode)
+	if m.initialTaken[n.b.URL] {
+		// The traffic now decides: InitialNodes provisions no more.
+		m.initialLeft = 0
+	}
 	n.idleSince = time.Time{}
 	m.releases.Add(1)
 	m.m.Releases.Inc()

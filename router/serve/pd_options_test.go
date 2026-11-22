@@ -133,6 +133,10 @@ func TestValidatePDDynamicMode(t *testing.T) {
 		{"pd mode with a floor", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: PrefillSplitPD, PDPrefillBackends: floor}, ""},
 		{"pd mode band without a static set", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: PrefillSplitPD, PDPrefillMaxNodeConcurrency: 8}, ""},
 		{"floor with reject mode", Options{Routes: routes, PrefillSplit: true, PDPrefillBackends: floor}, "unless --prefill-split-mode=pd"},
+		{"initial nodes, reject mode", Options{Routes: routes, PrefillSplit: true, PrefillInitialNodes: 1}, ""},
+		{"initial nodes without the split", Options{Routes: routes, PrefillInitialNodes: 1}, "--prefill-initial-nodes needs --prefill-split"},
+		{"initial nodes, pd mode", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: PrefillSplitPD, PrefillInitialNodes: 1}, "--prefill-initial-nodes needs --prefill-split"},
+		{"negative initial nodes", Options{Routes: routes, PrefillSplit: true, PrefillInitialNodes: -1}, "must not be negative"},
 		{"pd mode without the split", Options{Routes: routes, PrefillSplitMode: PrefillSplitPD}, "needs --prefill-split"},
 		{"unknown mode", Options{Routes: routes, PrefillSplit: true, PrefillSplitMode: "both"}, "want reject or pd"},
 	}
@@ -154,6 +158,11 @@ func TestPDDynamicConfigReusesTheSplitFlags(t *testing.T) {
 		PrefillDrainMinInterval: 5 * time.Second, NodeConcurrency: 64}
 	if split.pdDynamicConfig(false) != nil || split.prefillConfig() == nil {
 		t.Fatal("reject mode must build the split's manager only")
+	}
+	withInitial := split
+	withInitial.PrefillInitialNodes = 3
+	if got := withInitial.prefillConfig().InitialNodes; got != 3 {
+		t.Errorf("reject mode InitialNodes = %d, want 3", got)
 	}
 	o := split
 	o.PrefillSplitMode, o.PrefillMinNodes = PrefillSplitPD, 2

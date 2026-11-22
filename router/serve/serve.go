@@ -186,6 +186,9 @@ type Options struct {
 	PrefillMaxDraining int
 	// PrefillMinNodes is --prefill-min-nodes, --prefill-split-mode=pd only.
 	PrefillMinNodes int
+	// PrefillInitialNodes is --prefill-initial-nodes, reject mode only:
+	// prefill.Config's InitialNodes.
+	PrefillInitialNodes int
 	// PDTTFTWindow, PDTTFTHigh and PDTTFTLow are --pd-ttft-window,
 	// --pd-ttft-high and --pd-ttft-low; PDUnknownCostPer1K is
 	// --pd-prefill-unknown-cost-per-1k. --prefill-split-mode=pd only.
@@ -440,6 +443,7 @@ func (o Options) prefillConfig() *prefill.Config {
 		return nil
 	}
 	c := o.splitConfig()
+	c.InitialNodes = o.PrefillInitialNodes
 	return &c
 }
 
@@ -543,6 +547,12 @@ func (o Options) validatePD() error {
 		case b.v > 0 && !o.pdOn():
 			return fmt.Errorf("router: %s needs --pd-prefill-backends or --prefill-split-mode=pd", b.flag)
 		}
+	}
+	switch {
+	case o.PrefillInitialNodes < 0:
+		return errors.New("router: --prefill-initial-nodes must not be negative")
+	case o.PrefillInitialNodes > 0 && (!o.PrefillSplit || o.dynamicPD()):
+		return errors.New("router: --prefill-initial-nodes needs --prefill-split with --prefill-split-mode=reject (under pd, --pd-prefill-backends names the starting prefill nodes)")
 	}
 	switch o.PrefillSplitMode {
 	case "", PrefillSplitReject:
@@ -1076,6 +1086,9 @@ func runServers(ctx context.Context, opts Options, handler http.Handler) error {
 				budget = "soft"
 			}
 			attrs = append(attrs, "prefill_budget", budget)
+			if opts.PrefillInitialNodes > 0 {
+				attrs = append(attrs, "prefill_initial_nodes", opts.PrefillInitialNodes)
+			}
 		}
 		log.Info("router listening", attrs...)
 		errCh <- srv.ListenAndServe()
