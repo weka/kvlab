@@ -256,6 +256,44 @@ func hoistSystemMessages(req RouterReplayRequest) RouterReplayRequest {
 	return req
 }
 
+// dropLateSystemMessages implements --replay-drop-late-system. It returns req
+// without the system/developer messages that follow its first non-system
+// message, and how many it removed; a leading run of system messages stays
+// where it is.
+//
+// Whether a message is dropped depends only on what precedes it, and a
+// session's turn N carries turn N-1's messages as its own leading messages, so
+// every turn drops the same ones: turn N's body remains an extension of turn
+// N-1's and prefix-cache reuse is the capture's. That is the difference from
+// --replay-system-first, which moves late messages ahead of the history and
+// so changes every turn's prefix. The cost is fidelity: the dropped
+// reminders are not sent at all.
+func dropLateSystemMessages(req RouterReplayRequest) (RouterReplayRequest, int) {
+	first := -1
+	n := 0
+	for i, m := range req.Messages {
+		if !isSystemRole(m.Role) {
+			if first < 0 {
+				first = i
+			}
+		} else if first >= 0 {
+			n++
+		}
+	}
+	if n == 0 {
+		return req, 0
+	}
+	out := make([]RouterReplayMessage, 0, len(req.Messages)-n)
+	for i, m := range req.Messages {
+		if i > first && isSystemRole(m.Role) {
+			continue
+		}
+		out = append(out, m)
+	}
+	req.Messages = out
+	return req, n
+}
+
 // splitHoistedSystem splits req.Messages into the messages hoistSystemMessages
 // moved to the front and the conversation that follows them.
 func splitHoistedSystem(req RouterReplayRequest) (hoisted, conv []RouterReplayMessage) {

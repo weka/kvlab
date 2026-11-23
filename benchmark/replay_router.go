@@ -1168,6 +1168,13 @@ func runRouterReplayInstance(
 			st.skippedNoUsage.Add(1)
 			continue
 		}
+		if cfg.ReplayDropLateSystem {
+			var dropped int
+			if req, dropped = dropLateSystemMessages(req); dropped > 0 {
+				st.lateSystemDropped.Add(int64(dropped))
+				st.lateSystemRequests.Add(1)
+			}
+		}
 		loopTop := time.Now() // the previous turn is done: the earliest this one can be eligible
 		// Hold until this turn is due. Already-late turns return at once, which
 		// is the normal case on a fleet slower than the capture: the session
@@ -1413,6 +1420,57 @@ func noUsageStartupLine(noUsage, kept, total, keep int) string {
 	}
 	return fmt.Sprintf("Replay: %d of %d requests have no captured usage: %d kept (max_tokens<=%d, sent with that budget), %d skipped (--replay-skip-no-usage)",
 		noUsage, total, kept, keep, noUsage-kept)
+}
+
+// lateSystemStartupLine is the start-of-run report of what
+// --replay-drop-late-system removes from the corpus.
+func lateSystemStartupLine(msgs, reqs, total int) string {
+	return fmt.Sprintf("Replay: --replay-drop-late-system drops %d late system/developer messages from %d of %d requests (leading system messages kept)",
+		msgs, reqs, total)
+}
+
+// countLateSystemMessages counts, over a replay file, the messages
+// dropLateSystemMessages removes, the requests that carry at least one, and
+// all of its requests.
+func countLateSystemMessages(path string) (msgs, reqs, total int, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer f.Close()
+	br := bufio.NewReaderSize(f, 1<<20)
+	for first := true; ; first = false {
+		line, rerr := br.ReadBytes('\n')
+		if !first && len(line) > 0 {
+			var sess struct {
+				Instances []struct {
+					Requests []struct {
+						Messages []struct {
+							Role string `json:"role"`
+						} `json:"messages"`
+					} `json:"requests"`
+				} `json:"instances"`
+			}
+			if json.Unmarshal(line, &sess) == nil {
+				for _, inst := range sess.Instances {
+					for _, r := range inst.Requests {
+						total++
+						req := RouterReplayRequest{Messages: make([]RouterReplayMessage, len(r.Messages))}
+						for i, m := range r.Messages {
+							req.Messages[i].Role = m.Role
+						}
+						if _, n := dropLateSystemMessages(req); n > 0 {
+							msgs += n
+							reqs++
+						}
+					}
+				}
+			}
+		}
+		if rerr != nil {
+			return msgs, reqs, total, nil
+		}
+	}
 }
 
 // countNoUsageRequests counts the requests of a replay file with no captured

@@ -104,6 +104,10 @@ type AutoBenchmarkConfig struct {
 	// system/developer message into the leading system block (see
 	// hoistSystemMessages).
 	ReplaySystemFirst bool
+	// ReplayDropLateSystem: --replay-drop-late-system. Router replay drops
+	// every system/developer message after a request's first non-system
+	// message (see dropLateSystemMessages).
+	ReplayDropLateSystem bool
 	// VLLMMetricsURLs overrides where upstream counters are scraped from.
 	//
 	// By default the sampler derives /metrics from the serving spec, which only
@@ -1258,6 +1262,10 @@ type autoState struct {
 	// skippedNoUsage counts replay requests not sent for lack of captured
 	// usage (skipNoUsage).
 	skippedNoUsage atomic.Int64
+	// lateSystemDropped / lateSystemRequests count the system messages
+	// --replay-drop-late-system removed and the requests they came from.
+	lateSystemDropped  atomic.Int64
+	lateSystemRequests atomic.Int64
 
 	// Client-side 429 backoff: how many sheds were waited out, and the total
 	// time spent waiting. A router with a per-backend concurrency cap sheds by
@@ -1456,6 +1464,8 @@ type autoBenchmarkResult struct {
 	totalCompleted    int64
 	totalErrors       int64
 	skippedNoUsage    int64
+	lateSysDropped    int64 // --replay-drop-late-system: messages dropped
+	lateSysRequests   int64 // --replay-drop-late-system: requests affected
 	totalRetries429   int64
 	totalRetryWait    time.Duration
 	ttftP50           time.Duration
@@ -1693,6 +1703,9 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 	fmt.Println(strings.Repeat("-", 62))
 	fmt.Printf(" Total completed    : %d\n", res.totalCompleted)
 	fmt.Printf(" Total errors       : %d\n", res.totalErrors)
+	if res.lateSysRequests > 0 {
+		fmt.Printf(" Late system dropped: %d messages from %d sent requests (--replay-drop-late-system)\n", res.lateSysDropped, res.lateSysRequests)
+	}
 	if res.skippedNoUsage > 0 {
 		fmt.Printf(" Skipped (no usage) : %d replay requests with output_tokens 0, not sent\n", res.skippedNoUsage)
 	}
@@ -3373,6 +3386,8 @@ func runSingleModelBenchmark(
 	}
 	res.totalErrors = st.totalErrors.Load()
 	res.skippedNoUsage = st.skippedNoUsage.Load()
+	res.lateSysDropped = st.lateSystemDropped.Load()
+	res.lateSysRequests = st.lateSystemRequests.Load()
 	res.totalRetries429 = st.totalRetries429.Load()
 	res.totalRetryWait = time.Duration(st.totalRetryWaitNs.Load())
 	res.ttftP50 = tm.ttftP50
@@ -3664,6 +3679,12 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 		if !cfg.ReplaySendNoUsage {
 			if n, kept, total, err := countNoUsageRequests(cfg.RouterReplayFile, cfg.ReplayNoUsageKeepMaxTokens); err == nil {
 				fmt.Println(noUsageStartupLine(n, kept, total, cfg.ReplayNoUsageKeepMaxTokens))
+				fmt.Println()
+			}
+		}
+		if cfg.ReplayDropLateSystem {
+			if msgs, reqs, total, err := countLateSystemMessages(cfg.RouterReplayFile); err == nil {
+				fmt.Println(lateSystemStartupLine(msgs, reqs, total))
 				fmt.Println()
 			}
 		}

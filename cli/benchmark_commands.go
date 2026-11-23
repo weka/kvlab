@@ -278,6 +278,7 @@ func (c *BenchmarkAutoCommand) Execute(args []string) error {
 		LimitContext:                  c.LimitContext,
 		ReplayCharsPerToken:           c.ReplayCharsPerToken,
 		ReplaySystemFirst:             c.ReplaySystemFirst,
+		ReplayDropLateSystem:          c.ReplayDropLateSystem,
 		VLLMMetricsURLs:               c.VLLMMetricsURLs,
 		SGLangMetricsURLs:             c.SGLangMetricsURLs,
 		TTFTLimitStat:                 c.TTFTLimitStat,
@@ -352,6 +353,9 @@ func (c *BenchmarkAutoCommand) Execute(args []string) error {
 	}
 	if c.ReplayOutputRatio > 0 && c.RouterReplayFile == "" {
 		return fmt.Errorf("--replay-output-ratio requires --router-replay-file")
+	}
+	if err := c.validateLateSystem(); err != nil {
+		return err
 	}
 
 	// Parse --replay-series-indices / --replay-series-range into a set of
@@ -847,6 +851,15 @@ func (c *BenchmarkAutoCommand) validateRealtime(w io.Writer) error {
 	if c.ReplaySkipIdle && !c.ReplayRealtime {
 		fmt.Fprintln(w, "warning: --replay-skip-idle has nothing to skip without --replay-realtime; "+
 			"a pool that fires back-to-back has no dead time")
+	}
+	return nil
+}
+
+// validateLateSystem rejects asking for both treatments of a late system
+// message: one moves it, the other drops it.
+func (c *BenchmarkAutoOptions) validateLateSystem() error {
+	if c.ReplaySystemFirst && c.ReplayDropLateSystem {
+		return fmt.Errorf("--replay-system-first and --replay-drop-late-system are mutually exclusive: one moves late system messages, the other drops them")
 	}
 	return nil
 }
