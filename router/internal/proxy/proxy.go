@@ -286,14 +286,23 @@ func (p *Proxy) Serve(
 		}
 
 		metrics.PolicySelections.WithLabelValues(sel.Name(), b.URL).Inc()
+		prev := res.Backend
 		res.Backend = b
 		res.Attempts++
 
 		refusalsLeft := failovers < maxFailovers
 		canRetry := (attempt+1 < p.cfg.MaxAttempts || refusalsLeft) && len(remaining) > 1
 		out := runAttempt(b.CB, token, func() attemptOut {
-			return p.attempt(w, r, b, d, body, prefillCharge(rr, b, body), &committed, canRetry, accepted, outcome, auth)
+			return p.attempt(w, r, b, d, body, prefillCharge(rr, b, body), &committed, canRetry, eligible(rr), accepted, outcome, auth)
 		})
+		if out.ineligible {
+			// The backend left the candidate set between the snapshot and
+			// its lease: no delivery, and no verdict on it either way.
+			res.Backend, res.Attempts = prev, res.Attempts-1
+			remaining = without(remaining, b)
+			attempt--
+			continue
+		}
 		countOutcome(b, out)
 
 		res.Status, res.Err, res.Committed = out.status, out.err, committed
@@ -358,7 +367,7 @@ func (p *Proxy) Relay(w http.ResponseWriter, r *http.Request, b *registry.Backen
 	// canRetry false is precisely what makes ModifyResponse relay a retryable
 	// status instead of discarding it: a 429 or a 503 from the provider is the
 	// answer to this request, not a signal to go looking for a better one.
-	out := p.attempt(w, r, b, d, body, 0, &committed, false, nil, nil, auth)
+	out := p.attempt(w, r, b, d, body, 0, &committed, false, nil, nil, nil, auth)
 	countOutcome(b, out)
 	return Result{Backend: b, Status: out.status, Attempts: 1, Err: out.err, Committed: committed}
 }
@@ -392,6 +401,17 @@ type attemptOut struct {
 	// It is no verdict on the backend and is never retried: nobody is left to
 	// receive the answer.
 	clientGone bool
+	// ineligible marks an attempt abandoned before anything was sent: the
+	// backend failed the request's Eligible check once its lease was held.
+	ineligible bool
+}
+
+// eligible is rr's re-check of a selected backend, nil when it has none.
+func eligible(rr *policy.RoutingRequest) func(*registry.Backend) bool {
+	if rr == nil {
+		return nil
+	}
+	return rr.Eligible
 }
 
 // runAttempt pairs do's outcome with Record exactly once, whether do returns
@@ -422,7 +442,7 @@ func runAttempt(cb *circuit.Breaker, token bool, do func() attemptOut) (out atte
 		}
 	}()
 	out = do()
-	if out.rejected || out.ignored || out.clientGone {
+	if out.rejected || out.ignored || out.clientGone || out.ineligible {
 		cb.Record(circuit.Ignored, token)
 		return out
 	}
@@ -454,13 +474,20 @@ func prefillCharge(rr *policy.RoutingRequest, b *registry.Backend, body []byte) 
 func (p *Proxy) attempt(
 	w http.ResponseWriter, r *http.Request,
 	b *registry.Backend, d dialect.Dialect,
-	body []byte, prefillCost int64, committed *bool, canRetry bool, accepted OnAccepted, outcome OnOutcome, auth Auth,
+	body []byte, prefillCost int64, committed *bool, canRetry bool, eligible func(*registry.Backend) bool,
+	accepted OnAccepted, outcome OnOutcome, auth Auth,
 ) attemptOut {
 	// The lease is the only in-flight increment in the program (LB-1), and the
 	// deferred release fires after ServeHTTP returns — i.e. after the response
 	// body has been fully copied or the stream has aborted (LB-2, LB-4).
 	lse := lease.Acquire(b)
 	defer lse.Release()
+	// Re-checked only now that the lease is held: a role change that counts
+	// the backend's in-flight leases (a drain) either precedes this check and
+	// fails it, or follows it and counts this lease.
+	if eligible != nil && !eligible(b) {
+		return attemptOut{ineligible: true}
+	}
 	lse.StartActive(int64(kvcache.EstimateTokens(len(body))))
 	lse.StartPrefill(prefillCost)
 

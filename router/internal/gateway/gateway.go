@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -394,7 +395,26 @@ func (s *Server) relay(w http.ResponseWriter, r *http.Request, t Target,
 // Filtering reads circuit State() only and never Allow(), so it cannot consume a
 // half-open probe token for a backend it does not select (R2, LB-9).
 func (s *Server) candidates(t Target) []*registry.Backend {
+	return roleFilter(t, s.healthy(t))
+}
+
+// stillCandidate re-asks the role half of candidates for b, which the caller
+// has selected and holds a lease on: whether b may still take ordinary (or
+// decode-leg) traffic, judged against the current healthy set. Health is not
+// re-judged: the breaker already admitted b.
+func (s *Server) stillCandidate(t Target, b *registry.Backend) bool {
+	if t.Split == nil && t.PD == nil {
+		return true
+	}
 	cands := s.healthy(t)
+	if !slices.Contains(cands, b) {
+		cands = append(cands, b)
+	}
+	return slices.Contains(roleFilter(t, cands), b)
+}
+
+// roleFilter keeps the members of cands that take ordinary traffic.
+func roleFilter(t Target, cands []*registry.Backend) []*registry.Backend {
 	if t.Split != nil {
 		// Ordinary routing never lands on a node that is draining for, or
 		// running, prefill jobs.

@@ -230,6 +230,10 @@ func (s *Server) serveWithCapacityRetry(
 		metrics.RetryWaitSeconds.WithLabelValues(lastReason, how).Observe(waited.Seconds())
 	}
 
+	// A node can leave the candidate set (drained into prefill) between the
+	// snapshot below and the lease on it; the proxy re-checks under the lease.
+	rr.Eligible = func(b *registry.Backend) bool { return s.stillCandidate(target, b) }
+	defer func() { rr.Eligible = nil }()
 	for attempt := 0; ; attempt++ {
 		if lastReason != "" {
 			waited = s.cfg.Clock.Now().Sub(firstRefusal)

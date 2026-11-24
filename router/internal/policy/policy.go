@@ -94,7 +94,15 @@ type RoutingRequest struct {
 	// prefill node: the tokens a decode node lacks arrive by transfer rather
 	// than recompute.
 	KVTransfer bool
-	Deadline   time.Time
+	// Eligible, when set, re-asks whether a selected backend may still take
+	// this request, after its lease is held. The candidates are a snapshot,
+	// and a node's role can change between the snapshot and the lease (a
+	// decode node drained into prefill); the drain counts the node's
+	// in-flight leases, so a check made while the lease is held either sees
+	// the new role or is counted by the drain. A backend that fails it is
+	// dropped and another selected, as no attempt on it.
+	Eligible func(*registry.Backend) bool
+	Deadline time.Time
 	// PolicyState carries opaque per-request state from Select to Commit.
 	//
 	// A policy whose commit depends on WHICH branch its selection took has

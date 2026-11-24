@@ -43,7 +43,7 @@ func TestPrefillTokensGaugeHeldUntilFirstByte(t *testing.T) {
 	go func() {
 		defer close(done)
 		p.attempt(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/completions", nil),
-			b, openai.New(), body, 250, new(bool), false, nil, nil, Auth{})
+			b, openai.New(), body, 250, new(bool), false, nil, nil, nil, Auth{})
 	}()
 	<-started
 	if got := b.PrefillTokens(); got != 250 {
