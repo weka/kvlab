@@ -63,6 +63,12 @@ spec:
                 {{- if .Values.replay.maxRequestsPerSession }}
                 --replay-max-requests-per-session={{ .Values.replay.maxRequestsPerSession | int64 }} \
                 {{- end }}
+                {{- if .Values.replay.limitContext }}
+                --limit-context={{ .Values.replay.limitContext | int64 }} \
+                {{- end }}
+                {{- if .Values.replay.dropLateSystem }}
+                --replay-drop-late-system \
+                {{- end }}
                 {{- if .Values.replay.realtime }}
                 {{- /* Real-time replay grows the session count itself, so --series
                      must NOT be passed: it pins max-series too, and the run

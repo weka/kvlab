@@ -70,6 +70,16 @@ replay:
   # A capped run is NOT comparable with an uncapped one. The run reports how many
   # sessions it shortened and how many requests it dropped.
   maxRequestsPerSession: 0
+  # Skip every request whose captured prompt tokens (input + cache read +
+  # cache creation) exceed this, e.g. to stay under a small model's context
+  # window instead of drawing 400s (--limit-context; 0 = no limit).
+  limitContext: 0
+  # Drop every system/developer message that follows a request's first
+  # non-system message; leading system messages stay. For chat templates that
+  # accept a system message only at the start. Each turn stays an extension of
+  # the previous one, so prefix reuse is the capture's; the dropped reminders
+  # are not sent (--replay-drop-late-system).
+  dropLateSystem: false
   series: 256              # fixed-pool mode only (realtime: false): parallel series workers replaying sessions (--series)
 
   # ── Real-time replay and session admission ────────────────────────────────

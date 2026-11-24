@@ -64,7 +64,8 @@ Mechanics are in [replay.md](replay.md#session-admission).
 | `--max-output-tokens` | 0 (file budgets) | Cap each request's `max_tokens`. Helm: `replay.maxOutputTokens`. |
 | `--replay-output-ratio` | 0 (off) | Retarget `max_tokens` to input tokens times this ratio instead of the recorded output tokens. |
 | `--replay-chars-per-token` | 0 (off) | Size synthesized content as block tokens times this many chars, so the serving tokenizer lands near the original token counts. |
-| `--limit-context` | 0 (none) | Skip requests whose recorded prompt tokens exceed this, to avoid 400 storms on small-context models. |
+| `--limit-context` | 0 (none) | Skip requests whose recorded prompt tokens exceed this, to avoid 400 storms on small-context models. Helm: `replay.limitContext`. |
+| `--replay-drop-late-system` | false | Drop every system/developer message after a request's first non-system message (leading ones stay), for chat templates that accept a system message only at the start. Turns stay extensions of each other, so prefix reuse is the capture's. Mutually exclusive with `--replay-system-first`. Helm: `replay.dropLateSystem`. |
 | `--replay-max-requests-per-session` | 0 (off) | Replay only the first N requests of each session, chronologically across the whole session (can remove a sub-agent, never orphan one). A capped run is not comparable with an uncapped one. Helm: `replay.maxRequestsPerSession`. |
 | `--request-timeout` | 5m | Overall per-request deadline, the safety net behind the two below; fails with `request timeout (global) ...` (`error_kind` `global`). Helm: `replay.requestTimeout`. |
 | `--ttft-timeout` | 300s | Replay: a streamed request with no first token by then fails with `ttft timeout Xs` (`error_kind` `ttft`). Independent of `--ttft-limit`. 0 = off. |
@@ -304,7 +305,7 @@ left empty are not passed, so the binary's defaults apply.
 | Mode | `replay.realtime` (true; `false` = fixed pool) |
 | Real-time ramp and gates | `replay.startSessions`, `maxSessions`, `admitEvery`, `admitCount`, `ttftLimit`, `ttftWindow`, `ttftLimitStat`, `decodeRateMin`, `skipIdle`, `allowUnderfill`, `reuseSessions` (true) |
 | Fixed pool only | `replay.series` (256), `concurrency` (28), `hotConcurrency` (4) |
-| Both | `replay.maxConcurrency`, `concurrencyCap` (real-time ceiling), `requestTimeout`, `maxOutputTokens`, `maxRequestsPerSession`, `replaySeries`, `replayRoles`, `replayNoStamp` |
+| Both | `replay.maxConcurrency`, `concurrencyCap` (real-time ceiling), `requestTimeout`, `maxOutputTokens`, `maxRequestsPerSession`, `replaySeries`, `replayRoles`, `replayNoStamp`, `limitContext`, `dropLateSystem` |
 | Run control | `duration` (8h), `abortOnCollapse`, `replayStopAtLowConcurrency`, `printErrorsThreshold` (`1s`), `stderrLogs`, `vllmMetricsUrls` |
 | Offline simulation | `replay.dryRun`, `dryRunColdTPS`, `dryRunWarmTPS`, `dryRunOutputTPS` |
 | Verification | `verify.enabled`, `verify.forceEos`, `verify.continueOnContamination` |
