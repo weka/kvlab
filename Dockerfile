@@ -33,7 +33,9 @@ COPY . .
 # amd64 executable, which fails at exec with no useful message.
 ARG TARGETOS TARGETARCH
 ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
-RUN go build -o /out/kvlab .
+# -trimpath: the release builds the GitHub Release binaries with these same
+# flags and puts those binaries in the image (see .github/workflows/release.yml).
+RUN go build -trimpath -o /out/kvlab .
 
 # ---- Replay artifact source ----
 # Pinned to amd64 deliberately: this stage contributes only replay.jsonl, a
