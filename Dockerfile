@@ -14,18 +14,25 @@
 ARG REPLAY_IMAGE=quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637
 
 # ---- Builder: compile the kvlab binary ----
-FROM golang:1.25.7-alpine AS builder
+# The builder runs on the BUILD host's platform and cross-compiles for the
+# target: kvlab is pure Go (CGO_ENABLED=0), so GOOS/GOARCH are all a target
+# needs. Building under the target platform instead runs the whole Go
+# toolchain under QEMU for a foreign architecture, which is several times
+# slower and has crashed `go tool compile` outright. (Dagger's docker_build
+# ignores this --platform; the release builds this stage for the engine's own
+# platform with TARGETOS/TARGETARCH passed as build args instead.)
+FROM --platform=$BUILDPLATFORM golang:1.25.7-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# TARGETARCH is set by buildkit from the platform being built, so one
+# TARGETOS/TARGETARCH are set by buildkit from the platform being built, so one
 # Dockerfile produces every architecture in the manifest list. Hardcoding
 # amd64 here silently pinned the binary even when the container platform said
 # otherwise — an arm64 node would have pulled an arm64 image containing an
 # amd64 executable, which fails at exec with no useful message.
-ARG TARGETARCH
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH
+ARG TARGETOS TARGETARCH
+ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
 RUN go build -o /out/kvlab .
 
 # ---- Replay artifact source ----
@@ -35,20 +42,25 @@ RUN go build -o /out/kvlab .
 # that does not exist and fail the whole build for a file with no architecture.
 FROM --platform=linux/amd64 ${REPLAY_IMAGE} AS replay
 
-# ---- Runtime ----
-FROM alpine:latest
+# ---- Base: the runtime image minus the binary and the replay artifact ----
+# A stage of its own so the release can build exactly this and add the binary
+# it cross-compiled (see .dagger): Dagger's docker_build sets BUILDPLATFORM to
+# the target platform, so the builder stage above would run under QEMU there.
+FROM alpine:latest AS base
 LABEL org.opencontainers.image.title="kvlab" \
       org.opencontainers.image.description="LLM benchmarking, router/proxy, and capture-replay toolkit" \
       org.opencontainers.image.source="https://github.com/weka/kvlab"
 RUN apk add --no-cache ca-certificates
-# --link: each COPY becomes an independent, content-addressed layer that
-# doesn't depend on prior layer state (both destinations are plain
-# directories with no special ownership/permissions set up by a prior RUN,
-# so this is safe under BuildKit). This matters most for the replay layer,
-# which can be several GB: with --link, rebuilding the builder stage (a Go
-# source change) does not invalidate or recopy the replay layer — its
-# digest is stable across rebuilds, so registries can reuse/cross-mount the
-# existing blob instead of re-uploading it.
+ENTRYPOINT ["/usr/local/bin/kvlab"]
+
+# ---- Runtime + replay artifact (local `docker build`) ----
+# --link makes each COPY an independent layer that does not depend on the
+# layers below it, so under BuildKit a Go change does not recopy the artifact.
+# The release does not build this stage: a COPY still produces a NEW layer
+# blob, which has to be compressed (1.3 GB gzip) and uploaded for each
+# architecture on every release. The release instead lays `base` + binary over
+# the replay image's own layer, byte for byte, so the registry already holds it
+# and a node that pulled an earlier release already has it unpacked.
+FROM base
 COPY --link --from=builder /out/kvlab /usr/local/bin/kvlab
 COPY --link --from=replay /replay.jsonl /kvlab/replay.jsonl
-ENTRYPOINT ["/usr/local/bin/kvlab"]

@@ -15,23 +15,32 @@
 # It replaces the former Dockerfile.wllm-router, which built a standalone router
 # binary. There is no standalone router any more; the router is `kvlab router
 # serve`.
-FROM golang:1.25.7-alpine AS builder
+# The builder runs on the BUILD host's platform and cross-compiles for the
+# target: kvlab is pure Go (CGO_ENABLED=0), so GOOS/GOARCH are all a target
+# needs. Building under the target platform instead runs the whole Go
+# toolchain under QEMU for a foreign architecture, which is several times
+# slower and has crashed `go tool compile` outright. (Dagger's docker_build
+# ignores this --platform; the release builds this stage for the engine's own
+# platform with TARGETOS/TARGETARCH passed as build args instead.)
+FROM --platform=$BUILDPLATFORM golang:1.25.7-alpine AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# TARGETARCH is set by buildkit from the platform being built, so one
+# TARGETOS/TARGETARCH are set by buildkit from the platform being built, so one
 # Dockerfile produces every architecture in the manifest list. Hardcoding
 # amd64 here silently pinned the binary even when the container platform said
 # otherwise — an arm64 node would have pulled an arm64 image containing an
 # amd64 executable, which fails at exec with no useful message.
-ARG TARGETARCH
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH
+ARG TARGETOS TARGETARCH
+ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
 # Trimpath and stripped symbols: this image is shipped, and neither the build
 # host's paths nor the DWARF tables belong in it.
 RUN go build -trimpath -ldflags="-s -w" -o /out/kvlab .
 
-FROM alpine:latest
+# Everything but the binary, as its own stage so the release can add the binary
+# it cross-compiled (see Dockerfile's `base` stage for why).
+FROM alpine:latest AS base
 LABEL org.opencontainers.image.title="kvlab-router" \
       org.opencontainers.image.description="Model-aware LLM router with prefix-cache affinity (kvlab router serve)" \
       org.opencontainers.image.source="https://github.com/weka/kvlab"
@@ -39,7 +48,11 @@ RUN apk add --no-cache ca-certificates
 # Runs unprivileged: the router needs no filesystem beyond its own binary, and
 # capture (when enabled) writes to a mounted volume the operator owns.
 RUN addgroup -g 65532 -S nonroot && adduser -u 65532 -S nonroot -G nonroot
-COPY --link --from=builder /out/kvlab /usr/local/bin/kvlab
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/kvlab"]
 CMD ["router", "serve"]
+
+# COPY writes root-owned files whatever USER says, so the unprivileged user
+# can run the binary but not replace it.
+FROM base
+COPY --link --from=builder /out/kvlab /usr/local/bin/kvlab
