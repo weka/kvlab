@@ -132,6 +132,26 @@ jobs:
             --helm-password=env://QUAY_PASSWORD \
             --version "${{ steps.semver.outputs.new_tag }}"
 
+      - name: Commit list for the release notes
+        id: notes
+        if: steps.semver.outputs.new_tag != ''
+        # GitHub's generated notes list merged pull requests only; most changes
+        # land as direct pushes, so the notes carry every commit since the
+        # previous tag as well.
+        env:
+          PREV: ${{ steps.semver.outputs.previous_tag }}
+        run: |
+          if [ -n "$PREV" ] && git rev-parse -q --verify "refs/tags/$PREV" >/dev/null; then
+            range="$PREV..HEAD"
+          else
+            range="HEAD"
+          fi
+          {
+            echo 'commits<<KVLAB_NOTES_EOF'
+            git log --no-merges --pretty='- %s (%h)' "$range"
+            echo 'KVLAB_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         if: steps.semver.outputs.new_tag != ''
         uses: softprops/action-gh-release@v2
@@ -141,6 +161,10 @@ jobs:
           generate_release_notes: true
           files: dist/*.tar.gz
           body: |
+            ## Changes since ${{ steps.semver.outputs.previous_tag }}
+
+            ${{ steps.notes.outputs.commits }}
+
             ## Install
 
             Prebuilt binaries (linux amd64/arm64, macOS Apple Silicon) are
