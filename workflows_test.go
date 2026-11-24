@@ -102,3 +102,32 @@ func workflowFiles(t *testing.T) []string {
 	}
 	return out
 }
+
+// TestReleaseBinaryFlagsMatchDockerfiles: the release builds the image binaries
+// on the runner and hands them to Dagger (`--binaries`), instead of running the
+// Dockerfiles' builder stages. A flag changed in a Dockerfile alone would then
+// reach a local `docker build` and never the published image.
+func TestReleaseBinaryFlagsMatchDockerfiles(t *testing.T) {
+	wf, err := os.ReadFile(filepath.Join(".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	flagsRE := regexp.MustCompile(`(?m)^RUN go build (.*?)\s*-o /out/kvlab \.$`)
+	for _, c := range []struct{ dockerfile, out string }{
+		{"Dockerfile", `-o "${out}/kvlab" .`},
+		{"Dockerfile.router", `-o "dist/bin/kvlab-router_${GOOS}_${GOARCH}/kvlab" .`},
+	} {
+		df, err := os.ReadFile(c.dockerfile)
+		if err != nil {
+			t.Fatalf("read %s: %v", c.dockerfile, err)
+		}
+		m := flagsRE.FindSubmatch(df)
+		if m == nil {
+			t.Fatalf("%s: no `RUN go build ... -o /out/kvlab .` line; update this test", c.dockerfile)
+		}
+		want := "go build " + string(m[1]) + " " + c.out
+		if !strings.Contains(string(wf), want) {
+			t.Errorf("release.yml does not build the %s binary with that Dockerfile's flags; want a line containing\n\t%s", c.dockerfile, want)
+		}
+	}
+}

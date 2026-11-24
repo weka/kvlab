@@ -32,6 +32,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # Replaced by the cache below. setup-go's own cache is keyed on go.sum
+          # alone, so its build cache is whatever run first saved that key
+          # (usually ci.yml's -race build) and never holds this job's
+          # cross-compiled objects: every release compiled three targets cold.
+          cache: false
+
+      # Restored on every run, saved (under a new key) only by a release, so
+      # each release starts from the previous release's build cache and only
+      # recompiles what changed.
+      - name: Restore Go caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: release-go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            release-go-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            release-go-${{ runner.os }}-
 
       - uses: arduino/setup-task@v2
         with:
@@ -61,18 +80,6 @@ jobs:
         if: steps.semver.outputs.new_tag == ''
         run: echo "No feat/fix/BREAKING commits since ${{ steps.semver.outputs.previous_tag }} — skipping release."
 
-      - name: Free runner disk space
-        if: steps.semver.outputs.new_tag != ''
-        # The benchmark image's bottom layer is the ~9.5 GB (uncompressed)
-        # replay image; if the engine has to pull and unpack it, that exceeds
-        # the runner's default free disk. Dropping preinstalled toolchains
-        # frees ~25-30 GB.
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af >/dev/null
-          df -h /
-
       - name: Log in to quay.io
         if: steps.semver.outputs.new_tag != ''
         run: echo "${{ secrets.QUAY_PASSWORD }}" | docker login quay.io -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
@@ -92,18 +99,35 @@ jobs:
 
       - name: Build release binaries
         if: steps.semver.outputs.new_tag != ''
-        # linux amd64+arm64, macOS arm64 (Apple Silicon) only.
+        # linux amd64+arm64, macOS arm64 (Apple Silicon) only. The linux ones
+        # are also what the images ship (`--binaries` below), so nothing is
+        # compiled twice: dist/bin/kvlab_* with Dockerfile's flags for the
+        # GitHub Release and the benchmark image, dist/bin/kvlab-router_* with
+        # Dockerfile.router's for the router image (same compile, own link).
+        # TestReleaseBinaryFlagsMatchDockerfiles keeps the flags in step.
         run: |
           set -euo pipefail
           VERSION="${{ steps.semver.outputs.new_tag }}"
-          mkdir -p dist
+          mkdir -p dist/bin
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             export GOOS="${target%/*}" GOARCH="${target#*/}"
-            out="dist/kvlab_${GOOS}_${GOARCH}"
+            out="dist/bin/kvlab_${GOOS}_${GOARCH}"
             CGO_ENABLED=0 go build -trimpath -o "${out}/kvlab" .
             tar -czf "dist/kvlab_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C "${out}" kvlab
+            if [ "$GOOS" = linux ]; then
+              CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "dist/bin/kvlab-router_${GOOS}_${GOARCH}/kvlab" .
+            fi
           done
           ls -lh dist/*.tar.gz
+
+      - name: Save Go caches
+        if: steps.semver.outputs.new_tag != ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: release-go-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
       # Two images and two charts from one commit under one semver. The
       # benchmark pair embeds the multi-GB replay artifact; the router pair does
@@ -111,8 +135,10 @@ jobs:
       # them from drifting: a release either ships a matched set or fails.
       #
       # One `dagger call release` rather than push-helm then push-router-helm:
-      # one engine start and module load, the shared build steps run once, and
-      # the two pairs publish concurrently.
+      # one engine start and module load, and the two pairs publish
+      # concurrently. The benchmark image is grafted onto the replay image in
+      # the registry, so the multi-GB replay layer is never downloaded here and
+      # the runner needs no extra disk.
       - name: Publish benchmark + router images and charts under semver (dagger release)
         if: steps.semver.outputs.new_tag != ''
         env:
@@ -121,6 +147,7 @@ jobs:
         run: |
           dagger call release \
             --source=. \
+            --binaries=dist/bin \
             --helm-username=env://QUAY_USERNAME \
             --helm-password=env://QUAY_PASSWORD \
             --version "${{ steps.semver.outputs.new_tag }}"

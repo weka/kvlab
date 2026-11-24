@@ -64,14 +64,20 @@ Three functions:
   Dockerfile is the single source of truth for the binary and runtime; the module
   does not reimplement its steps), tags it `v999.0.0-<sha12>` (sha12 of the source
   directory's content digest), and publishes to `quay.io/weka.io/kvlab` by
-  default. It builds the Dockerfile's `runtime` stage and lays it over the replay
-  image named by `--replay-image` (the Dockerfile's `REPLAY_IMAGE`): the replay
-  image's own layer is the published image's bottom layer, byte for byte, with
-  `/kvlab/replay.jsonl` a symlink to its `/replay.jsonl`. So a release neither
-  recompresses nor re-uploads the artifact (the registry already holds that
-  blob), and a node that pulled any earlier release does not download or unpack
-  it again. The Go builder stages run on the build host and cross-compile, so
-  neither architecture compiles under emulation.
+  default. It builds the Dockerfile's `base` stage plus the binary, and
+  publishes it on top of the replay image named by `--replay-image` (the
+  Dockerfile's `REPLAY_IMAGE`) without ever downloading that image's layers:
+  `.dagger/graft` writes each platform's manifest as the replay image's layer
+  (by digest, so the registry is only asked whether it has it) followed by the
+  runtime's, with the runtime's config. `/kvlab/replay.jsonl` is a symlink to
+  the replay image's `/replay.jsonl`. So a release neither downloads,
+  recompresses nor re-uploads the artifact, and a node that pulled any earlier
+  release does not download or unpack it again. The binary comes from
+  `--binaries` when given (the release passes the ones it built for the GitHub
+  Release); otherwise the Dockerfile's builder stage cross-compiles it on the
+  engine's own platform, never under emulation. The push takes
+  `--registry-username`/`--registry-password` (Dagger secrets), since it runs
+  in a container without the caller's docker login.
 - `push-helm` first runs the exact same image build and publish as `publish`
   (shared internal helper, not a separate code path), then packages `chart/kvlab`
   and pushes it to an OCI Helm registry (`quay.io/weka.io/helm` by default).
@@ -87,7 +93,7 @@ Three functions:
 
 ```
 task replay:push REPLAY=/path/to/replay.jsonl LABEL=40d-oct14   # dagger call push-replay
-task app:push                                    # dagger call publish (image only)
+task app:push                                    # dagger call publish (image only; QUAY_USERNAME/QUAY_PASSWORD)
 task helm:push                                   # dagger call push-helm (image + chart, image first)
 ```
 

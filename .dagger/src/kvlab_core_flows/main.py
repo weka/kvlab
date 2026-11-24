@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 from typing import Annotated
 
 import dagger
@@ -61,71 +62,109 @@ REPLAY_PATH = "kvlab/replay.jsonl"
 BINARY_PATH = "/usr/local/bin/kvlab"
 
 
+# The Go image the graft tool is built with; same as the Dockerfiles' builder.
+GO_IMAGE = "golang:1.25.7-alpine"
+
+
 async def _image(
     source: dagger.Directory,
     dockerfile: str,
     platform: dagger.Platform,
+    binaries: dagger.Directory | None = None,
+    binary_name: str = "kvlab",
 ) -> dagger.Container:
     """One architecture of an image: the Dockerfile's `base` stage for
-    `platform`, plus the binary its `builder` stage cross-compiles on the
-    engine's own platform.
+    `platform`, plus the binary.
 
-    The two are built separately because Dagger's docker_build sets
-    BUILDPLATFORM to the target, so `FROM --platform=$BUILDPLATFORM` does not
-    keep the builder native: building the Dockerfile whole for arm64 on an
-    amd64 runner compiles under QEMU, which took ~16 minutes per image and has
-    segfaulted `go tool compile`. Building the builder stage for the native
-    platform with TARGETOS/TARGETARCH as build args runs the same Go command as
-    a plain `docker build`, natively. The base stage still builds for the
-    target, which only runs `apk add`.
+    The binary is `binaries/<binary_name>_<os>_<arch>/kvlab` when `binaries` is
+    given (the release passes the ones it already built, with the Dockerfile's
+    flags, so nothing compiles twice). Otherwise the Dockerfile's `builder`
+    stage cross-compiles it on the engine's own platform: Dagger's docker_build
+    sets BUILDPLATFORM to the target, so `FROM --platform=$BUILDPLATFORM` does
+    not keep the builder native, and compiling for arm64 under QEMU took ~16
+    minutes per image and has segfaulted `go tool compile`. The base stage
+    still builds for the target, which only runs `apk add`.
     """
-    build_platform = await dag.default_platform()
     target_os, target_arch = str(platform).split("/")[:2]
-    binary = source.docker_build(
-        platform=build_platform,
-        dockerfile=dockerfile,
-        target="builder",
-        build_args=[
-            BuildArg(name="TARGETOS", value=target_os),
-            BuildArg(name="TARGETARCH", value=target_arch),
-        ],
-    ).file("/out/kvlab")
+    if binaries is not None:
+        binary = binaries.file(f"{binary_name}_{target_os}_{target_arch}/kvlab")
+    else:
+        binary = source.docker_build(
+            platform=await dag.default_platform(),
+            dockerfile=dockerfile,
+            target="builder",
+            build_args=[
+                BuildArg(name="TARGETOS", value=target_os),
+                BuildArg(name="TARGETARCH", value=target_arch),
+            ],
+        ).file("/out/kvlab")
     return (
         source.docker_build(platform=platform, dockerfile=dockerfile, target="base")
-        .with_file(BINARY_PATH, binary, owner="0:0")
+        .with_file(BINARY_PATH, binary, owner="0:0", permissions=0o755)
     )
 
 
-async def _benchmark_variant(
-    source: dagger.Directory,
-    platform: dagger.Platform,
-    replay_image: str,
-) -> dagger.Container:
-    """One architecture of the benchmark image: `_image` laid over the
-    published replay image's own layer.
+async def _publish_onto(
+    variants: list[dagger.Container],
+    base_image: str,
+    image_name: str,
+    username: dagger.Secret | None,
+    password: dagger.Secret | None,
+    insecure: bool,
+) -> None:
+    """Publishes `variants` as one multi-arch image whose bottom layers are
+    `base_image`'s, without the engine ever fetching those layers.
+
+    The variants are exported as an OCI layout (a few tens of MB) and the graft
+    tool (.dagger/graft) writes, per platform, a manifest listing the base
+    image's layers by digest followed by the variant's, with the variant's
+    config. The registry is only asked whether it has the base layers; their
+    blobs are never downloaded or uploaded. Pulling a 1.3 GB base into a fresh
+    CI engine just to push it back took ~6 of a release's minutes.
+    """
+    layout = dag.container().as_tarball(platform_variants=variants)
+    ctr = (
+        dag.container()
+        .from_(GO_IMAGE)
+        .with_mounted_cache("/go/pkg/mod", dag.cache_volume("kvlab-go-mod"))
+        .with_mounted_cache("/root/.cache/go-build", dag.cache_volume("kvlab-go-build"))
+        .with_directory("/graft", dag.current_module().source().directory("graft"))
+        .with_workdir("/graft")
+        .with_exec(["go", "build", "-o", "/usr/local/bin/graft", "."])
+        .with_file("/layout.tar", layout)
+        .with_exec(["sh", "-c", "mkdir /layout && tar -xf /layout.tar -C /layout"])
+    )
+    if username is not None and password is not None:
+        ctr = (
+            ctr.with_secret_variable("GRAFT_USERNAME", username)
+            .with_secret_variable("GRAFT_PASSWORD", password)
+        )
+    args = ["graft", "-layout", "/layout", "-base", base_image, "-dest", image_name]
+    if insecure:
+        args.append("-insecure")
+    # A publish is a side effect: never let the exec cache skip it.
+    await ctr.with_env_variable("GRAFT_RUN", str(time.time_ns())).with_exec(args).sync()
+
+
+def _benchmark_variant(image: dagger.Container) -> dagger.Container:
+    """One architecture of the benchmark image, minus the replay layer that
+    `_publish_onto` puts underneath it.
 
     The replay layer is the image's BOTTOM layer and is the replay image's blob
     itself, not a copy of the file. A copy (the Dockerfile's final COPY) is a
     new 1.3 GB gzip blob per architecture per release: minutes to compress,
     2.6 GB to upload, and 9.5 GB for every node to download and unpack again on
     each upgrade. Reusing the blob makes all three free after the first time:
-    the registry already holds it (same repo, so the push only checks it
-    exists), and a node that ran any earlier release already has it unpacked,
-    because a bottom layer's identity does not depend on anything above it.
+    the registry already holds it, and a node that ran any earlier release
+    already has it unpacked, because a bottom layer's identity does not depend
+    on anything above it.
 
     The replay image keeps the file at /replay.jsonl; /kvlab/replay.jsonl is a
     symlink to it, so the documented path is unchanged. The replay image is
-    amd64-only, which does not matter: the layer is a data file, and the
-    variant's platform and config come from the image built for `platform`.
+    amd64-only, which does not matter: the layer is a data file, and each
+    variant's platform and config are its own.
     """
-    image = await _image(source, BENCHMARK_DOCKERFILE, platform)
-    replay = dag.container(platform=LINUX_AMD64).from_(replay_image).rootfs()
-    rootfs = (
-        replay
-        .with_directory("/", image.rootfs())
-        .with_symlink("/replay.jsonl", REPLAY_PATH)
-    )
-    return image.with_rootfs(rootfs)
+    return image.with_rootfs(image.rootfs().with_symlink("/replay.jsonl", REPLAY_PATH))
 
 
 async def _calc_version(src: dagger.Directory) -> str:
@@ -141,6 +180,10 @@ async def _publish_image(
     registry: str,
     replay_image: str,
     version: str = "",
+    binaries: dagger.Directory | None = None,
+    username: dagger.Secret | None = None,
+    password: dagger.Secret | None = None,
+    insecure: bool = False,
 ) -> tuple[str, str]:
     """Builds and publishes the kvlab image from this repo's own
     Dockerfile. Shared by `publish` and `push_helm` so there is exactly one
@@ -152,17 +195,17 @@ async def _publish_image(
 
     version: explicit version stamp (e.g. a semver tag from CI); when empty,
     falls back to the content-hash scheme (_calc_version's v999.0.0-<sha12>).
+    username/password: registry credentials for the push (the graft tool runs
+    in a container, without the caller's docker login).
     """
     if not version:
         version = await _calc_version(source)
-    variants = list(await asyncio.gather(
-        *(_benchmark_variant(source, p, replay_image) for p in PUBLISH_PLATFORMS)
-    ))
+    variants = [
+        _benchmark_variant(await _image(source, BENCHMARK_DOCKERFILE, p, binaries, "kvlab"))
+        for p in PUBLISH_PLATFORMS
+    ]
     image_name = f"{registry}:{version}"
-    # Published from an empty container so no single architecture is the
-    # "real" one and the others attachments — every variant is equal in the
-    # resulting manifest list.
-    await dag.container().publish(image_name, platform_variants=variants)
+    await _publish_onto(variants, replay_image, image_name, username, password, insecure)
     return image_name, version
 
 
@@ -170,6 +213,7 @@ async def _publish_router_image(
     source: dagger.Directory,
     registry: str,
     version: str = "",
+    binaries: dagger.Directory | None = None,
 ) -> tuple[str, str]:
     """Builds and publishes the replay-less router image.
 
@@ -179,10 +223,14 @@ async def _publish_router_image(
     """
     if not version:
         version = await _calc_version(source)
-    variants = list(await asyncio.gather(
-        *(_image(source, ROUTER_DOCKERFILE, p) for p in PUBLISH_PLATFORMS)
-    ))
+    variants = [
+        await _image(source, ROUTER_DOCKERFILE, p, binaries, "kvlab-router")
+        for p in PUBLISH_PLATFORMS
+    ]
     image_name = f"{registry}:{version}"
+    # Published from an empty container so no single architecture is the
+    # "real" one and the others attachments — every variant is equal in the
+    # resulting manifest list.
     await dag.container().publish(image_name, platform_variants=variants)
     return image_name, version
 
@@ -298,6 +346,10 @@ class KvlabCoreFlows:
         registry: str = "quay.io/weka.io/kvlab",
         replay_image: str = "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637",
         version: str = "",
+        registry_username: dagger.Secret | None = None,
+        registry_password: dagger.Secret | None = None,
+        insecure_registry: bool = False,
+        binaries: dagger.Directory | None = None,
     ) -> str:
         """Builds and publishes the kvlab image from this repo's own Dockerfile.
 
@@ -310,13 +362,22 @@ class KvlabCoreFlows:
 
         Args:
             registry: Target image registry:repo (tag is appended).
-            replay_image: Passed through to the Dockerfile's REPLAY_IMAGE
-                build-arg, so a different embedded replay capture can be
-                selected without editing the Dockerfile.
+            replay_image: The replay image whose layer becomes the image's
+                bottom layer (the same capture the Dockerfile's REPLAY_IMAGE
+                build-arg selects for a local `docker build`).
             version: Explicit version stamp (e.g. a semver tag from the
                 release workflow). Empty = content-hash scheme.
+            registry_username: Registry credentials for the push.
+            registry_password: Registry credentials for the push.
+            insecure_registry: Allow a plain-HTTP registry (local testing).
+            binaries: Prebuilt binaries, laid out as
+                <name>_<os>_<arch>/kvlab (the release passes the ones it built
+                for the GitHub Release). Omitted = compile from the Dockerfile.
         """
-        image_name, _version = await _publish_image(source, registry, replay_image, version)
+        image_name, _version = await _publish_image(
+            source, registry, replay_image, version, binaries,
+            registry_username, registry_password, insecure_registry,
+        )
         return f"Published kvlab image: {image_name}"
 
     @function
@@ -329,6 +390,7 @@ class KvlabCoreFlows:
         helm_registry: str = "quay.io/weka.io/helm",
         replay_image: str = "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637",
         version: str = "",
+        binaries: dagger.Directory | None = None,
     ) -> str:
         """Publishes the kvlab image, then packages and pushes
         chart/kvlab to an OCI Helm registry with the chart's image
@@ -348,13 +410,21 @@ class KvlabCoreFlows:
                 target `publish` would use).
             helm_registry: OCI Helm registry base, e.g. quay.io/weka.io/helm
                 (matches kvlab's retired chart-push flow's default).
-            replay_image: Passed through to the Dockerfile's REPLAY_IMAGE
-                build-arg.
+            replay_image: The replay image underneath, as for `publish`.
             version: Explicit version stamp for BOTH the image tag and the
                 chart version/appVersion (e.g. a semver tag from the release
                 workflow). Empty = content-hash scheme (v999.0.0-<sha12>).
+            binaries: Prebuilt binaries, laid out as
+                <name>_<os>_<arch>/kvlab (the release passes the ones it built
+                for the GitHub Release). Omitted = compile from the Dockerfile.
+
+        The image push uses the Helm credentials too: both registries are
+        the same quay account.
         """
-        image_name, version = await _publish_image(source, registry, replay_image, version)
+        image_name, version = await _publish_image(
+            source, registry, replay_image, version, binaries,
+            helm_username, helm_password,
+        )
 
         chart_ref = await _package_and_push_chart(
             source.directory(CHART_DIR), CHART_NAME, registry, version,
@@ -409,6 +479,7 @@ class KvlabCoreFlows:
         registry: str = "quay.io/weka.io/kvlab-router",
         helm_registry: str = "quay.io/weka.io/helm",
         version: str = "",
+        binaries: dagger.Directory | None = None,
     ) -> str:
         """Publishes the REPLAY-LESS router image, then packages and pushes
         chart/router pinned to it.
@@ -425,8 +496,11 @@ class KvlabCoreFlows:
             helm_registry: OCI Helm registry base.
             version: Explicit version stamp for both image tag and chart
                 version/appVersion. Empty = content-hash scheme.
+            binaries: Prebuilt binaries, laid out as
+                <name>_<os>_<arch>/kvlab (the release passes the ones it built
+                for the GitHub Release). Omitted = compile from the Dockerfile.
         """
-        image_name, version = await _publish_router_image(source, registry, version)
+        image_name, version = await _publish_router_image(source, registry, version, binaries)
 
         chart_ref = await _package_and_push_chart(
             source.directory(ROUTER_CHART_DIR), ROUTER_CHART_NAME, registry, version,
@@ -449,30 +523,33 @@ class KvlabCoreFlows:
         router_registry: str = "quay.io/weka.io/kvlab-router",
         helm_registry: str = "quay.io/weka.io/helm",
         replay_image: str = "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637",
+        binaries: dagger.Directory | None = None,
     ) -> str:
         """The whole release: `push_helm` and `push_router_helm` in ONE engine
         session, the two pairs concurrently.
 
         One call rather than two so the engine starts and loads this module
-        once, and the steps the two Dockerfiles share (base images, `go mod
-        download`) run once per architecture rather than once per image. Each
+        once, and the two pairs' builds and pushes overlap. Each
         pair keeps its own order — its image is published before its chart is
         pushed — and either pair failing fails the release, so it still ships a
         matched set or nothing.
 
         Args:
             version: The semver both images and both charts are published under.
+            binaries: Prebuilt binaries, laid out as
+                <name>_<os>_<arch>/kvlab (the release passes the ones it built
+                for the GitHub Release). Omitted = compile from the Dockerfile.
         """
         bench, router = await asyncio.gather(
             self.push_helm(
                 source, helm_username, helm_password,
                 registry=registry, helm_registry=helm_registry,
-                replay_image=replay_image, version=version,
+                replay_image=replay_image, version=version, binaries=binaries,
             ),
             self.push_router_helm(
                 source, helm_username, helm_password,
                 registry=router_registry, helm_registry=helm_registry,
-                version=version,
+                version=version, binaries=binaries,
             ),
         )
         return f"{bench}\n{router}"

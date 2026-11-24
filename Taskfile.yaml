@@ -175,13 +175,15 @@ tasks:
         {{if .LABEL}}--label="{{.LABEL}}"{{end}}
 
   app:push:
-    desc: "Build (from this repo's Dockerfile) and publish the kvlab image (dagger call publish). Override REGISTRY=... and REPLAY_IMAGE=... as needed."
+    desc: "Build (from this repo's Dockerfile) and publish the kvlab image (dagger call publish), with QUAY_USERNAME/QUAY_PASSWORD from the environment. Override REGISTRY=... and REPLAY_IMAGE=... as needed."
     cmds:
       - >-
         dagger call publish
         --source=.
         --registry="{{.REGISTRY}}"
         --replay-image="{{.REPLAY_IMAGE}}"
+        --registry-username=env://QUAY_USERNAME
+        --registry-password=env://QUAY_PASSWORD
 
   helm:push:
     desc: "Publish the kvlab image, then package+push chart/kvlab pinned to it (dagger call push-helm). Override REGISTRY=..., HELM_REGISTRY=..., and REPLAY_IMAGE=... as needed."
