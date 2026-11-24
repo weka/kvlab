@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import Annotated
 
@@ -48,9 +49,83 @@ CHART_NAME = "kvlab"
 # every router replica pull it would be pure cost. Two Dockerfiles rather than a
 # build arg, so a router image that accidentally includes it is impossible
 # rather than merely unlikely.
+BENCHMARK_DOCKERFILE = "Dockerfile"
 ROUTER_DOCKERFILE = "Dockerfile.router"
 ROUTER_CHART_DIR = "chart/router"
 ROUTER_CHART_NAME = "kvlab-router"
+
+
+# Where the benchmark image exposes the replay artifact. The chart's default
+# replayFile and every documented command line use this path.
+REPLAY_PATH = "kvlab/replay.jsonl"
+BINARY_PATH = "/usr/local/bin/kvlab"
+
+
+async def _image(
+    source: dagger.Directory,
+    dockerfile: str,
+    platform: dagger.Platform,
+) -> dagger.Container:
+    """One architecture of an image: the Dockerfile's `base` stage for
+    `platform`, plus the binary its `builder` stage cross-compiles on the
+    engine's own platform.
+
+    The two are built separately because Dagger's docker_build sets
+    BUILDPLATFORM to the target, so `FROM --platform=$BUILDPLATFORM` does not
+    keep the builder native: building the Dockerfile whole for arm64 on an
+    amd64 runner compiles under QEMU, which took ~16 minutes per image and has
+    segfaulted `go tool compile`. Building the builder stage for the native
+    platform with TARGETOS/TARGETARCH as build args runs the same Go command as
+    a plain `docker build`, natively. The base stage still builds for the
+    target, which only runs `apk add`.
+    """
+    build_platform = await dag.default_platform()
+    target_os, target_arch = str(platform).split("/")[:2]
+    binary = source.docker_build(
+        platform=build_platform,
+        dockerfile=dockerfile,
+        target="builder",
+        build_args=[
+            BuildArg(name="TARGETOS", value=target_os),
+            BuildArg(name="TARGETARCH", value=target_arch),
+        ],
+    ).file("/out/kvlab")
+    return (
+        source.docker_build(platform=platform, dockerfile=dockerfile, target="base")
+        .with_file(BINARY_PATH, binary, owner="0:0")
+    )
+
+
+async def _benchmark_variant(
+    source: dagger.Directory,
+    platform: dagger.Platform,
+    replay_image: str,
+) -> dagger.Container:
+    """One architecture of the benchmark image: `_image` laid over the
+    published replay image's own layer.
+
+    The replay layer is the image's BOTTOM layer and is the replay image's blob
+    itself, not a copy of the file. A copy (the Dockerfile's final COPY) is a
+    new 1.3 GB gzip blob per architecture per release: minutes to compress,
+    2.6 GB to upload, and 9.5 GB for every node to download and unpack again on
+    each upgrade. Reusing the blob makes all three free after the first time:
+    the registry already holds it (same repo, so the push only checks it
+    exists), and a node that ran any earlier release already has it unpacked,
+    because a bottom layer's identity does not depend on anything above it.
+
+    The replay image keeps the file at /replay.jsonl; /kvlab/replay.jsonl is a
+    symlink to it, so the documented path is unchanged. The replay image is
+    amd64-only, which does not matter: the layer is a data file, and the
+    variant's platform and config come from the image built for `platform`.
+    """
+    image = await _image(source, BENCHMARK_DOCKERFILE, platform)
+    replay = dag.container(platform=LINUX_AMD64).from_(replay_image).rootfs()
+    rootfs = (
+        replay
+        .with_directory("/", image.rootfs())
+        .with_symlink("/replay.jsonl", REPLAY_PATH)
+    )
+    return image.with_rootfs(rootfs)
 
 
 async def _calc_version(src: dagger.Directory) -> str:
@@ -80,13 +155,9 @@ async def _publish_image(
     """
     if not version:
         version = await _calc_version(source)
-    variants = [
-        source.docker_build(
-            platform=p,
-            build_args=[BuildArg(name="REPLAY_IMAGE", value=replay_image)],
-        )
-        for p in PUBLISH_PLATFORMS
-    ]
+    variants = list(await asyncio.gather(
+        *(_benchmark_variant(source, p, replay_image) for p in PUBLISH_PLATFORMS)
+    ))
     image_name = f"{registry}:{version}"
     # Published from an empty container so no single architecture is the
     # "real" one and the others attachments — every variant is equal in the
@@ -108,10 +179,9 @@ async def _publish_router_image(
     """
     if not version:
         version = await _calc_version(source)
-    variants = [
-        source.docker_build(platform=p, dockerfile=ROUTER_DOCKERFILE)
-        for p in PUBLISH_PLATFORMS
-    ]
+    variants = list(await asyncio.gather(
+        *(_image(source, ROUTER_DOCKERFILE, p) for p in PUBLISH_PLATFORMS)
+    ))
     image_name = f"{registry}:{version}"
     await dag.container().publish(image_name, platform_variants=variants)
     return image_name, version
@@ -326,9 +396,7 @@ class KvlabCoreFlows:
         # target while the other is clean — checking only amd64 would let an
         # arm64 break through to the release.
         for p in PUBLISH_PLATFORMS:
-            await source.docker_build(
-                platform=p, dockerfile=ROUTER_DOCKERFILE,
-            ).sync()
+            await (await _image(source, ROUTER_DOCKERFILE, p)).sync()
         packaged = _package_chart(source.directory(ROUTER_CHART_DIR), registry, version)
         return packaged.directory("/out")
 
@@ -369,3 +437,42 @@ class KvlabCoreFlows:
             f"Published router image: {image_name}\n"
             f"Published Helm chart: {chart_ref} (pinned to image {image_name})"
         )
+
+    @function
+    async def release(
+        self,
+        source: Annotated[dagger.Directory, Ignore(SOURCE_IGNORE)],
+        helm_username: dagger.Secret,
+        helm_password: dagger.Secret,
+        version: str,
+        registry: str = "quay.io/weka.io/kvlab",
+        router_registry: str = "quay.io/weka.io/kvlab-router",
+        helm_registry: str = "quay.io/weka.io/helm",
+        replay_image: str = "quay.io/weka.io/kvlab:replay-40d-oct14-337a03810637",
+    ) -> str:
+        """The whole release: `push_helm` and `push_router_helm` in ONE engine
+        session, the two pairs concurrently.
+
+        One call rather than two so the engine starts and loads this module
+        once, and the steps the two Dockerfiles share (base images, `go mod
+        download`) run once per architecture rather than once per image. Each
+        pair keeps its own order — its image is published before its chart is
+        pushed — and either pair failing fails the release, so it still ships a
+        matched set or nothing.
+
+        Args:
+            version: The semver both images and both charts are published under.
+        """
+        bench, router = await asyncio.gather(
+            self.push_helm(
+                source, helm_username, helm_password,
+                registry=registry, helm_registry=helm_registry,
+                replay_image=replay_image, version=version,
+            ),
+            self.push_router_helm(
+                source, helm_username, helm_password,
+                registry=router_registry, helm_registry=helm_registry,
+                version=version,
+            ),
+        )
+        return f"{bench}\n{router}"

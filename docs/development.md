@@ -49,7 +49,7 @@ task docker:build   # override REPLAY_IMAGE=... to embed a different capture
 ## CI / Publishing
 
 Publishing is a self-contained Dagger module (Python SDK, engine pinned to
-`v0.18.6`) rooted at `dagger.json` / `.dagger/src/kvlab_core_flows/`. All Go
+`v0.21.7`) rooted at `dagger.json` / `.dagger/src/kvlab_core_flows/`. All Go
 dependencies needed to build the image are public, so no SSH socket forwarding or
 registry credentials are required for the image build itself.
 
@@ -61,10 +61,17 @@ Three functions:
   without one; `sha12` is the first 12 hex characters of the file's sha256, so the
   hash stays in the tag whether or not a label is given.
 - `publish` builds the repo's `Dockerfile` via `Directory.docker_build()` (the
-  Dockerfile is the single source of truth; the module does not reimplement its
-  steps), tags it `v999.0.0-<sha12>` (sha12 of the source directory's content
-  digest), and publishes to `quay.io/weka.io/kvlab` by default. The Dockerfile's
-  `REPLAY_IMAGE` build arg is exposed as a `--replay-image` parameter.
+  Dockerfile is the single source of truth for the binary and runtime; the module
+  does not reimplement its steps), tags it `v999.0.0-<sha12>` (sha12 of the source
+  directory's content digest), and publishes to `quay.io/weka.io/kvlab` by
+  default. It builds the Dockerfile's `runtime` stage and lays it over the replay
+  image named by `--replay-image` (the Dockerfile's `REPLAY_IMAGE`): the replay
+  image's own layer is the published image's bottom layer, byte for byte, with
+  `/kvlab/replay.jsonl` a symlink to its `/replay.jsonl`. So a release neither
+  recompresses nor re-uploads the artifact (the registry already holds that
+  blob), and a node that pulled any earlier release does not download or unpack
+  it again. The Go builder stages run on the build host and cross-compile, so
+  neither architecture compiles under emulation.
 - `push-helm` first runs the exact same image build and publish as `publish`
   (shared internal helper, not a separate code path), then packages `chart/kvlab`
   and pushes it to an OCI Helm registry (`quay.io/weka.io/helm` by default).
@@ -93,6 +100,7 @@ task helm:push                                   # dagger call push-helm (image 
 is hand-edited or committed.
 
 Releases from `main` are cut by `.github/workflows/release.yml`: the next semver
-comes from Conventional Commits (see `CLAUDE.md`), the image and chart are
-published under that `vX.Y.Z` instead of the content-hash stamp, and the GitHub
+comes from Conventional Commits (see `CLAUDE.md`), `dagger call release` runs
+`push-helm` and `push-router-helm` concurrently in one engine session, publishing
+both images and charts under that `vX.Y.Z` instead of the content-hash stamp, and the GitHub
 Release carries per-version install commands.

@@ -63,9 +63,10 @@ jobs:
 
       - name: Free runner disk space
         if: steps.semver.outputs.new_tag != ''
-        # The image embeds a ~9.5 GB (uncompressed) replay layer; assembling
-        # and exporting it inside the dagger engine exceeds the runner's
-        # default free disk. Dropping preinstalled toolchains frees ~25-30 GB.
+        # The benchmark image's bottom layer is the ~9.5 GB (uncompressed)
+        # replay image; if the engine has to pull and unpack it, that exceeds
+        # the runner's default free disk. Dropping preinstalled toolchains
+        # frees ~25-30 GB.
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
@@ -108,25 +109,17 @@ jobs:
       # benchmark pair embeds the multi-GB replay artifact; the router pair does
       # not, because a router never reads it. Publishing both here is what keeps
       # them from drifting: a release either ships a matched set or fails.
-      - name: Publish benchmark image + chart under semver (dagger push-helm)
+      #
+      # One `dagger call release` rather than push-helm then push-router-helm:
+      # one engine start and module load, the shared build steps run once, and
+      # the two pairs publish concurrently.
+      - name: Publish benchmark + router images and charts under semver (dagger release)
         if: steps.semver.outputs.new_tag != ''
         env:
           QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
           QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
         run: |
-          dagger call push-helm \
-            --source=. \
-            --helm-username=env://QUAY_USERNAME \
-            --helm-password=env://QUAY_PASSWORD \
-            --version "${{ steps.semver.outputs.new_tag }}"
-
-      - name: Publish router image + chart under semver (dagger push-router-helm)
-        if: steps.semver.outputs.new_tag != ''
-        env:
-          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
-          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
-        run: |
-          dagger call push-router-helm \
+          dagger call release \
             --source=. \
             --helm-username=env://QUAY_USERNAME \
             --helm-password=env://QUAY_PASSWORD \
