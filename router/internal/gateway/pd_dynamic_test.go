@@ -51,7 +51,15 @@ type dynFleet struct {
 
 	mu sync.Mutex
 	// joined is when each node last left decode (zero while decode).
-	joined    map[string]time.Time
+	joined map[string]time.Time
+	// dServing is the D legs each node is serving (arrived, not answered).
+	dServing map[string]int
+	// owed is, per node out of decode, the D legs the router had already
+	// sent it when it left decode and that have not arrived yet: the
+	// decodes its drain waits for. Each may arrive late, however late the
+	// transport delivers it; any D leg beyond them was routed there after
+	// the node left decode.
+	owed      map[string]int
 	pLegsOn   map[int]int
 	dLegsOn   map[int]int
 	legs      map[string][]string // request id -> "P"/"D" in arrival order
@@ -59,14 +67,9 @@ type dynFleet struct {
 	dNoParams int
 }
 
-// dynGrace is how long after a node leaves decode a D leg may still arrive
-// there: one chosen just before the conversion is one of the decodes the
-// drain waits for.
-const dynGrace = 50 * time.Millisecond
-
 func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *dynFleet {
 	t.Helper()
-	f := &dynFleet{pool: fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()), joined: map[string]time.Time{}, pLegsOn: map[int]int{}, dLegsOn: map[int]int{}, legs: map[string][]string{}}
+	f := &dynFleet{pool: fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()), joined: map[string]time.Time{}, dServing: map[string]int{}, owed: map[string]int{}, pLegsOn: map[int]int{}, dLegsOn: map[int]int{}, legs: map[string][]string{}}
 	reg := registry.New(registry.Options{})
 	var floor []string
 	for i := range n {
@@ -95,9 +98,19 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 					if _, has := body["kv_transfer_params"]; !has {
 						f.dNoParams++
 					}
-					if j := f.joined[url]; !j.IsZero() && time.Since(j) > dynGrace {
-						f.violation = append(f.violation, fmt.Sprintf("D leg on node %d, %v after it left decode", node, time.Since(j)))
+					if j := f.joined[url]; !j.IsZero() {
+						if f.owed[url] > 0 {
+							f.owed[url]--
+						} else {
+							f.violation = append(f.violation, fmt.Sprintf("D leg on node %d, %v after it left decode, beyond the decodes in flight then", node, time.Since(j)))
+						}
 					}
+					f.dServing[url]++
+					defer func() {
+						f.mu.Lock()
+						f.dServing[url]--
+						f.mu.Unlock()
+					}()
 				}
 				fail := c.isPrefillLeg() && f.failP.Load()
 				f.mu.Unlock()
@@ -146,8 +159,13 @@ func newDynFleet(t *testing.T, n int, cfg prefill.Config, eng mockvllm.Config) *
 		switch {
 		case from == prefill.Decode:
 			f.joined[b.URL] = time.Now()
+			// A leg holds its lease from the router's pick until it is
+			// answered, so in-flight less those being served is what the
+			// router had sent that has not arrived yet.
+			f.owed[b.URL] = max(int(b.Inflight())-f.dServing[b.URL], 0)
 		case to == prefill.Decode:
 			delete(f.joined, b.URL)
+			delete(f.owed, b.URL)
 			pflow.Forget(b)
 		}
 		if to == prefill.Prefill {
