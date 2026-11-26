@@ -163,19 +163,8 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 		canonical.WriteString(t)
 	}
 	if req.Tools != nil && req.Tools.Count > 0 {
-		n := req.Tools.Count
-		if n <= 0 {
-			n = 1
-		}
-		const perToolOverhead = 120
-		totalOverhead := perToolOverhead * n
-		descBudget := sizeBudget(req.Tools.Bytes, req.Tools.Tokens, charsPerToken) - totalOverhead
-		if descBudget < n*4 {
-			descBudget = n * 4
-		}
-		perDesc := descBudget / n
-		for i := 0; i < n; i++ {
-			canonical.WriteString(synthText(fmt.Sprintf("%s:tool:%d", req.Tools.Hash, i), perDesc, docs))
+		for _, d := range toolDescriptions(req.Tools, docs, charsPerToken) {
+			canonical.WriteString(d)
 		}
 	}
 	for _, m := range convMsgs {
@@ -401,11 +390,6 @@ func buildSystem(blocks []RouterReplaySystemBlock, docs string, charsPerToken fl
 	return out
 }
 
-// buildTools rebuilds an Anthropic tools array of Count entries that
-// canonically marshals to approximately the original Bytes (or, with
-// charsPerToken > 0, sized off the captured Tokens instead). Each tool has
-// a stable name derived from the tools.hash + its index, and a description
-// padded with docs to round out the total size.
 // runStampToolName / runStampToolDescription are the marker tool that carries
 // the run stamp INSIDE the tool list. Some chat templates (DeepSeek-V4's
 // deepseek_v4 tokenizer mode, measured 2026-09-24) render the tool schemas
@@ -459,39 +443,65 @@ func prependRunStampToolOpenAI(tools []map[string]interface{}, runID string) []m
 	return append([]map[string]interface{}{marker}, tools...)
 }
 
+// buildTools rebuilds an Anthropic tools array of Count entries that
+// canonically marshals to the original Bytes (or, with charsPerToken > 0, is
+// sized off the captured Tokens instead). Each tool has a stable name derived
+// from the tools.hash + its index, and a description padded with docs to
+// round out the total size.
 func buildTools(spec *RouterReplayToolsSpec, docs string, charsPerToken float64) []map[string]interface{} {
-	n := spec.Count
-	if n <= 0 {
-		n = 1
-	}
-	// Reserve approximate JSON overhead per tool (object braces, fixed
-	// fields, brackets/commas): ~120 bytes. The remainder is description
-	// padding distributed evenly.
-	const perToolOverhead = 120
-	totalOverhead := perToolOverhead * n
-	descBudget := sizeBudget(spec.Bytes, spec.Tokens, charsPerToken) - totalOverhead
-	if descBudget < n*4 {
-		descBudget = n * 4
-	}
-	perDesc := descBudget / n
-	tools := make([]map[string]interface{}, 0, n)
-	for i := 0; i < n; i++ {
-		t := map[string]interface{}{
-			"name":        fmt.Sprintf("tool_%s_%03d", shortHashHex(spec.Hash), i),
-			"description": synthText(fmt.Sprintf("%s:tool:%d", spec.Hash, i), perDesc, docs),
-			"input_schema": map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		}
-		tools = append(tools, t)
+	descs := toolDescriptions(spec, docs, charsPerToken)
+	tools := make([]map[string]interface{}, len(descs))
+	for i, d := range descs {
+		t := toolSkeleton(spec, i)
+		t["description"] = d
+		tools[i] = t
 	}
 	return tools
 }
 
+// toolSkeleton is tool i of spec in the Anthropic shape with an empty
+// description: the structure every synthesized tool carries.
+func toolSkeleton(spec *RouterReplayToolsSpec, i int) map[string]interface{} {
+	return map[string]interface{}{
+		"name":        fmt.Sprintf("tool_%s_%03d", shortHashHex(spec.Hash), i),
+		"description": "",
+		"input_schema": map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	}
+}
+
+// toolDescriptions synthesizes the description of each of spec's Count
+// tools. The capture's tools bytes are the canonical JSON of the whole tools
+// array, so the descriptions split what is left of it after the array of
+// skeletons (toolSkeleton, brackets and commas) evenly: the synthesized array
+// in the Anthropic shape is as long as the captured one. The original
+// tools' schemas are prompt content too; here they ride in the
+// descriptions. Both wire formats send these same descriptions, so the
+// content a server tokenizes does not depend on the format.
+func toolDescriptions(spec *RouterReplayToolsSpec, docs string, charsPerToken float64) []string {
+	n := spec.Count
+	if n <= 0 {
+		n = 1
+	}
+	skeleton := 2 + (n - 1) // [ ] and the commas
+	for i := 0; i < n; i++ {
+		b, _ := json.Marshal(toolSkeleton(spec, i))
+		skeleton += len(b)
+	}
+	shares := evenShares(sizeBudget(spec.Bytes, spec.Tokens, charsPerToken)-skeleton, n)
+	out := make([]string, n)
+	for i := range out {
+		out[i] = synthText(fmt.Sprintf("%s:tool:%d", spec.Hash, i), shares[i], docs)
+	}
+	return out
+}
+
 // buildMessages rebuilds the messages array — preserving role and block
-// shape of each message. For text blocks we synthesize content sized to a
-// share of the message's total Bytes. For tool_use and tool_result blocks
+// shape of each message. Every block's content is sized to an even share of
+// the message's captured Bytes (see buildMessageContent). For tool_use and
+// tool_result blocks
 // we preserve the original ids verbatim so the conversation maintains a
 // valid reference graph that matches what the original capture sent.
 // stampByHash is inj.StampByHash (nil when --verify is off) —
@@ -566,6 +576,22 @@ func appendTailMessageAnthropic(msgs []map[string]interface{}, text string) []ma
 // tool_result_ids to populate ids on the matching blocks (in order of
 // appearance in block_types).
 //
+// Sizing: the capture records one byte count per message — the canonical
+// JSON of the whole message, role and content array included — and nothing
+// per block. The message is first built as its skeleton (every block with
+// empty content, ids and names in place), and the captured bytes minus the
+// skeleton's canonical JSON size are split evenly over EVERY block: text,
+// tool_result content, thinking, tool_use input (a "_padding" string inside
+// the input object), image and any other kind. So the synthesized message,
+// marshaled in the capture's (Anthropic) shape, is as long as the captured
+// one, and its content bytes are the capture's less only the JSON structure
+// both carry. An even split is the one deterministic rule the capture
+// supports: it does not keep per-block sizes.
+//
+// Images become text blocks of their share, never image data: the capture
+// sized an image by its base64 payload, which is what the share reproduces
+// in bytes, though a real image tokenizes far below its payload.
+//
 // stampByHash is inj.StampByHash (nil when --verify is off, or
 // when this message isn't a qualifying turn). When m.Hash is a key in
 // stampByHash, the labeled marker "\n\n[turn-N id: <uuid>]" is appended to
@@ -577,82 +603,23 @@ func appendTailMessageAnthropic(msgs []map[string]interface{}, text string) []ma
 // isQualifyingUserTurn — so a cross-session-shared message is never
 // perturbed.
 func buildMessageContent(m RouterReplayMessage, docs string, charsPerToken float64, stampByHash map[string]turnStamp) []map[string]interface{} {
-	nText := 0
-	for _, t := range m.BlockTypes {
-		if t == "text" {
-			nText++
-		}
-	}
-	textBudget := sizeBudget(m.Bytes, m.Tokens, charsPerToken)
-	if textBudget < 0 {
-		textBudget = 0
-	}
-	// Subtract a rough per-block JSON overhead per non-text block so we
-	// don't massively overshoot the total bytes.
-	const otherBlockOverhead = 80
-	for _, t := range m.BlockTypes {
-		if t != "text" {
-			textBudget -= otherBlockOverhead
-		}
-	}
-	if textBudget < nText*4 {
-		textBudget = nText * 4
-	}
-	perText := 0
-	if nText > 0 {
-		perText = textBudget / nText
-	}
-
-	tuIdx, trIdx := 0, 0
-	out := make([]map[string]interface{}, 0, len(m.BlockTypes))
-	for i, t := range m.BlockTypes {
+	out := messageSkeleton(m)
+	shares := evenShares(sizeBudget(m.Bytes, m.Tokens, charsPerToken)-messageSkeletonBytes(m, out), len(out))
+	for i, blk := range out {
 		blockSeed := fmt.Sprintf("%s:block:%d", m.Hash, i)
-		switch t {
+		switch m.BlockTypes[i] {
 		case "text":
-			out = append(out, map[string]interface{}{
-				"type": "text",
-				"text": synthText(blockSeed, perText, docs),
-			})
+			blk["text"] = synthText(blockSeed, shares[i], docs)
 		case "tool_use":
-			id := ""
-			if tuIdx < len(m.ToolUseIDs) {
-				id = m.ToolUseIDs[tuIdx]
-				tuIdx++
-			}
-			out = append(out, map[string]interface{}{
-				"type":  "tool_use",
-				"id":    id,
-				"name":  fmt.Sprintf("tool_%s", shortHashHex(blockSeed)),
-				"input": map[string]interface{}{"_padding": synthText(blockSeed+":input", 32, docs)},
-			})
+			blk["input"] = map[string]interface{}{"_padding": synthText(blockSeed+":input", shares[i], docs)}
 		case "tool_result":
-			id := ""
-			if trIdx < len(m.ToolResultIDs) {
-				id = m.ToolResultIDs[trIdx]
-				trIdx++
-			}
-			out = append(out, map[string]interface{}{
-				"type":        "tool_result",
-				"tool_use_id": id,
-				"content":     synthText(blockSeed+":result", perText, docs),
-			})
+			blk["content"] = synthText(blockSeed+":result", shares[i], docs)
 		case "thinking":
-			out = append(out, map[string]interface{}{
-				"type":     "thinking",
-				"thinking": synthText(blockSeed+":thinking", perText, docs),
-			})
+			blk["thinking"] = synthText(blockSeed+":thinking", shares[i], docs)
 		case "image":
-			// We can't fake images cheaply; replace with a small text
-			// placeholder so the request still validates.
-			out = append(out, map[string]interface{}{
-				"type": "text",
-				"text": "[image placeholder]",
-			})
+			blk["text"] = synthText(blockSeed+":image", shares[i], docs)
 		default:
-			out = append(out, map[string]interface{}{
-				"type": "text",
-				"text": synthText(blockSeed+":fallback", perText, docs),
-			})
+			blk["text"] = synthText(blockSeed+":fallback", shares[i], docs)
 		}
 	}
 	if stamp, ok := stampByHash[m.Hash]; ok {
@@ -665,6 +632,101 @@ func buildMessageContent(m RouterReplayMessage, docs string, charsPerToken float
 		}
 	}
 	return out
+}
+
+// messageSkeleton is m's content array with every content string empty: the
+// block types, tool ids and tool names buildMessageContent emits, nothing
+// sized yet.
+func messageSkeleton(m RouterReplayMessage) []map[string]interface{} {
+	tuIdx, trIdx := 0, 0
+	out := make([]map[string]interface{}, 0, len(m.BlockTypes))
+	for i, t := range m.BlockTypes {
+		blockSeed := fmt.Sprintf("%s:block:%d", m.Hash, i)
+		switch t {
+		case "tool_use":
+			id := ""
+			if tuIdx < len(m.ToolUseIDs) {
+				id = m.ToolUseIDs[tuIdx]
+				tuIdx++
+			}
+			out = append(out, map[string]interface{}{
+				"type":  "tool_use",
+				"id":    id,
+				"name":  fmt.Sprintf("tool_%s", shortHashHex(blockSeed)),
+				"input": map[string]interface{}{"_padding": ""},
+			})
+		case "tool_result":
+			id := ""
+			if trIdx < len(m.ToolResultIDs) {
+				id = m.ToolResultIDs[trIdx]
+				trIdx++
+			}
+			out = append(out, map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": id,
+				"content":     "",
+			})
+		case "thinking":
+			out = append(out, map[string]interface{}{"type": "thinking", "thinking": ""})
+		default:
+			// text, and every kind replay sends as text (image, document,
+			// redacted_thinking, ...).
+			out = append(out, map[string]interface{}{"type": "text", "text": ""})
+		}
+	}
+	return out
+}
+
+// messageSkeletonBytes is the canonical JSON size of m with skeleton as its
+// content: the capture's own measure (json.Marshal of the message object),
+// so captured bytes minus this is exactly the content the capture's size
+// leaves room for. cache_control counts because buildMessages puts it on the
+// last block, as the capture's message carried it. The role is the captured
+// one, with "developer" measured as "system" so --replay-system-first (which
+// renames it) does not change a message's content.
+func messageSkeletonBytes(m RouterReplayMessage, skeleton []map[string]interface{}) int {
+	content := make([]map[string]interface{}, len(skeleton))
+	copy(content, skeleton)
+	if m.CacheControl != "" && len(content) > 0 {
+		last := make(map[string]interface{}, len(content[len(content)-1])+1)
+		for k, v := range content[len(content)-1] {
+			last[k] = v
+		}
+		last["cache_control"] = map[string]string{"type": m.CacheControl}
+		content[len(content)-1] = last
+	}
+	role := m.Role
+	if isSystemRole(role) {
+		role = "system"
+	}
+	b, _ := json.Marshal(map[string]interface{}{"role": role, "content": content})
+	return len(b)
+}
+
+// minBlockBytes floors each block's share when a message's captured bytes do
+// not cover its skeleton (tiny messages whose original used the shorter
+// string-content form): an empty text block is rejected by some servers.
+const minBlockBytes = 4
+
+// evenShares splits budget over n blocks, the remainder going one byte each
+// to the first blocks, so the shares sum to budget exactly whenever budget
+// covers the minBlockBytes floor.
+func evenShares(budget, n int) []int {
+	shares := make([]int, n)
+	if n == 0 {
+		return shares
+	}
+	if budget < n*minBlockBytes {
+		budget = n * minBlockBytes
+	}
+	per, rem := budget/n, budget%n
+	for i := range shares {
+		shares[i] = per
+		if i < rem {
+			shares[i]++
+		}
+	}
+	return shares
 }
 
 // synthText returns a deterministic string of approximately n bytes drawn
@@ -738,29 +800,18 @@ func shortHashHex(seed string) string {
 	return fmt.Sprintf("%x", h[:4])
 }
 
-// buildOpenAITools rebuilds an OpenAI function-tool array of Count entries
-// sized to approximately spec.Bytes, mirroring buildTools but using the
-// OpenAI {"type":"function","function":{...}} wrapper shape (~150 bytes/tool
-// overhead vs ~120 for Anthropic).
+// buildOpenAITools rebuilds the tools array in the OpenAI
+// {"type":"function","function":{...}} wrapper shape, with the same names
+// and descriptions as buildTools (see toolDescriptions).
 func buildOpenAITools(spec *RouterReplayToolsSpec, docs string, charsPerToken float64) []map[string]interface{} {
-	n := spec.Count
-	if n <= 0 {
-		n = 1
-	}
-	const perToolOverhead = 150
-	totalOverhead := perToolOverhead * n
-	descBudget := sizeBudget(spec.Bytes, spec.Tokens, charsPerToken) - totalOverhead
-	if descBudget < n*4 {
-		descBudget = n * 4
-	}
-	perDesc := descBudget / n
-	tools := make([]map[string]interface{}, 0, n)
-	for i := 0; i < n; i++ {
+	descs := toolDescriptions(spec, docs, charsPerToken)
+	tools := make([]map[string]interface{}, 0, len(descs))
+	for i, d := range descs {
 		tools = append(tools, map[string]interface{}{
 			"type": "function",
 			"function": map[string]interface{}{
 				"name":        fmt.Sprintf("tool_%s_%03d", shortHashHex(spec.Hash), i),
-				"description": synthText(fmt.Sprintf("%s:tool:%d", spec.Hash, i), perDesc, docs),
+				"description": d,
 				"parameters": map[string]interface{}{
 					"type":       "object",
 					"properties": map[string]interface{}{},

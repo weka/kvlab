@@ -71,6 +71,17 @@ deterministically from each block's hash: same hash, same bytes, so the server's
 prefix cache hits the way the original traffic did, without shipping any real
 captured text.
 
+The capture keeps one byte count per system block, per tools array and per
+message (the canonical JSON of each), not per content block. Replay sends each
+of them at that size: a message's bytes, less the JSON structure of the message
+it rebuilds (roles, block types, tool ids and names), are split evenly over all
+its content blocks: text, `tool_result` content, thinking, `tool_use` input
+(a `_padding` string), and images and documents, which are sent as text of
+their share. The tools array's bytes go to the tool descriptions the same way.
+Both wire formats carry the same content. Token counts then follow from the
+serving tokenizer's density on the synthesized text (`--replay-chars-per-token`
+sizes from captured tokens instead).
+
 `replay-prepare --since/--until` bound the capture by request time and
 `--complete-by` keeps only requests whose response had finished by an instant,
 for rebuilding a corpus from a directory that has grown.

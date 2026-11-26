@@ -196,7 +196,7 @@ func TestSystemFirstCanonicalMatchesWire(t *testing.T) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	toolText := synthText("tools:tool:0", 400-120, sysFirstDocs)
+	toolText := toolDescriptions(req.Tools, sysFirstDocs, 0)[0]
 	wireOrder := []string{
 		parsed.System[3]["text"].(string),
 		parsed.System[4]["text"].(string),
