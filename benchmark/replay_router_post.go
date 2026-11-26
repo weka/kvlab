@@ -755,6 +755,10 @@ func (p *replayPoster) do(
 		OutputTarget: outputTarget,
 		progress:     progressFrom(ctx),
 		watch:        watch,
+
+		CapturedInputTokens: req.InputTokens,
+		CapturedInputBytes:  req.capturedInputBytes(),
+		WireInputBytes:      len(bodyBytes),
 	}
 
 	if resp.StatusCode/100 != 2 {
@@ -1395,11 +1399,12 @@ func (p *replayPoster) dryDo(
 	}
 	inj := p.buildInjection(req, su)
 	var canonical string
+	var body []byte
 	switch p.apiType {
 	case "openai", "openai_vllm", "openai_sglang":
-		_, canonical, _ = buildOpenAIChatCompletionsBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj, p.reasoningEffort, p.thinking, p.apiType == "openai_sglang")
+		body, canonical, _ = buildOpenAIChatCompletionsBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj, p.reasoningEffort, p.thinking, p.apiType == "openai_sglang")
 	default:
-		_, canonical, _ = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj)
+		body, canonical, _ = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj)
 	}
 	var ratio float64
 	if p.estimator != nil {
@@ -1440,6 +1445,11 @@ func (p *replayPoster) dryDo(
 		},
 		Error:   nil,
 		IsEmpty: false,
+
+		OutputTarget:        pickMaxTokens(req, p.outputRatio, p.minOutputTokens),
+		CapturedInputTokens: req.InputTokens,
+		CapturedInputBytes:  req.capturedInputBytes(),
+		WireInputBytes:      len(body),
 	}
 }
 

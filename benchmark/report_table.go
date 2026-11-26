@@ -114,6 +114,10 @@ func buildReportTable(vr []vizRecord, tl []*timelineReq) ([]reportCol, [][]any) 
 		{name: "uf", get: func(i int) any { return float64(r(i).UUIDFound) }},
 		{name: "ul", get: func(i int) any { return float64(r(i).UUIDLeaked) }},
 		{name: "uem", get: func(i int) any { return b01(r(i).UUIDExactMatch) }},
+		{name: "vct", get: func(i int) any { return float64(r(i).VolCapturedInputTokens) }},
+		{name: "vcb", get: func(i int) any { return float64(r(i).VolCapturedInputBytes) }},
+		{name: "vwb", get: func(i int) any { return float64(r(i).VolWireInputBytes) }},
+		{name: "vot", get: func(i int) any { return float64(r(i).VolOutputTargetTokens) }},
 		// [expected_uuids_raw, found_mask, leaked_uuids_raw] on a miss or leak.
 		{name: "ux", nested: true, get: func(i int) any {
 			x := r(i)

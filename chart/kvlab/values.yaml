@@ -35,9 +35,9 @@ duration: "8h"
 # Injects one deterministic marker per user turn, asks responses to recite a
 # window of them, and scans every response for a marker it never sent. The run
 # STOPS on the first cross-contamination event (opt out below). Verify runs
-# drop vLLM's ignore_eos so responses are genuine text: output conformity dips
-# to ~90% (reported as outconf= on the progress line) instead of ignore_eos's
-# padded 100%.
+# drop vLLM's ignore_eos so responses are genuine text: output volume
+# conformity dips to ~90% (the out: part of vol= on the progress line) instead
+# of ignore_eos's padded 100%.
 verify:
   enabled: false
   # forceEos keeps ignore_eos on even under verify — deterministic output

@@ -131,7 +131,7 @@ throughput numbers.
   reproduces it.
 - `--verify` turns `ignore_eos` **off**, because forcing generation past the stop
   token pads responses with degenerate text a coherency check should not score.
-  Output conformity then sits near 90%. `--verify-force-eos` keeps `ignore_eos`
+  Output volume conformity then sits near 90%. `--verify-force-eos` keeps `ignore_eos`
   on when deterministic output volume matters more.
 - Corrupt responses are captured (`--dump-garbage`, on by default); `--dump-dir`
   and `--dump-miss-dir` capture more.

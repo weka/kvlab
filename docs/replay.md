@@ -82,6 +82,39 @@ Both wire formats carry the same content. Token counts then follow from the
 serving tokenizer's density on the synthesized text (`--replay-chars-per-token`
 sizes from captured tokens instead).
 
+## Volume conformity
+
+Every replay run reports how much of the captured volume it put through the
+server, in the summary
+
+```
+ Volume conformity  : input 73.4% (bytes 100.3%), output 91.0%
+                      input 1174.9M of 1600.6M captured tokens, 4914.2M of 4899.5M captured bytes; output 3.1M of 3.4M requested
+```
+
+and as `vol=in:..,bytes:..,out:..` on the progress line:
+
+- **input**: prompt tokens the server reported (uncached + cached) over the
+  capture's prompt tokens for the same requests. The capture's `input_tokens`
+  is the whole prompt (prefill + cache read + cache creation). With content
+  sized to the captured bytes, this ratio is the serving tokenizer's density
+  on synthesized text relative to the original traffic.
+- **bytes**: the request body as posted over the capture's request bytes
+  (system blocks + tools + messages). About 100%: slightly above from the run
+  stamp, output instruction and length ask; below when
+  `--replay-drop-late-system` leaves messages out, and on the OpenAI format,
+  whose message structure is lighter than the capture's Anthropic one.
+- **output**: completion tokens over the `max_tokens` each request carried;
+  ~100% under `ignore_eos`, ~90% under `--verify`.
+
+Each is a sum over the requests that completed without error. The request data
+carries the operands and per-request ratios: `volume_captured_input_tokens`,
+`volume_captured_input_bytes`, `volume_wire_input_bytes`,
+`volume_output_target_tokens`, `volume_input`, `volume_input_bytes`,
+`volume_output`. The HTML report's summary panel has a **Volume** column
+(bytes on hover) for the selected timeframe, and its CSV exports carry the
+operand columns.
+
 `replay-prepare --since/--until` bound the capture by request time and
 `--complete-by` keeps only requests whose response had finished by an instant,
 for rebuilding a corpus from a directory that has grown.

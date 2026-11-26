@@ -414,6 +414,19 @@ type requestDataRecord struct {
 	// when the engine reported none; files written before it existed lack it.
 	KV *llm.KVDetails `json:"kv,omitempty"`
 
+	// Volume conformity (replay only; see volume.go): the capture's prompt
+	// tokens and request bytes, the posted body's bytes, and the max_tokens
+	// the request carried, with the three per-request ratios. Server prompt
+	// tokens are input_tokens + cached_tokens. A ratio is 0 when either side
+	// is missing (an error, or a server that reported no usage).
+	VolumeCapturedInputTokens int     `json:"volume_captured_input_tokens,omitempty"`
+	VolumeCapturedInputBytes  int     `json:"volume_captured_input_bytes,omitempty"`
+	VolumeWireInputBytes      int     `json:"volume_wire_input_bytes,omitempty"`
+	VolumeOutputTargetTokens  int     `json:"volume_output_target_tokens,omitempty"`
+	VolumeInput               float64 `json:"volume_input,omitempty"`
+	VolumeInputBytes          float64 `json:"volume_input_bytes,omitempty"`
+	VolumeOutput              float64 `json:"volume_output,omitempty"`
+
 	// Status
 	IsError      bool   `json:"is_error"`
 	ErrorMessage string `json:"error_message,omitempty"`
@@ -1360,12 +1373,8 @@ type autoState struct {
 	// in one — back-to-back garbage and a miss the series never recovers
 	// from. See replay_verify_series.go. Zero value is ready to use.
 	valInstances instanceVerifyHistory
-	// Output-profile conformity: the wire budgets and what actually came
-	// back, summed over completed replay requests. actual/target is ~100%
-	// under ignore_eos by construction; when prompt-based length control
-	// replaces it, this ratio is the score.
-	outTargetSum atomic.Int64
-	outActualSum atomic.Int64 // none of the above — the class ignore_eos cannot explain
+	// Volume conformity sums over completed replay requests (volume.go).
+	volume volumeCounters
 	// contaminationStop is armed by the first leaked marker unless the run
 	// opted out; the evaluator turns it into a termination.
 	contaminationStop   atomic.Bool
@@ -1498,8 +1507,7 @@ type autoBenchmarkResult struct {
 	valGarbageGuidBabble  int64
 	valGarbageMidResponse int64
 	valInstances          instanceVerifyTotals
-	outTargetSum          int64
-	outActualSum          int64
+	volume                volumeTotals
 	valWindowSessions     int
 	valWindowMarkers      int
 	valPresenceMissReqs   int64
@@ -1531,11 +1539,9 @@ type displaySnapshot struct {
 	verifyGarbageTail    int64
 	verifyGarbageBabble  int64
 	verifyGarbageMid     int64
-	// Output-profile conformity, replay mode: actual vs requested output
-	// tokens. Rendered whenever a target exists — it is a replay property,
-	// not a verify one.
-	outTargetSum      int64
-	outActualSum      int64
+	// Volume conformity, replay mode (volume.go). Rendered whenever there
+	// is a target — a replay property, not a verify one.
+	volume            volumeTotals
 	reqPerSec         float64
 	inputTokPerSec    float64
 	outputTokPerSec   float64
@@ -1689,13 +1695,12 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 	fmt.Printf(" Server cache       : cached=%s  uncached=%s  (%.1f%% cached)\n",
 		formatKiloInt(res.totalCachedTokens), formatKiloInt(serverUncached), cachedPct)
 	fmt.Printf(" Output tokens      : %s\n", formatKiloInt(res.totalOutput))
-	if res.outTargetSum > 0 {
-		// actual vs the budgets the run put on the wire. With ignore_eos on
-		// (regular runs, or --verify-force-eos) this is ~100% by
-		// construction; under --verify it scores how well the per-request
-		// length ask alone reproduces the captured output profile.
-		fmt.Printf(" Output conformity  : %s of %s requested (%s)\n",
-			formatKiloInt(res.outActualSum), formatKiloInt(res.outTargetSum), pctOf(res.outActualSum, res.outTargetSum))
+	if res.volume.any() {
+		// The run against the capture: prompt tokens and request bytes in,
+		// completion tokens against the budgets out. See volume.go for what
+		// moves each figure off 100%.
+		fmt.Printf(" Volume conformity  : %s\n", res.volume.summary())
+		fmt.Printf("                      %s\n", res.volume.detail())
 	}
 	fmt.Println(strings.Repeat("-", 62))
 	fmt.Printf(" TTFT p50           : %s\n", formatDur(res.ttftP50))
@@ -1938,13 +1943,9 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 	// ask-quality counters stay off the line — they describe the model and
 	// the prompt, and belong in the summary where their caveats are printed
 	// next to them.
-	// outconf: how faithfully the run reproduced the captured output sizes.
-	// With ignore_eos on (regular runs) ~100% by construction; under
-	// --verify it is the score for prompt-based length control.
-	outConf := ""
-	if snap.outTargetSum > 0 {
-		outConf = fmt.Sprintf(" outconf=%.1f%%", 100*float64(snap.outActualSum)/float64(snap.outTargetSum))
-	}
+	// vol: volume conformity so far — how faithfully the run reproduces the
+	// captured prompt (tokens, bytes) and output sizes (volume.go).
+	volConf := snap.volume.progress()
 	verifyInfo := ""
 	if snap.verifyOn {
 		rate := 100.0
@@ -1987,7 +1988,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 		return fmt.Sprintf("DONE(%s) %s%sconc=%d in_flight=%d held=%d%s rps=%s cache=%.1f%% gcache=%.1f%% ttft50=%s total=%d errors=%d%s in=%s warm=%s scached=%s out=%s%s",
 			snap.termReason, replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
 			formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+skippedTok(snap.skippedNoUsage)+verifyInfo,
-			formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
+			formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), volConf)
 	}
 	hotInfo := ""
 	if snap.gateHotActive > 0 {
@@ -1997,7 +1998,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 		replayPrefix, seriesTok(snap), snap.concurrency, snap.gateDispatched, snap.gateActive, hotInfo,
 		formatFloat(snap.reqPerSec), snap.cacheHitRate*100, snap.globalLocalCacheRate*100, ttftStr, snap.totalCompleted, snap.totalErrors, snap.errorKinds+skippedTok(snap.skippedNoUsage)+verifyInfo,
 		formatDuration(snap.elapsed),
-		formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), outConf)
+		formatKiloInt(snap.totalInput), formatKiloInt(snap.totalInputWarm), formatKiloInt(snap.totalCached), formatKiloInt(snap.totalOutput), volConf)
 }
 
 // runMultiModelDisplay drives the live display for one or more models.
@@ -2286,8 +2287,7 @@ func runSingleModelBenchmark(
 			snap.verifyGarbageBabble = st.valGarbageGuidBabble.Load()
 			snap.verifyGarbageMid = st.valGarbageMidResponse.Load()
 		}
-		snap.outTargetSum = st.outTargetSum.Load()
-		snap.outActualSum = st.outActualSum.Load()
+		snap.volume = st.volume.load()
 		display.updateSnapshot(snap)
 		sendSnap(snap)
 	}
@@ -3416,8 +3416,7 @@ func runSingleModelBenchmark(
 	res.valGarbageGuidBabble = st.valGarbageGuidBabble.Load()
 	res.valGarbageMidResponse = st.valGarbageMidResponse.Load()
 	res.valInstances = st.valInstances.totals()
-	res.outTargetSum = st.outTargetSum.Load()
-	res.outActualSum = st.outActualSum.Load()
+	res.volume = st.volume.load()
 	if cfg.uuidRegistry != nil {
 		_, res.valWindowMarkers, res.valWindowSessions = cfg.uuidRegistry.Stats()
 	}
@@ -3497,8 +3496,7 @@ func runSingleModelBenchmark(
 			finalSnap.verifyGarbageBabble = st.valGarbageGuidBabble.Load()
 			finalSnap.verifyGarbageMid = st.valGarbageMidResponse.Load()
 		}
-		finalSnap.outTargetSum = st.outTargetSum.Load()
-		finalSnap.outActualSum = st.outActualSum.Load()
+		finalSnap.volume = st.volume.load()
 		// Populate token totals on the DONE snap (previously left zero, which
 		// showed up as in=0 warm=0 out=0 on the final rendered line).
 		finalSnap.totalInput = res.totalInputCold + res.totalInputWarm
@@ -3908,7 +3906,7 @@ func maxInt(a, b int) int {
 // stop token pads every response with degenerate text — the babble, the
 // guid-shaped invention, the repeated stop attempts — which is exactly the
 // noise a coherency check exists to notice, not to manufacture. The built-in
-// per-request length ask holds ~90% output conformity in that mode.
+// per-request length ask holds ~90% output volume conformity in that mode.
 // --verify-force-eos overrides for verify runs where deterministic volume
 // matters more than genuine output.
 func (cfg *AutoBenchmarkConfig) forceVolume() bool {

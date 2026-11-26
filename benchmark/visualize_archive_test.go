@@ -236,6 +236,8 @@ func TestRequestCSVColumnContract(t *testing.T) {
 		"turn", "cache_hit_ratio",
 		"uuid_expected", "uuid_found", "uuid_leaked", "uuid_exact_match",
 		"expected_uuids_raw", "found_mask", "leaked_uuids_raw",
+		"volume_captured_input_tokens", "volume_captured_input_bytes",
+		"volume_wire_input_bytes", "volume_output_target_tokens",
 	}
 	wantRequestsHeader := []string{
 		"arm", "start_time", "series_guid", "series_num", "request_num", "turn",
@@ -244,6 +246,8 @@ func TestRequestCSVColumnContract(t *testing.T) {
 		"is_error", "is_empty",
 		"uuid_expected", "uuid_found", "uuid_leaked", "uuid_exact_match",
 		"expected_uuids_raw", "found_mask", "leaked_uuids_raw",
+		"volume_captured_input_tokens", "volume_captured_input_bytes",
+		"volume_wire_input_bytes", "volume_output_target_tokens",
 	}
 
 	// Deliberate parity check called out in the doc above: both lists carry

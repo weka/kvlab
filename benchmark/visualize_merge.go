@@ -277,7 +277,8 @@ const csvMaxRows = 8000
 // excludes it and the other diagnostic text fields -- see requestDataRecord
 // in auto.go).
 // expected_uuids_raw/found_mask/leaked_uuids_raw are "|"-joined lists, empty
-// on any row without a UUID miss or leak.
+// on any row without a UUID miss or leak. The volume_* columns are the
+// volume-conformity operands (see volume.go), 0 outside replay.
 //
 // All NEW columns (turn, cache_hit_ratio, and everything from uuid_expected
 // on) are appended AFTER the original 20 -- source .. is_empty keep their
@@ -295,6 +296,8 @@ var csvHeader = []string{
 	"turn", "cache_hit_ratio",
 	"uuid_expected", "uuid_found", "uuid_leaked", "uuid_exact_match",
 	"expected_uuids_raw", "found_mask", "leaked_uuids_raw",
+	"volume_captured_input_tokens", "volume_captured_input_bytes",
+	"volume_wire_input_bytes", "volume_output_target_tokens",
 }
 
 func computeSourceStarts(records []taggedRecord) map[string]int64 {
@@ -345,6 +348,10 @@ func recordToRow(tr taggedRecord, sourceStart map[string]int64) []string {
 		strings.Join(r.ExpectedUUIDsRaw, "|"),
 		strings.Join(foundMask, "|"),
 		strings.Join(r.LeakedUUIDsRaw, "|"),
+		strconv.Itoa(r.VolumeCapturedInputTokens),
+		strconv.Itoa(r.VolumeCapturedInputBytes),
+		strconv.Itoa(r.VolumeWireInputBytes),
+		strconv.Itoa(r.VolumeOutputTargetTokens),
 	}
 }
 

@@ -418,10 +418,7 @@ func recordReplayRequest(
 	if metrics.ReciteBudgetShort {
 		st.valBudgetShortReqs.Add(1)
 	}
-	if metrics.OutputTarget > 0 && metrics.Error == nil && !metrics.Skipped {
-		st.outTargetSum.Add(int64(metrics.OutputTarget))
-		st.outActualSum.Add(int64(metrics.UsageData.OutputTokens.Count))
-	}
+	st.volume.observe(&metrics)
 	if metrics.ResponseGarbage {
 		st.valGarbageReqs.Add(1)
 		switch metrics.GarbageVerdict {
@@ -606,6 +603,7 @@ func recordReplayRequest(
 			UUIDLeaked:              uuidLeakedCount,
 			UUIDExactMatch:          metrics.ExactMatch,
 		}
+		rec.applyVolume(&metrics)
 		rec.applyKV(&metrics)
 		// Raw detail lists only on a miss or a leak — mirrors the
 		// failed-request-only policy on PromptText/ResponseText/RawResponseTail

@@ -132,6 +132,10 @@ type RouterReplayRequest struct {
 	// them as system text blocks rather than as messages; the OpenAI builder
 	// needs nothing, since they already sit in the leading system run.
 	hoistedSystem int
+	// capturedBytes is capturedInputBytes taken before dispatch trims the
+	// request (--replay-drop-late-system), so volume conformity compares the
+	// wire with the capture, not with what replay chose to send.
+	capturedBytes int
 	Model         string `json:"model"`
 	Stream        bool   `json:"stream"`
 	MaxTokens     int    `json:"max_tokens"`
@@ -177,6 +181,27 @@ type RouterReplayToolsSpec struct {
 	Bytes  int    `json:"bytes"`
 	Tokens int    `json:"tokens,omitempty"`
 	Hash   string `json:"hash"`
+}
+
+// capturedInputBytes is the capture's size of this request's prompt: its
+// system blocks, tools array and messages, each the canonical JSON the
+// capture measured. Replay sizes each of them to exactly that (see
+// buildMessageContent), so it is what the wire is held to.
+func (r RouterReplayRequest) capturedInputBytes() int {
+	if r.capturedBytes > 0 {
+		return r.capturedBytes
+	}
+	n := 0
+	for _, b := range r.SystemBlocks {
+		n += b.Bytes
+	}
+	if r.Tools != nil {
+		n += r.Tools.Bytes
+	}
+	for _, m := range r.Messages {
+		n += m.Bytes
+	}
+	return n
 }
 
 // RouterReplayMessage mirrors the prep-side ReplayMessage.
@@ -1168,6 +1193,7 @@ func runRouterReplayInstance(
 			st.skippedNoUsage.Add(1)
 			continue
 		}
+		req.capturedBytes = req.capturedInputBytes()
 		if cfg.ReplayDropLateSystem {
 			var dropped int
 			if req, dropped = dropLateSystemMessages(req); dropped > 0 {

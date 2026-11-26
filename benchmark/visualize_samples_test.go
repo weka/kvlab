@@ -929,6 +929,8 @@ func TestSummaryPanelJS(t *testing.T) {
 			TTFT: 150, ResponseMs: 2000, Model: model,
 			SeriesNum: 1, RequestNum: i + 1,
 			InputTokens: 100, CachedTokens: 400, OutputTokens: 50,
+			VolumeCapturedInputTokens: 1000, VolumeCapturedInputBytes: 3000,
+			VolumeWireInputBytes: 2970, VolumeOutputTargetTokens: 100,
 		}
 		if i == 3 {
 			r.IsError = true
@@ -960,8 +962,8 @@ function expect(si, mi, want, label) {
   const got = sumCells[si][mi].textContent;
   assert(got === want, label + ": want " + JSON.stringify(want) + ", got " + JSON.stringify(got));
 }
-assert(SUMMARY_METRICS.length === 9, "nine metric columns, got " + SUMMARY_METRICS.length);
-assert(sumCells.length === DATA.length && sumCells[0].length === 9, "one row per variant, nine cells each");
+assert(SUMMARY_METRICS.length === 10, "ten metric columns, got " + SUMMARY_METRICS.length);
+assert(sumCells.length === DATA.length && sumCells[0].length === 10, "one row per variant, ten cells each");
 assert(sumRows.length === DATA.length, "one <tr> per variant");
 expect(0, 0, "2.5k", "input tokens");
 expect(0, 1, "250",  "output tokens");
@@ -976,6 +978,13 @@ expect(0, 7, "250.0","errors per 1k");
 // the value, not just the column count -- a count check would pass on a
 // column that computed the wrong thing.
 expect(0, 8, "80.0%","cached input share");
+// Volume conformity over the three non-error requests: 3*500 server prompt
+// tokens of 3*1000 captured, 3*50 output of 3*100 max_tokens, 3*2970 wire
+// bytes of 3*3000 captured. The errored request carries operands too and
+// must not count.
+expect(0, 9, "in 50.0% · out 50.0%", "volume conformity");
+assert((sumCells[0][9].title || "").indexOf("request bytes 99.0%") >= 0,
+  "volume bytes hover, got " + JSON.stringify(sumCells[0][9].title));
 // TTFT percentiles are backed by the non-error requests only: the errored
 // 4th row must not count even though it carries a ttft.
 assert(sumCells[0][5].title.indexOf("3 non-error requests") === 0, "ttft sample count, got " + sumCells[0][5].title);

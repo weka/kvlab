@@ -181,6 +181,12 @@ type vizRecord struct {
 	ExpectedUUIDsRaw []string
 	FoundMask        []bool
 	LeakedUUIDsRaw   []string
+	// Volume-conformity operands (replay only; see volume.go and the
+	// requestDataRecord fields of the same names).
+	VolCapturedInputTokens int
+	VolCapturedInputBytes  int
+	VolWireInputBytes      int
+	VolOutputTargetTokens  int
 }
 
 // seriesData is one variant's data as embedded in a report.html's RAW_DATA.
@@ -395,6 +401,11 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 				ExpectedUUIDsRaw:     r.ExpectedUUIDsRaw,
 				FoundMask:            r.FoundMask,
 				LeakedUUIDsRaw:       r.LeakedUUIDsRaw,
+
+				VolCapturedInputTokens: r.VolumeCapturedInputTokens,
+				VolCapturedInputBytes:  r.VolumeCapturedInputBytes,
+				VolWireInputBytes:      r.VolumeWireInputBytes,
+				VolOutputTargetTokens:  r.VolumeOutputTargetTokens,
 			})
 		}
 		// Every series carries one unified cacheMetricsSample list regardless
@@ -999,7 +1010,7 @@ const BASELINE_LABEL = {{.BaselineLabel}};
 // record's own guid. Each record instead carries a small integer index, and
 // o.guid below resolves it from the per-arm table, per record.
 const REC_FIELDS = ["t", "ttft", "resp", "err", "sn", "rn", "ch", "in", "ca", "out",
-  "turn", "scc", "cs", "ie", "lcr", "gi", "ue", "uf", "ul", "uem"];
+  "turn", "scc", "cs", "ie", "lcr", "gi", "ue", "uf", "ul", "uem", "vct", "vcb", "vwb", "vot"];
 const REC_BOOL_FIELDS = ["err", "ch", "scc", "cs", "ie", "uem"];
 const REC_DEFAULTS = { gi: -1 };
 // colIndex maps each column of an arm's table to [offset, width] in its rows
@@ -1578,6 +1589,9 @@ function isZoomed() { return viewTMin !== globalTMin || viewTMax !== globalTMax;
 // its prompt); "completed" counts only non-errors.
 function windowStats(records, tLo, tHi) {
   let ok = 0, err = 0, inTok = 0, caTok = 0, outTok = 0;
+  // Volume conformity sums (see volume.go): over non-error requests that
+  // carry the operand and, for input, a server prompt count.
+  let vInSrv = 0, vInCap = 0, vInWire = 0, vInCapB = 0, vOut = 0, vOutTgt = 0;
   let tFirst = Infinity, tLast = -Infinity;
   // TTFT percentiles come from non-error requests that actually reported a
   // first token, matching the plotted rolling-percentile lines exactly — so a
@@ -1588,6 +1602,11 @@ function windowStats(records, tLo, tHi) {
     if (r.err) err++; else {
       ok++;
       if (r.ttft > 0) ttfts.push(r.ttft);
+      const srv = (r.in || 0) + (r.ca || 0);
+      if (r.vct > 0 && srv > 0) {
+        vInSrv += srv; vInCap += r.vct; vInWire += (r.vwb || 0); vInCapB += (r.vcb || 0);
+      }
+      if (r.vot > 0) { vOut += (r.out || 0); vOutTgt += r.vot; }
     }
     inTok += (r.in || 0);
     caTok += (r.ca || 0);
@@ -1608,6 +1627,9 @@ function windowStats(records, tLo, tHi) {
   if (spanSec <= 0) spanSec = Math.max((tHi - tLo) / 1000, 1);
   return {
     ok, err, total, inTok, caTok, outTok, prompt: inTok + caTok, spanSec,
+    volIn: vInCap > 0 ? vInSrv / vInCap * 100 : NaN,
+    volInBytes: vInCapB > 0 ? vInWire / vInCapB * 100 : NaN,
+    volOut: vOutTgt > 0 ? vOut / vOutTgt * 100 : NaN,
     ttft50: percentileSorted(sortedTtft, 0.5),
     ttft95: percentileSorted(sortedTtft, 0.95),
     ttftN: sortedTtft.length,
@@ -1746,7 +1768,16 @@ const SUMMARY_METRICS = [
   { key: "cached",  short: "Cached input", label: "Share of prompt tokens served from cache rather than recomputed. Token share, not the share of requests that hit.", better: "up",
     val: st => st.prompt > 0 ? st.caTok / st.prompt * 100 : 0,
     fmt: st => st.prompt > 0 ? (st.caTok / st.prompt * 100).toFixed(1) + "%" : "-" },
+  // How much of the captured request volume the replay put through: server
+  // prompt tokens over the capture's, and completion tokens over the
+  // max_tokens sent (volume.go). Not compared against a baseline -- 100% is
+  // the target, not "more is better".
+  { key: "vol",     short: "Volume", label: "Volume conformity (replay): prompt tokens the server reported over the captured prompt tokens (input), and output tokens over the max_tokens sent (output). Hover a cell for the request-bytes ratio.", better: "up", noRatio: true,
+    val: st => st.volIn,
+    fmt: st => (isFinite(st.volIn) || isFinite(st.volOut))
+      ? "in " + fmtVolPct(st.volIn) + " · out " + fmtVolPct(st.volOut) : "-" },
 ];
+function fmtVolPct(v) { return isFinite(v) ? v.toFixed(1) + "%" : "-"; }
 
 // --- Ratio to a baseline arm ---
 // The question asked of these reports is almost always "how much
@@ -1917,7 +1948,7 @@ function renderSummary(perSeries) {
       // Ratio to the baseline arm, on every row but the baseline's own.
       const rEl = sumRatios[si][mi];
       let rText = "";
-      if (baseStats && st && si !== BASELINE_INDEX) {
+      if (baseStats && st && si !== BASELINE_INDEX && !m.noRatio) {
         rText = fmtRatio(m.val(st), m.val(baseStats));
       }
       rEl.textContent = rText;
@@ -1948,6 +1979,10 @@ function renderSummary(perSeries) {
       // them rather than presenting 3 samples as a p95.
       if ((m.key === "ttft50" || m.key === "ttft95") && st) {
         valEl.title = st.ttftN + " non-error requests reported a first token in this window";
+      }
+      if (m.key === "vol" && st) {
+        valEl.title = "input " + fmtVolPct(st.volIn) + " of captured prompt tokens (request bytes " +
+          fmtVolPct(st.volInBytes) + " of captured), output " + fmtVolPct(st.volOut) + " of max_tokens sent";
       }
       if (m.key === "err1k") valEl.classList.toggle("err-hot", !!st && st.err > 0);
     });
@@ -3889,7 +3924,9 @@ function buildRequestsRows() {
     "is_cold_start", "input_tokens", "output_tokens", "cached_tokens", "local_cache_ratio",
     "is_error", "is_empty",
     "uuid_expected", "uuid_found", "uuid_leaked", "uuid_exact_match",
-    "expected_uuids_raw", "found_mask", "leaked_uuids_raw"];
+    "expected_uuids_raw", "found_mask", "leaked_uuids_raw",
+    "volume_captured_input_tokens", "volume_captured_input_bytes",
+    "volume_wire_input_bytes", "volume_output_target_tokens"];
   const rows = [csvRow(header)];
   visibleIndices().forEach(i => {
     const s = DATA[i];
@@ -3914,6 +3951,7 @@ function buildRequestsRows() {
         (r.exp || []).join("|"),
         (r.fmask || []).join("|"),
         (r.leak || []).join("|"),
+        r.vct, r.vcb, r.vwb, r.vot,
       ]));
     });
   });
@@ -3927,7 +3965,7 @@ const SUMMARY_CSV_COLUMNS = {
   in: "input_tokens", out: "output_tokens", reqs: "requests",
   inrate: "input_tokens_per_sec", outrate: "output_tokens_per_sec",
   ttft50: "ttft_p50_ms", ttft95: "ttft_p95_ms", err1k: "errors_per_1k",
-  cached: "cached_input_pct",
+  cached: "cached_input_pct", vol: "volume_input_pct",
 };
 
 // summaryRatioPct mirrors fmtRatio's own gating exactly (a zero/negative/
