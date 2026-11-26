@@ -223,6 +223,9 @@ type seriesData struct {
 	// reader can see the workload shape without a side file. Omitted entirely
 	// for legacy data.
 	Params *vizRunParams `json:"params,omitempty"`
+	// Retired counts the arm's replay instances retired for context, by
+	// reason (retire.go). Omitted when none were.
+	Retired map[string]int `json:"retired,omitempty"`
 	// GuidTable is a de-duplicated, per-arm array of every distinct
 	// series_guid seen in this series' records (see buildGuidTable). Each
 	// vizRecord carries only GuidIdx, its index into this table, instead of
@@ -349,10 +352,11 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 	var allSeries []seriesData
 	for _, f := range files {
 		name := strings.TrimSuffix(filepath.Base(f), ".jsonl")
-		records, samples, params, hasParams, err := readJSONLFileWithParams(f)
+		contents, err := readJSONLContents(f)
 		if err != nil {
 			return "", fmt.Errorf("read %s: %w", f, err)
 		}
+		records, samples, params, hasParams := contents.records, contents.samples, contents.params, contents.hasParams
 		records, samples = truncateToElapsed(records, samples, maxElapsed)
 		// Prefer the clean model alias (e.g. "DS3H_weka-64r8w") over the raw
 		// sanitized filename (e.g. "dynamic_http___..._alias_DS3H_weka-64r8w")
@@ -427,6 +431,7 @@ func renderVisualization(dir string, concurrency int, keepFileNames bool, maxEla
 			sd.Conc = params.effectiveConcurrency()
 			sd.Params = buildVizRunParams(params)
 		}
+		sd.Retired = retiredByReason(contents.retired)
 		var tlByRec []*timelineReq
 		if withTimeline && len(records) > 0 {
 			tla := buildTimelineArm(name, records)
@@ -553,7 +558,8 @@ func readJSONLFile(path string) ([]requestDataRecord, []cacheMetricsSample, erro
 // legacyVLLMMetricsSample.toUnified/legacySGLangMetricsSample.toUnified in
 // cache_metrics.go) so a report regenerated from an old trace directory
 // renders identically to one from a new one. "run_params" = the header
-// describing the run. Unknown record types and malformed lines are skipped —
+// describing the run, "instance_retired" = a replay instance retired for
+// context (retire.go). Unknown record types and malformed lines are skipped —
 // a new record type must never corrupt request parsing (unmarshalling a
 // sample into requestDataRecord would otherwise "succeed" as an all-zero
 // phantom request), which is also what lets a file written by a NEWER kvlab
@@ -563,9 +569,25 @@ func readJSONLFile(path string) ([]requestDataRecord, []cacheMetricsSample, erro
 // must keep working in that case rather than treating the zero record as a run
 // that was configured with zeroes.
 func readJSONLFileWithParams(path string) ([]requestDataRecord, []cacheMetricsSample, runParamsRecord, bool, error) {
+	c, err := readJSONLContents(path)
+	return c.records, c.samples, c.params, c.hasParams, err
+}
+
+// jsonlContents is everything a request-data JSONL holds, by record type.
+type jsonlContents struct {
+	records   []requestDataRecord
+	samples   []cacheMetricsSample
+	params    runParamsRecord
+	hasParams bool
+	retired   []instanceRetiredRecord
+}
+
+// readJSONLContents reads every record type of a request-data JSONL (see
+// readJSONLFileWithParams, which returns the subset most callers need).
+func readJSONLContents(path string) (jsonlContents, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, runParamsRecord{}, false, err
+		return jsonlContents{}, err
 	}
 	defer f.Close()
 	// Sized from the line count so appending never doubles a 100MB+ slice (the
@@ -574,6 +596,7 @@ func readJSONLFileWithParams(path string) ([]requestDataRecord, []cacheMetricsSa
 	var samples []cacheMetricsSample
 	var params runParamsRecord
 	var hasParams bool
+	var retired []instanceRetiredRecord
 	// Every row repeats the (long) model spec and a session GUID that recurs
 	// across turns. Interning them keeps a 300k-row file from holding a private
 	// copy of each in memory while the report is built.
@@ -627,9 +650,15 @@ func readJSONLFileWithParams(path string) ([]requestDataRecord, []cacheMetricsSa
 			if p, ok := parseRunParams(sc.Bytes()); ok && !hasParams {
 				params, hasParams = p, true
 			}
+		case recordTypeInstanceRetired:
+			var r instanceRetiredRecord
+			if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+				continue
+			}
+			retired = append(retired, r)
 		}
 	}
-	return records, samples, params, hasParams, sc.Err()
+	return jsonlContents{records: records, samples: samples, params: params, hasParams: hasParams, retired: retired}, sc.Err()
 }
 
 // countLines returns the number of newline-terminated lines in path, 0 on error.
@@ -1894,6 +1923,15 @@ const sumRows = [];
       chip.textContent = "(baseline)";
       wrap.appendChild(chip);
     }
+    // Replay instances retired for context never reach the request rows, so
+    // the arm says how many it lost and why (retire.go).
+    const retired = retiredSummary(s);
+    if (retired) {
+      const chip = document.createElement("span");
+      chip.className = "sum-baseline sum-retired";
+      chip.textContent = "(" + retired.total + " retired)";
+      wrap.appendChild(chip);
+    }
     name.appendChild(wrap);
     // Hover carries the full name plus this arm's recorded workload shape and
     // where its smoothing window came from — the two things you need to know
@@ -1902,6 +1940,7 @@ const sumRows = [];
     const ps = paramsSummaryFor(s);
     if (ps) bits.push("params: " + ps);
     bits.push("rolling window: " + (s._winSize || 0) + " reqs (" + s._winConcSource + ")");
+    if (retired) bits.push("retired instances: " + retired.text);
     name.title = bits.join("\n");
     tr.appendChild(name);
     const cells = [], ratios = [];
@@ -1934,6 +1973,16 @@ const sumRows = [];
     body.appendChild(tr);
   });
 })();
+
+// retiredSummary describes an arm's context retirements by reason, or null
+// when it had none. limit_context = over --limit-context on the captured
+// prompt; context_overflow = the server's context-length 400.
+function retiredSummary(s) {
+  const r = s.retired || {};
+  const lc = r.limit_context || 0, ov = r.context_overflow || 0;
+  if (!lc && !ov) return null;
+  return { total: lc + ov, text: lc + " over --limit-context, " + ov + " by server context-length 400" };
+}
 
 // renderSummary repaints the panel from the per-series windowStats already
 // computed by updateInfo — no extra pass over the records.

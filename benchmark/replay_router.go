@@ -1278,7 +1278,7 @@ func runRouterReplayInstance(
 
 		sentAt := time.Now()
 		st.live.sent(liveTok, sentAt)
-		liveTok.prog.setPromptEst(req.InputTokens + req.CacheReadTokens + req.CacheCreationTokens)
+		liveTok.prog.setPromptEst(req.InputTokens) // the whole captured prompt
 		sendAt := pacer.clk.Now()
 		if thinkPaced {
 			st.lag.observeThink(sendAt.Sub(due), sendAt.Sub(refEnd), time.Duration(*req.ThinkMs)*time.Millisecond)
@@ -1344,12 +1344,14 @@ func runRouterReplayInstance(
 		}
 
 		if metrics.Skipped || isContextOverflow(metrics.Error) {
-			// The session outgrew the context budget — caught by the
-			// --limit-context estimate (Skipped) or by the server's
-			// context-length 400. Prompts only grow within a session, so
-			// every later turn would overflow too: retire the instance
-			// (neither completed nor error). The deferred sweep closes the
-			// remaining done-channels so descendants unblock.
+			// The session outgrew the context budget — caught by
+			// --limit-context on the captured prompt (Skipped) or by the
+			// server's context-length 400. Prompts only grow within a
+			// session, so every later turn would overflow too: retire the
+			// instance (neither completed nor error), counted by reason for
+			// the progress line and summary and written to the request data
+			// for the report. The deferred sweep closes the remaining
+			// done-channels so descendants unblock.
 			//
 			// Give the emission budget back: a skip consumed a totalEmitted
 			// slot but will never complete, and the --total terminator
@@ -1358,6 +1360,21 @@ func runRouterReplayInstance(
 			// run hangs drained forever.
 			st.totalEmitted.Add(-1)
 			st.live.abandon(liveTok)
+			reason, errMsg := retireLimitContext, ""
+			if !metrics.Skipped {
+				reason, errMsg = retireContextOverflow, metrics.Error.Error()
+			}
+			st.retired.add(reason)
+			if rdw != nil {
+				rec := instanceRetiredRecord{
+					RecordType: recordTypeInstanceRetired, Time: time.Now().UTC(),
+					SeriesGUID: sessionID + ":" + inst.InstanceID, Turn: ti + 1, Reason: reason,
+					CapturedInputTokens: req.InputTokens, ErrorMessage: errMsg,
+				}
+				if err := rdw.writeAny(rec); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to write request data: %v\n", err)
+				}
+			}
 			return
 		}
 

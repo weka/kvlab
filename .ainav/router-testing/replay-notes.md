@@ -20,8 +20,8 @@ router-mock-testing-relevant details and correctness fixes not yet in the README
 
 ## `--limit-context` behavior
 
-Skips (does not send) any request whose CAPTURE-recorded prompt tokens (usage input +
-cache read/creation) exceed the limit — a client-side pre-check against the ORIGINAL
+Skips (does not send) any request whose CAPTURE-recorded prompt tokens (`input_tokens`,
+already the whole prompt: prefill + cache read + cache creation) exceed the limit — a client-side pre-check against the ORIGINAL
 capture's numbers, not the model's live response. Once a session's prompt outgrows the
 limit, every later turn in that instance would too (prompts only grow), so the whole
 instance is RETIRED (not completed, not counted as an error) rather than re-checked

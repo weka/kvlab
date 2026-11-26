@@ -88,8 +88,8 @@ type replayPoster struct {
 	outputRatio     float64
 	minOutputTokens int
 	forceVolume     bool
-	// limitContext: skip requests whose capture-recorded prompt tokens exceed it
-	// (chars~=tokens*4 convention). 0 = off.
+	// limitContext: --limit-context. A request whose captured prompt tokens
+	// (InputTokens) exceed it is not sent. 0 = off.
 	limitContext int
 	// replayCharsPerToken: --replay-chars-per-token. When > 0, synthesized
 	// replay content is sized off each block's captured Tokens count
@@ -630,14 +630,14 @@ func (p *replayPoster) do(
 	default:
 		bodyBytes, canonical, err = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj)
 	}
-	// --limit-context uses the capture's production-measured token counts
-	// (usage.input_tokens + cache read/creation), not a chars heuristic:
-	// the replay data records the real prompt size of every request.
-	if p.limitContext > 0 {
-		promptTokens := req.InputTokens + req.CacheReadTokens + req.CacheCreationTokens
-		if promptTokens > p.limitContext {
-			return RequestMetrics{Skipped: true}
-		}
+	// --limit-context compares the capture's prompt tokens, not a chars
+	// heuristic: the replay file records the real prompt size of every
+	// request, and replay content is sized to the captured bytes. InputTokens
+	// is already the whole prompt (prefill + cache read + cache creation);
+	// adding the cache fields again would count a warm turn's cached part
+	// twice and cut cache-heavy sessions at about half the limit.
+	if exceedsLimitContext(req, p.limitContext) {
+		return RequestMetrics{Skipped: true, CapturedInputTokens: req.InputTokens}
 	}
 	if err != nil {
 		return RequestMetrics{
@@ -1394,6 +1394,9 @@ func (p *replayPoster) dryDo(
 	// cache-ratio estimate) stays consistent with a real do() call for the
 	// same request — dry-run never makes a real request, so there's no
 	// response to validate.
+	if exceedsLimitContext(req, p.limitContext) {
+		return RequestMetrics{Skipped: true, CapturedInputTokens: req.InputTokens}
+	}
 	if p.systemFirst {
 		req = hoistSystemMessages(req)
 	}
@@ -1411,8 +1414,9 @@ func (p *replayPoster) dryDo(
 		ratio = p.estimator.Observe(canonical)
 	}
 
+	// InputTokens is the whole captured prompt, cached part included.
 	total := req.InputTokens
-	full := int64(total) + int64(req.CacheReadTokens)
+	full := int64(total)
 	warm := int64(float64(full)*ratio + 0.5)
 	if warm > full {
 		warm = full
@@ -1451,6 +1455,12 @@ func (p *replayPoster) dryDo(
 		CapturedInputBytes:  req.capturedInputBytes(),
 		WireInputBytes:      len(body),
 	}
+}
+
+// exceedsLimitContext reports whether req is over --limit-context (limit > 0):
+// its captured prompt, InputTokens, is larger than the limit.
+func exceedsLimitContext(req RouterReplayRequest, limit int) bool {
+	return limit > 0 && req.InputTokens > limit
 }
 
 // stampFor is the content stamp for one request: the pass's, when the corpus is

@@ -1375,6 +1375,9 @@ type autoState struct {
 	valInstances instanceVerifyHistory
 	// Volume conformity sums over completed replay requests (volume.go).
 	volume volumeCounters
+	// retired counts replay instances retired for context, by reason
+	// (retire.go).
+	retired retireCounters
 	// contaminationStop is armed by the first leaked marker unless the run
 	// opted out; the evaluator turns it into a termination.
 	contaminationStop   atomic.Bool
@@ -1508,6 +1511,7 @@ type autoBenchmarkResult struct {
 	valGarbageMidResponse int64
 	valInstances          instanceVerifyTotals
 	volume                volumeTotals
+	retired               retireTotals
 	valWindowSessions     int
 	valWindowMarkers      int
 	valPresenceMissReqs   int64
@@ -1542,6 +1546,7 @@ type displaySnapshot struct {
 	// Volume conformity, replay mode (volume.go). Rendered whenever there
 	// is a target — a replay property, not a verify one.
 	volume            volumeTotals
+	retired           retireTotals
 	reqPerSec         float64
 	inputTokPerSec    float64
 	outputTokPerSec   float64
@@ -1710,6 +1715,9 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 	fmt.Printf(" Total errors       : %d\n", res.totalErrors)
 	if res.lateSysRequests > 0 {
 		fmt.Printf(" Late system dropped: %d messages from %d sent requests (--replay-drop-late-system)\n", res.lateSysDropped, res.lateSysRequests)
+	}
+	if res.retired.total() > 0 {
+		fmt.Printf(" Retired (context)  : %s\n", res.retired.summary())
 	}
 	if res.skippedNoUsage > 0 {
 		fmt.Printf(" Skipped (no usage) : %d replay requests with output_tokens 0, not sent\n", res.skippedNoUsage)
@@ -1945,7 +1953,7 @@ func renderModelOneLiner(snap *displaySnapshot) string {
 	// next to them.
 	// vol: volume conformity so far — how faithfully the run reproduces the
 	// captured prompt (tokens, bytes) and output sizes (volume.go).
-	volConf := snap.volume.progress()
+	volConf := snap.volume.progress() + snap.retired.progress()
 	verifyInfo := ""
 	if snap.verifyOn {
 		rate := 100.0
@@ -2288,6 +2296,7 @@ func runSingleModelBenchmark(
 			snap.verifyGarbageMid = st.valGarbageMidResponse.Load()
 		}
 		snap.volume = st.volume.load()
+		snap.retired = st.retired.load()
 		display.updateSnapshot(snap)
 		sendSnap(snap)
 	}
@@ -3417,6 +3426,7 @@ func runSingleModelBenchmark(
 	res.valGarbageMidResponse = st.valGarbageMidResponse.Load()
 	res.valInstances = st.valInstances.totals()
 	res.volume = st.volume.load()
+	res.retired = st.retired.load()
 	if cfg.uuidRegistry != nil {
 		_, res.valWindowMarkers, res.valWindowSessions = cfg.uuidRegistry.Stats()
 	}
@@ -3497,6 +3507,7 @@ func runSingleModelBenchmark(
 			finalSnap.verifyGarbageMid = st.valGarbageMidResponse.Load()
 		}
 		finalSnap.volume = st.volume.load()
+		finalSnap.retired = st.retired.load()
 		// Populate token totals on the DONE snap (previously left zero, which
 		// showed up as in=0 warm=0 out=0 on the final rendered line).
 		finalSnap.totalInput = res.totalInputCold + res.totalInputWarm

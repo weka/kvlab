@@ -159,13 +159,16 @@ func prepareMergedSources(dirs []string, labels []string, outputDir string, maxE
 		var dirSamples []cacheMetricsSample
 		var dirParams runParamsRecord
 		var dirHasParams bool
+		var dirRetired []instanceRetiredRecord
 		for _, f := range files {
-			records, samples, params, hasParams, err := readJSONLFileWithParams(f)
+			contents, err := readJSONLContents(f)
 			if err != nil {
 				return "", fmt.Errorf("read %s: %w", f, err)
 			}
+			records, samples, params, hasParams := contents.records, contents.samples, contents.params, contents.hasParams
 			dirRecords = append(dirRecords, records...)
 			dirSamples = append(dirSamples, samples...)
+			dirRetired = append(dirRetired, contents.retired...)
 			// First header in the directory wins — an arm is one run, and a
 			// dir holding several files is that run split across models.
 			if hasParams && !dirHasParams {
@@ -231,6 +234,12 @@ func prepareMergedSources(dirs []string, labels []string, outputDir string, maxE
 			if err := enc.Encode(s); err != nil {
 				out.Close()
 				return "", fmt.Errorf("write metrics sample to %s: %w", outFile, err)
+			}
+		}
+		for _, r := range dirRetired {
+			if err := enc.Encode(r); err != nil {
+				out.Close()
+				return "", fmt.Errorf("write retirement to %s: %w", outFile, err)
 			}
 		}
 		out.Close()

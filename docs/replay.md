@@ -115,6 +115,14 @@ carries the operands and per-request ratios: `volume_captured_input_tokens`,
 (bytes on hover) for the selected timeframe, and its CSV exports carry the
 operand columns.
 
+A session instance whose prompt outgrows the context is retired: its remaining
+turns are not sent, since prompts only grow. `--limit-context` retires at the
+first request whose captured prompt tokens (`input_tokens`, cached part
+included) exceed the limit; a server context-length 400 retires too. Both are
+counted by reason on the progress line (`retired=limit:N,overflow:M`), in the
+summary (`Retired (context)`), as `instance_retired` rows in the request data,
+and on the arm's row in the HTML report.
+
 `replay-prepare --since/--until` bound the capture by request time and
 `--complete-by` keeps only requests whose response had finished by an instant,
 for rebuilding a corpus from a directory that has grown.

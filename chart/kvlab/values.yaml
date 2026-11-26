@@ -70,9 +70,10 @@ replay:
   # A capped run is NOT comparable with an uncapped one. The run reports how many
   # sessions it shortened and how many requests it dropped.
   maxRequestsPerSession: 0
-  # Skip every request whose captured prompt tokens (input + cache read +
-  # cache creation) exceed this, e.g. to stay under a small model's context
-  # window instead of drawing 400s (--limit-context; 0 = no limit).
+  # Retire a session instance at its first request whose captured prompt
+  # tokens (the capture's input_tokens, the whole prompt) exceed this, e.g. to
+  # stay under a small model's context window instead of drawing 400s
+  # (--limit-context; 0 = no limit).
   limitContext: 0
   # Drop every system/developer message that follows a request's first
   # non-system message; leading system messages stay. For chat templates that
