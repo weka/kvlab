@@ -76,7 +76,7 @@ func replayLengthAsk(maxTokens int) string {
 // inj carries the UUID cache-coherency injection (--verify,
 // router path — see replay_router_uuid.go); nil means "no injection",
 // leaving the body byte-for-byte identical to before this feature existed.
-func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName string, runID string, outputRatio float64, minOutputTokens int, forceVolume bool, charsPerToken float64, inj *uuidInjection) ([]byte, string, error) {
+func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName string, runID string, outputRatio float64, minOutputTokens int, forceVolume bool, sz replaySizing, inj *uuidInjection) ([]byte, string, error) {
 	var stampByHash map[string]turnStamp
 	if inj != nil {
 		stampByHash = inj.StampByHash
@@ -101,7 +101,7 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 
 	var systemArr []map[string]interface{}
 	if len(req.SystemBlocks) > 0 {
-		systemArr = buildSystem(effectiveSystemBlocks(req.SystemBlocks), docs, charsPerToken)
+		systemArr = buildSystem(effectiveSystemBlocks(req.SystemBlocks), docs, sz)
 	}
 	if runID != "" {
 		stamp := map[string]interface{}{
@@ -119,7 +119,7 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 	hoisted, convMsgs := splitHoistedSystem(req)
 	hoistedText := make([]string, len(hoisted))
 	for i, m := range hoisted {
-		hoistedText[i] = hoistedSystemText(m, docs, charsPerToken)
+		hoistedText[i] = hoistedSystemText(m, docs, sz)
 		systemArr = append(systemArr, map[string]interface{}{
 			"type": "text",
 			"text": hoistedText[i],
@@ -129,11 +129,11 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 		body["system"] = systemArr
 	}
 	if req.Tools != nil && req.Tools.Count > 0 {
-		body["tools"] = prependRunStampTool(buildTools(req.Tools, docs, charsPerToken), runID)
+		body["tools"] = prependRunStampTool(buildTools(req.Tools, docs, sz), runID)
 	}
 	var msgs []map[string]interface{}
 	if len(convMsgs) > 0 {
-		msgs = buildMessages(convMsgs, docs, charsPerToken, stampByHash)
+		msgs = buildMessages(convMsgs, docs, sz, stampByHash)
 	}
 	tail := ""
 	if inj != nil {
@@ -156,19 +156,19 @@ func buildAnthropicMessagesBody(req RouterReplayRequest, docs string, modelName 
 		canonical.WriteString(fmt.Sprintf("<ignore>RUN_GUID: %s</ignore>", runID))
 	}
 	for _, b := range effectiveSystemBlocks(req.SystemBlocks) {
-		canonical.WriteString(synthText(b.Hash, sizeBudget(b.Bytes, b.Tokens, charsPerToken), docs))
+		canonical.WriteString(synthText(b.Hash, sz.systemBytes(b), docs))
 	}
 	// Hoisted system messages ride in the system array, ahead of the tools.
 	for _, t := range hoistedText {
 		canonical.WriteString(t)
 	}
 	if req.Tools != nil && req.Tools.Count > 0 {
-		for _, d := range toolDescriptions(req.Tools, docs, charsPerToken) {
+		for _, d := range toolDescriptions(req.Tools, docs, sz) {
 			canonical.WriteString(d)
 		}
 	}
 	for _, m := range convMsgs {
-		blocks := buildMessageContent(m, docs, charsPerToken, stampByHash)
+		blocks := buildMessageContent(m, docs, sz, stampByHash)
 		for _, blk := range blocks {
 			if t, ok := blk["text"]; ok {
 				canonical.WriteString(fmt.Sprintf("%v", t))
@@ -296,9 +296,9 @@ func splitHoistedSystem(req RouterReplayRequest) (hoisted, conv []RouterReplayMe
 // hoistedSystemText flattens a hoisted system message to the one string the
 // Anthropic system array carries for it, joining its blocks with a newline as
 // the OpenAI builder does for a system-role message.
-func hoistedSystemText(m RouterReplayMessage, docs string, charsPerToken float64) string {
+func hoistedSystemText(m RouterReplayMessage, docs string, sz replaySizing) string {
 	var parts []string
-	for _, blk := range buildMessageContent(m, docs, charsPerToken, nil) {
+	for _, blk := range buildMessageContent(m, docs, sz, nil) {
 		for _, k := range []string{"text", "content", "thinking"} {
 			if t, ok := blk[k]; ok {
 				parts = append(parts, fmt.Sprintf("%v", t))
@@ -372,15 +372,15 @@ func effectiveSystemBlocks(blocks []RouterReplaySystemBlock) []RouterReplaySyste
 }
 
 // buildSystem rebuilds the system array as a list of text blocks sized to
-// match each original system block's bytes (or, with charsPerToken > 0, its
+// match each original system block's bytes (or, with sz.CharsPerToken > 0, its
 // captured token count). cache_control is preserved when present so the
 // server caches at the same boundaries.
-func buildSystem(blocks []RouterReplaySystemBlock, docs string, charsPerToken float64) []map[string]interface{} {
+func buildSystem(blocks []RouterReplaySystemBlock, docs string, sz replaySizing) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(blocks))
 	for _, b := range blocks {
 		entry := map[string]interface{}{
 			"type": "text",
-			"text": synthText(b.Hash, sizeBudget(b.Bytes, b.Tokens, charsPerToken), docs),
+			"text": synthText(b.Hash, sz.systemBytes(b), docs),
 		}
 		if b.CacheControl != "" {
 			entry["cache_control"] = map[string]string{"type": b.CacheControl}
@@ -444,12 +444,12 @@ func prependRunStampToolOpenAI(tools []map[string]interface{}, runID string) []m
 }
 
 // buildTools rebuilds an Anthropic tools array of Count entries that
-// canonically marshals to the original Bytes (or, with charsPerToken > 0, is
+// canonically marshals to the original Bytes (or, with sz.CharsPerToken > 0, is
 // sized off the captured Tokens instead). Each tool has a stable name derived
 // from the tools.hash + its index, and a description padded with docs to
 // round out the total size.
-func buildTools(spec *RouterReplayToolsSpec, docs string, charsPerToken float64) []map[string]interface{} {
-	descs := toolDescriptions(spec, docs, charsPerToken)
+func buildTools(spec *RouterReplayToolsSpec, docs string, sz replaySizing) []map[string]interface{} {
+	descs := toolDescriptions(spec, docs, sz)
 	tools := make([]map[string]interface{}, len(descs))
 	for i, d := range descs {
 		t := toolSkeleton(spec, i)
@@ -480,7 +480,7 @@ func toolSkeleton(spec *RouterReplayToolsSpec, i int) map[string]interface{} {
 // tools' schemas are prompt content too; here they ride in the
 // descriptions. Both wire formats send these same descriptions, so the
 // content a server tokenizes does not depend on the format.
-func toolDescriptions(spec *RouterReplayToolsSpec, docs string, charsPerToken float64) []string {
+func toolDescriptions(spec *RouterReplayToolsSpec, docs string, sz replaySizing) []string {
 	n := spec.Count
 	if n <= 0 {
 		n = 1
@@ -490,10 +490,10 @@ func toolDescriptions(spec *RouterReplayToolsSpec, docs string, charsPerToken fl
 		b, _ := json.Marshal(toolSkeleton(spec, i))
 		skeleton += len(b)
 	}
-	shares := evenShares(sizeBudget(spec.Bytes, spec.Tokens, charsPerToken)-skeleton, n)
+	shares := evenShares(sz.budget(spec.Bytes, spec.Tokens)-skeleton, n)
 	out := make([]string, n)
 	for i := range out {
-		out[i] = synthText(fmt.Sprintf("%s:tool:%d", spec.Hash, i), shares[i], docs)
+		out[i] = synthText(fmt.Sprintf("%s:tool:%d", spec.Hash, i), sz.scaled(shares[i]), docs)
 	}
 	return out
 }
@@ -507,10 +507,10 @@ func toolDescriptions(spec *RouterReplayToolsSpec, docs string, charsPerToken fl
 // stampByHash is inj.StampByHash (nil when --verify is off) —
 // threaded down to buildMessageContent, which appends each qualifying
 // turn's inline UUID marker to its own synthesized content.
-func buildMessages(msgs []RouterReplayMessage, docs string, charsPerToken float64, stampByHash map[string]turnStamp) []map[string]interface{} {
+func buildMessages(msgs []RouterReplayMessage, docs string, sz replaySizing, stampByHash map[string]turnStamp) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(msgs))
 	for _, m := range msgs {
-		content := buildMessageContent(m, docs, charsPerToken, stampByHash)
+		content := buildMessageContent(m, docs, sz, stampByHash)
 		entry := map[string]interface{}{
 			"role":    roleOrUser(m.Role),
 			"content": content,
@@ -607,30 +607,32 @@ func appendTailMessageAnthropic(msgs []map[string]interface{}, text string) []ma
 // (genuinely per-session) messages are ever present in stampByHash — see
 // isQualifyingUserTurn — so a cross-session-shared message is never
 // perturbed.
-func buildMessageContent(m RouterReplayMessage, docs string, charsPerToken float64, stampByHash map[string]turnStamp) []map[string]interface{} {
+func buildMessageContent(m RouterReplayMessage, docs string, sz replaySizing, stampByHash map[string]turnStamp) []map[string]interface{} {
 	out := messageSkeleton(m)
 	weights := make([]int, len(out))
 	for i, t := range m.BlockTypes {
 		weights[i] = blockWeight(t)
 	}
-	shares := weightedShares(sizeBudget(m.Bytes, m.Tokens, charsPerToken)-messageSkeletonBytes(m, out), weights)
+	shares := weightedShares(sz.budget(m.Bytes, m.Tokens)-messageSkeletonBytes(m, out), weights)
 	for i, blk := range out {
 		blockSeed := fmt.Sprintf("%s:block:%d", m.Hash, i)
+		// sz.scaled applies a calibrated content scale to what the server
+		// tokenizes; a signature is not tokenized and keeps its share.
 		switch m.BlockTypes[i] {
 		case "text":
-			blk["text"] = synthText(blockSeed, shares[i], docs)
+			blk["text"] = synthText(blockSeed, sz.scaled(shares[i]), docs)
 		case "tool_use":
-			blk["input"] = map[string]interface{}{"_padding": synthText(blockSeed+":input", shares[i], docs)}
+			blk["input"] = map[string]interface{}{"_padding": synthText(blockSeed+":input", sz.scaled(shares[i]), docs)}
 		case "tool_result":
-			blk["content"] = synthText(blockSeed+":result", shares[i], docs)
+			blk["content"] = synthText(blockSeed+":result", sz.scaled(shares[i]), docs)
 		case "thinking":
 			text := shares[i] * thinkingTextPermille / 1000
-			blk["thinking"] = synthText(blockSeed+":thinking", text, docs)
+			blk["thinking"] = synthText(blockSeed+":thinking", sz.scaled(text), docs)
 			blk["signature"] = synthText(blockSeed+":signature", shares[i]-text, docs)
 		case "image":
-			blk["text"] = synthText(blockSeed+":image", shares[i], docs)
+			blk["text"] = synthText(blockSeed+":image", sz.scaled(shares[i]), docs)
 		default:
-			blk["text"] = synthText(blockSeed+":fallback", shares[i], docs)
+			blk["text"] = synthText(blockSeed+":fallback", sz.scaled(shares[i]), docs)
 		}
 	}
 	if stamp, ok := stampByHash[m.Hash]; ok {
@@ -839,6 +841,43 @@ func synthText(seed string, n int, docs string) string {
 	return b.String()[:n]
 }
 
+// replaySizing is how replay sizes synthesized content. By default every
+// part is sized to its captured bytes (see buildMessageContent). Scale, when
+// set (> 0 and != 1), multiplies the bytes of everything the server
+// tokenizes: system text, tool descriptions, and message content, tool_use
+// input included. Structure and thinking signatures keep their captured
+// sizes. The scale comes from --replay-token-scale or from calibration
+// against the serving tokenizer (replay_calibrate.go); it corrects the
+// density of synthesized text, which is the same text in every part, so
+// tools scale with the rest. CharsPerToken (--replay-chars-per-token) sizes
+// from captured tokens instead of bytes.
+type replaySizing struct {
+	CharsPerToken float64
+	Scale         float64
+}
+
+// budget is a part's size before scaling: captured bytes, or captured tokens
+// times CharsPerToken.
+func (z replaySizing) budget(bytes, tokens int) int {
+	return sizeBudget(bytes, tokens, z.CharsPerToken)
+}
+
+// scaled applies Scale to n tokenizable bytes.
+func (z replaySizing) scaled(n int) int {
+	if z.Scale <= 0 || z.Scale == 1 || n <= 0 {
+		return n
+	}
+	return int(math.Round(float64(n) * z.Scale))
+}
+
+// systemBytes is a system block's synthesized text size. The block's
+// captured bytes include its JSON structure; the text is sized to all of it,
+// a few bytes over, which keeps every system prompt the size it has always
+// been at scale 1.
+func (z replaySizing) systemBytes(b RouterReplaySystemBlock) int {
+	return z.scaled(z.budget(b.Bytes, b.Tokens))
+}
+
 // sizeBudget picks the byte budget for a content-sizing site. By default
 // (charsPerToken == 0, or the block carries no captured Tokens count) it
 // falls back to the capture's raw byte count — byte-faithful sizing.
@@ -871,8 +910,8 @@ func shortHashHex(seed string) string {
 // buildOpenAITools rebuilds the tools array in the OpenAI
 // {"type":"function","function":{...}} wrapper shape, with the same names
 // and descriptions as buildTools (see toolDescriptions).
-func buildOpenAITools(spec *RouterReplayToolsSpec, docs string, charsPerToken float64) []map[string]interface{} {
-	descs := toolDescriptions(spec, docs, charsPerToken)
+func buildOpenAITools(spec *RouterReplayToolsSpec, docs string, sz replaySizing) []map[string]interface{} {
+	descs := toolDescriptions(spec, docs, sz)
 	tools := make([]map[string]interface{}, 0, len(descs))
 	for i, d := range descs {
 		tools = append(tools, map[string]interface{}{
@@ -941,7 +980,7 @@ func buildOpenAITools(spec *RouterReplayToolsSpec, docs string, charsPerToken fl
 // Without either half, usage.prompt_tokens_details is simply absent from
 // every SGLang response, and cache hit rate always reads as 0 — see
 // cacheWarningMessage in auto.go, which surfaces this in the run summary.
-func buildOpenAIChatCompletionsBody(req RouterReplayRequest, docs string, modelName string, runID string, outputRatio float64, minOutputTokens int, forceVolume bool, charsPerToken float64, inj *uuidInjection, reasoningEffort string, thinking string, sglang bool) ([]byte, string, error) {
+func buildOpenAIChatCompletionsBody(req RouterReplayRequest, docs string, modelName string, runID string, outputRatio float64, minOutputTokens int, forceVolume bool, sz replaySizing, inj *uuidInjection, reasoningEffort string, thinking string, sglang bool) ([]byte, string, error) {
 	var stampByHash map[string]turnStamp
 	if inj != nil {
 		stampByHash = inj.StampByHash
@@ -981,7 +1020,7 @@ func buildOpenAIChatCompletionsBody(req RouterReplayRequest, docs string, modelN
 
 	// System blocks become system-role messages at the front of the array.
 	if len(req.SystemBlocks) > 0 {
-		sysBlocks := buildSystem(effectiveSystemBlocks(req.SystemBlocks), docs, charsPerToken)
+		sysBlocks := buildSystem(effectiveSystemBlocks(req.SystemBlocks), docs, sz)
 		for _, b := range sysBlocks {
 			text := ""
 			if t, ok := b["text"]; ok {
@@ -1025,7 +1064,7 @@ func buildOpenAIChatCompletionsBody(req RouterReplayRequest, docs string, modelN
 	// each block and join them with newlines, and log a one-time warning so
 	// the operator knows tool fidelity is lost.
 	if len(req.Messages) > 0 {
-		openaiMsgs := buildOpenAIMessages(req.Messages, docs, charsPerToken, stampByHash)
+		openaiMsgs := buildOpenAIMessages(req.Messages, docs, sz, stampByHash)
 		messages = append(messages, openaiMsgs...)
 	}
 
@@ -1040,7 +1079,7 @@ func buildOpenAIChatCompletionsBody(req RouterReplayRequest, docs string, modelN
 
 	body["messages"] = messages
 	if req.Tools != nil && req.Tools.Count > 0 {
-		body["tools"] = prependRunStampToolOpenAI(buildOpenAITools(req.Tools, docs, charsPerToken), runID)
+		body["tools"] = prependRunStampToolOpenAI(buildOpenAITools(req.Tools, docs, sz), runID)
 	}
 
 	// Collect canonical text for the cache estimator (system blocks +
@@ -1053,10 +1092,10 @@ func buildOpenAIChatCompletionsBody(req RouterReplayRequest, docs string, modelN
 		canonical.WriteString(fmt.Sprintf("<ignore>RUN_GUID: %s</ignore>", runID))
 	}
 	for _, b := range effectiveSystemBlocks(req.SystemBlocks) {
-		canonical.WriteString(synthText(b.Hash, sizeBudget(b.Bytes, b.Tokens, charsPerToken), docs))
+		canonical.WriteString(synthText(b.Hash, sz.systemBytes(b), docs))
 	}
 	for _, m := range req.Messages {
-		blocks := buildMessageContent(m, docs, charsPerToken, stampByHash)
+		blocks := buildMessageContent(m, docs, sz, stampByHash)
 		for _, blk := range blocks {
 			if t, ok := blk["text"]; ok {
 				canonical.WriteString(fmt.Sprintf("%v", t))
@@ -1114,12 +1153,12 @@ func appendTailMessageOpenAI(msgs []map[string]interface{}, text string) []map[s
 // tool_result blocks become separate role="tool" messages. Orphaned
 // tool_result blocks (no matching prior tool_call) are folded into user text.
 // stampByHash is threaded through to buildMessageContent (see its doc).
-func buildOpenAIMessages(msgs []RouterReplayMessage, docs string, charsPerToken float64, stampByHash map[string]turnStamp) []map[string]interface{} {
+func buildOpenAIMessages(msgs []RouterReplayMessage, docs string, sz replaySizing, stampByHash map[string]turnStamp) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(msgs))
 	seenToolCallIDs := map[string]bool{}
 
 	for _, m := range msgs {
-		blocks := buildMessageContent(m, docs, charsPerToken, stampByHash)
+		blocks := buildMessageContent(m, docs, sz, stampByHash)
 		role := roleOrUser(m.Role)
 
 		if role == "assistant" {

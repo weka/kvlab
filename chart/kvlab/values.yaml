@@ -75,6 +75,11 @@ replay:
   # stay under a small model's context window instead of drawing 400s
   # (--limit-context; 0 = no limit).
   limitContext: 0
+  # Content scale for replay sizing (--replay-token-scale). 0 = calibrate
+  # against the server at start so the prompts carry the captured token
+  # volume; 1 = byte-faithful, uncalibrated; the run prints the value it
+  # used, which with the seed reproduces its exact bytes.
+  tokenScale: 0
   # Drop every system/developer message that follows a request's first
   # non-system message; leading system messages stay. For chat templates that
   # accept a system message only at the start. Each turn stays an extension of

@@ -88,6 +88,46 @@ content otherwise. Token counts then follow from the
 serving tokenizer's density on the synthesized text (`--replay-chars-per-token`
 sizes from captured tokens instead).
 
+## Token calibration
+
+Synthesized text tokenizes at the serving tokenizer's own density, not the
+original traffic's, so byte-faithful content carries only part of the captured
+prompt tokens (roughly 45-75% depending on the model). Before a replay starts,
+kvlab calibrates a content scale against the running server:
+
+1. **Probe**: the first request the run would send (role, no-usage and
+   `--limit-context` filters applied, `--replay-drop-late-system` trimmed) whose
+   captured prompt is over 10,000 tokens. It is built at scale 1, sent with
+   `max_tokens` 1 and its own content stamp (a `calib-` nonce, so its KV is no
+   run request's prefix), and recorded nowhere in the results.
+2. **Adjust**: the server's prompt tokens against the captured ones give the
+   next scale (a multiplicative step, then secant on the last two probes).
+3. **Accept** the first scale whose probe lands within 3% of the captured
+   prompt, after at most four adjustments. A run that cannot get there does not
+   start.
+
+The scale multiplies the bytes of everything the server tokenizes: system text,
+tool descriptions (the same synthesized text, so the same density), and message
+content including `tool_use` input. JSON structure and thinking signatures keep
+their captured sizes, so the summary's input **bytes** conformity sits above
+100% by about the scale while input **token** conformity sits near 100%. The
+OpenAI, sglang and Anthropic paths read the probe's prompt tokens the same way
+they read every response's usage. `--limit-context` still compares captured
+tokens.
+
+The value is printed at start and in the summary beside the seed:
+
+```
+Replay sizing [model]: seed=8231 replay-token-scale=1.4375 (calibrated)
+  reproduce these exact bytes with --seed=8231 --replay-token-scale=1.4375 (--seed alone reproduces content, not sizes)
+```
+
+and recorded in the run params (`seed`, `replay_token_scale`,
+`replay_token_scale_source`), which the HTML report shows. **`--seed` alone no
+longer reproduces a calibrated replay's bytes**: pass both. An explicit
+`--replay-token-scale` (1 = byte-faithful) or `--replay-chars-per-token` skips
+calibration; dry runs do not calibrate.
+
 ## Volume conformity
 
 Every replay run reports how much of the captured volume it put through the
@@ -102,11 +142,13 @@ and as `vol=in:..,bytes:..,out:..` on the progress line:
 
 - **input**: prompt tokens the server reported (uncached + cached) over the
   capture's prompt tokens for the same requests. The capture's `input_tokens`
-  is the whole prompt (prefill + cache read + cache creation). With content
-  sized to the captured bytes, this ratio is the serving tokenizer's density
-  on synthesized text relative to the original traffic.
+  is the whole prompt (prefill + cache read + cache creation). Near 100% when
+  the scale is calibrated; at scale 1 it is the serving tokenizer's density on
+  synthesized text relative to the original traffic.
 - **bytes**: the request body as posted over the capture's request bytes
-  (system blocks + tools + messages). About 100%: slightly above from the run
+  (system blocks + tools + messages). About 100% at scale 1, and above it by
+  about the content scale when calibrated (see
+  [Token calibration](#token-calibration)); slightly above from the run
   stamp, output instruction and length ask; below when
   `--replay-drop-late-system` leaves messages out, and on the OpenAI format,
   whose message structure is lighter than the capture's Anthropic one and

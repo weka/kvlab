@@ -100,6 +100,14 @@ type AutoBenchmarkConfig struct {
 	// count, so the serving tokenizer's counts land near the original
 	// capture's. 0 = byte-faithful sizing (default).
 	ReplayCharsPerToken float64
+	// ReplayTokenScale: --replay-token-scale. > 0 multiplies every
+	// tokenizable part's synthesized bytes by it (see replaySizing); 0
+	// calibrates the scale against the server before the run
+	// (replay_calibrate.go). 1 is byte-faithful sizing, uncalibrated.
+	ReplayTokenScale float64
+	// replayScale is the scale this model's run resolved, set by
+	// runSingleModelBenchmark before any poster is built.
+	replayScale replaySizingResolution
 	// ReplaySystemFirst: --replay-system-first. Router replay moves every
 	// system/developer message into the leading system block (see
 	// hoistSystemMessages).
@@ -1512,6 +1520,7 @@ type autoBenchmarkResult struct {
 	valInstances          instanceVerifyTotals
 	volume                volumeTotals
 	retired               retireTotals
+	replayScale           replaySizingResolution
 	valWindowSessions     int
 	valWindowMarkers      int
 	valPresenceMissReqs   int64
@@ -1860,10 +1869,21 @@ func printAutoSummary(res autoBenchmarkResult, cfg AutoBenchmarkConfig) {
 	// Repeated from the run's first line, because that is thousands of progress
 	// lines ago by the time anyone reads a summary, and the seed is what makes
 	// a result reproducible at all — an arm nobody can rerun is an anecdote.
-	if cfg.Seed != 0 {
+	// The content scale rides with it: --seed reproduces content, the scale
+	// reproduces sizes, and a calibrated run needs both to repeat its bytes.
+	if cfg.Seed != 0 || res.replayScale.Source != "" {
 		fmt.Println(strings.Repeat("-", 62))
-		fmt.Printf(" Run seed           : %d (run-id %s)\n", cfg.Seed, cfg.RunID)
-		fmt.Printf(" Reproduce with     : --seed=%d\n", cfg.Seed)
+		if cfg.Seed != 0 {
+			fmt.Printf(" Run seed           : %d (run-id %s)\n", cfg.Seed, cfg.RunID)
+		}
+		if res.replayScale.Source != "" {
+			fmt.Printf(" Replay sizing      : %s\n", sizingLine(cfg.Seed, res.replayScale))
+		}
+		repro := fmt.Sprintf("--seed=%d", cfg.Seed)
+		if res.replayScale.Scale > 0 && res.replayScale.Source != scaleSourceDryRun {
+			repro += fmt.Sprintf(" --replay-token-scale=%.4f", res.replayScale.Scale)
+		}
+		fmt.Printf(" Reproduce with     : %s\n", repro)
 	}
 	fmt.Println(strings.Repeat("=", 62))
 }
@@ -2151,6 +2171,39 @@ func runSingleModelBenchmark(
 		cfg.HotSeriesConcurrency = cfg.StartSeries
 	}
 
+	// Replay content sizing: calibrated against this model's server unless a
+	// scale was given. Before the run-params header, which records it, and
+	// before any poster is built, since every poster carries it.
+	if cfg.RouterReplayFile != "" {
+		var cp *replayPoster
+		var err error
+		if !cfg.DryRun && cfg.ReplayTokenScale <= 0 && cfg.ReplayCharsPerToken <= 0 {
+			cp, err = newReplayPoster(cfg.Model, config.GetAPIKeys(), "", "", false, 0, 0, 0, nil, nil)
+			if err == nil {
+				cp.systemFirst = cfg.ReplaySystemFirst
+			}
+		}
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "[calibrate][%s] sizing replay content to the server's tokenizer...\n", shortModelName(cfg.Model))
+			cfg.replayScale, err = resolveReplayScale(benchCtx, cfg, cp, fullDocs)
+		}
+		if len(cfg.replayScale.Steps) > 0 {
+			fmt.Fprintf(os.Stderr, "[calibrate][%s] %s\n", shortModelName(cfg.Model), cfg.replayScale.describe())
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n[calibrate][%s] FAILED: %v\n"+
+				"[calibrate] the run is not started: its prompts would not carry the captured token volume. "+
+				"Pass --replay-token-scale=X to size explicitly (1 = byte-faithful, uncalibrated).\n\n",
+				shortModelName(cfg.Model), err)
+			return autoBenchmarkResult{termReason: termReasonError, elapsed: time.Since(startTime)}
+		}
+		fmt.Printf("Replay sizing [%s]: %s\n", shortModelName(cfg.Model), sizingLine(cfg.Seed, cfg.replayScale))
+		if cfg.replayScale.Source == scaleSourceCalibrated {
+			fmt.Printf("  reproduce these exact bytes with --seed=%d --replay-token-scale=%.4f (--seed alone reproduces content, not sizes)\n",
+				cfg.Seed, cfg.replayScale.Scale)
+		}
+	}
+
 	// Header row describing the run, written once ahead of the request rows.
 	// Deliberately emitted HERE rather than where the writer is opened: the
 	// block above clamps and defaults cfg, and the file must record what the
@@ -2409,6 +2462,7 @@ func runSingleModelBenchmark(
 			pp.minOutputTokens = cfg.ReplayMinOutputTokens
 			pp.limitContext = cfg.LimitContext
 			pp.replayCharsPerToken = cfg.ReplayCharsPerToken
+			pp.replayTokenScale = cfg.replayScale.Scale
 			pp.systemFirst = cfg.ReplaySystemFirst
 			pp.forceVolume = cfg.forceVolume()
 			// UUID cache-coherency injection (--verify). Same
@@ -3427,6 +3481,7 @@ func runSingleModelBenchmark(
 	res.valInstances = st.valInstances.totals()
 	res.volume = st.volume.load()
 	res.retired = st.retired.load()
+	res.replayScale = cfg.replayScale
 	if cfg.uuidRegistry != nil {
 		_, res.valWindowMarkers, res.valWindowSessions = cfg.uuidRegistry.Stats()
 	}

@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,11 @@ type runParamsRecord struct {
 	ForceOutputVolume     bool    `json:"force_output_volume,omitempty"`
 	FromDataset           string  `json:"from_dataset,omitempty"`
 	ReplaySeries          int     `json:"replay_series,omitempty"`
+	// Seed and the replay content scale reproduce a run's bytes together:
+	// the seed its content, the scale its sizes (replay_calibrate.go).
+	Seed                   int64   `json:"seed,omitempty"`
+	ReplayTokenScale       float64 `json:"replay_token_scale,omitempty"`
+	ReplayTokenScaleSource string  `json:"replay_token_scale_source,omitempty"`
 
 	// Synthetic-prompt shaping (ignored in replay modes).
 	Step                  int `json:"step,omitempty"`
@@ -118,6 +124,10 @@ func buildRunParams(cfg AutoBenchmarkConfig, now time.Time) runParamsRecord {
 		ForceOutputVolume:     cfg.forceVolume(),
 		FromDataset:           cfg.FromDataset,
 		ReplaySeries:          cfg.ReplaySeries,
+
+		Seed:                   cfg.Seed,
+		ReplayTokenScale:       cfg.replayScale.Scale,
+		ReplayTokenScaleSource: cfg.replayScale.Source,
 
 		Step:                  cfg.Step,
 		StepStartingTokens:    cfg.StepStartingTokens,
@@ -205,6 +215,12 @@ func (p runParamsRecord) summaryLine() string {
 	}
 	if p.RouterReplayFile != "" {
 		parts = append(parts, "router-replay")
+		if p.Seed != 0 {
+			parts = append(parts, "seed="+strconv.FormatInt(p.Seed, 10))
+		}
+		if p.ReplayTokenScale > 0 {
+			parts = append(parts, fmt.Sprintf("replay-token-scale=%.4f (%s)", p.ReplayTokenScale, p.ReplayTokenScaleSource))
+		}
 	} else if p.FromDataset != "" {
 		parts = append(parts, "dataset="+p.FromDataset)
 	}

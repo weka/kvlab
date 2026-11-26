@@ -66,6 +66,9 @@ spec:
                 {{- if .Values.replay.limitContext }}
                 --limit-context={{ .Values.replay.limitContext | int64 }} \
                 {{- end }}
+                {{- if .Values.replay.tokenScale }}
+                --replay-token-scale={{ .Values.replay.tokenScale }} \
+                {{- end }}
                 {{- if .Values.replay.dropLateSystem }}
                 --replay-drop-late-system \
                 {{- end }}

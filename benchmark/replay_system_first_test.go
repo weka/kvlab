@@ -72,7 +72,7 @@ func openAIRoles(t *testing.T, body []byte) []string {
 
 func TestSystemFirstOpenAINoLateSystemAfterConversation(t *testing.T) {
 	req := hoistSystemMessages(lateSystemRequest())
-	body, _, err := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
+	body, _, err := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSystemFirstOpenAINoLateSystemAfterConversation(t *testing.T) {
 	}
 
 	// Without the flag the reminder stays where it was captured.
-	plain, _, _ := buildOpenAIChatCompletionsBody(lateSystemRequest(), sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
+	plain, _, _ := buildOpenAIChatCompletionsBody(lateSystemRequest(), sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
 	if r := openAIRoles(t, plain); !strings.Contains(strings.Join(r, ","), "tool,system") {
 		t.Fatalf("flag-off body lost the captured late system message: %v", r)
 	}
@@ -114,13 +114,13 @@ func TestSystemFirstNoSystemMessagesUnchanged(t *testing.T) {
 	if hoisted.hoistedSystem != 0 {
 		t.Fatalf("hoistedSystem = %d, want 0", hoisted.hoistedSystem)
 	}
-	a, ca, _ := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
-	b, cb, _ := buildOpenAIChatCompletionsBody(hoisted, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
+	a, ca, _ := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
+	b, cb, _ := buildOpenAIChatCompletionsBody(hoisted, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
 	if !bytes.Equal(a, b) || ca != cb {
 		t.Fatal("OpenAI body changed for a request with no system messages")
 	}
-	a, ca, _ = buildAnthropicMessagesBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil)
-	b, cb, _ = buildAnthropicMessagesBody(hoisted, sysFirstDocs, "m", "run", 0, 0, false, 0, nil)
+	a, ca, _ = buildAnthropicMessagesBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil)
+	b, cb, _ = buildAnthropicMessagesBody(hoisted, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil)
 	if !bytes.Equal(a, b) || ca != cb {
 		t.Fatal("Anthropic body changed for a request with no system messages")
 	}
@@ -128,7 +128,7 @@ func TestSystemFirstNoSystemMessagesUnchanged(t *testing.T) {
 
 func TestSystemFirstAnthropicSystemArray(t *testing.T) {
 	req := hoistSystemMessages(lateSystemRequest())
-	body, _, err := buildAnthropicMessagesBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil)
+	body, _, err := buildAnthropicMessagesBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,8 @@ func TestSystemFirstAnthropicSystemArray(t *testing.T) {
 	if len(parsed.System) != 5 {
 		t.Fatalf("system blocks = %d, want 5", len(parsed.System))
 	}
-	if parsed.System[3]["text"] != hoistedSystemText(req.Messages[0], sysFirstDocs, 0) ||
-		parsed.System[4]["text"] != hoistedSystemText(req.Messages[1], sysFirstDocs, 0) {
+	if parsed.System[3]["text"] != hoistedSystemText(req.Messages[0], sysFirstDocs, replaySizing{}) ||
+		parsed.System[4]["text"] != hoistedSystemText(req.Messages[1], sysFirstDocs, replaySizing{}) {
 		t.Fatal("hoisted system text out of order")
 	}
 	for _, m := range parsed.Messages {
@@ -176,10 +176,10 @@ func TestSystemFirstCanonicalMatchesWire(t *testing.T) {
 	req := hoistSystemMessages(lateSystemRequest())
 	req.Tools = &RouterReplayToolsSpec{Count: 1, Bytes: 400, Hash: "tools"}
 
-	_, canon, _ := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
+	_, canon, _ := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
 	var pieces []string
 	for _, m := range req.Messages {
-		for _, blk := range buildMessageContent(m, sysFirstDocs, 0, nil) {
+		for _, blk := range buildMessageContent(m, sysFirstDocs, replaySizing{}, nil) {
 			for _, k := range []string{"text", "content"} {
 				if v, ok := blk[k]; ok && v.(string) != "" {
 					pieces = append(pieces, v.(string))
@@ -189,21 +189,21 @@ func TestSystemFirstCanonicalMatchesWire(t *testing.T) {
 	}
 	canonicalOrderIn(t, "openai", canon, pieces)
 
-	body, canon, _ := buildAnthropicMessagesBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil)
+	body, canon, _ := buildAnthropicMessagesBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil)
 	var parsed struct {
 		System []map[string]interface{} `json:"system"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	toolText := toolDescriptions(req.Tools, sysFirstDocs, 0)[0]
+	toolText := toolDescriptions(req.Tools, sysFirstDocs, replaySizing{})[0]
 	wireOrder := []string{
 		parsed.System[3]["text"].(string),
 		parsed.System[4]["text"].(string),
 		toolText,
 	}
 	for _, m := range req.Messages[2:] {
-		for _, blk := range buildMessageContent(m, sysFirstDocs, 0, nil) {
+		for _, blk := range buildMessageContent(m, sysFirstDocs, replaySizing{}, nil) {
 			if v, ok := blk["text"]; ok {
 				wireOrder = append(wireOrder, v.(string))
 			}
@@ -214,7 +214,7 @@ func TestSystemFirstCanonicalMatchesWire(t *testing.T) {
 	// dropped or carried twice (every system message here is one block).
 	plain := lateSystemRequest()
 	plain.Tools = req.Tools
-	_, plainCanon, _ := buildAnthropicMessagesBody(plain, sysFirstDocs, "m", "run", 0, 0, false, 0, nil)
+	_, plainCanon, _ := buildAnthropicMessagesBody(plain, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil)
 	if len(canon) != len(plainCanon) {
 		t.Fatalf("anthropic canonical length %d, captured order %d", len(canon), len(plainCanon))
 	}

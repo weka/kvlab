@@ -12,11 +12,13 @@ import (
 //     prompt tokens the capture recorded for the same requests (its
 //     input_tokens, which is the whole prompt: prefill + cache read + cache
 //     creation). Replay content is synthesized text, so this ratio carries
-//     the serving tokenizer's density on it as well as the sizing.
+//     the serving tokenizer's density on it as well as the sizing; with the
+//     content scale calibrated (replay_calibrate.go) it sits near 100%.
 //   - input bytes: the request body as posted over the capture's request
 //     bytes (system blocks + tools + messages, each the canonical JSON the
 //     capture measured). Replay sizes every part to its captured bytes, so
-//     this sits at ~100%: a little above from the run stamp, the output
+//     this sits at ~100% at scale 1 and above it by about a calibrated
+//     content scale: a little above from the run stamp, the output
 //     instruction and the length ask, below where --replay-drop-late-system
 //     leaves messages out or where the OpenAI shape spends fewer bytes on
 //     structure than the capture's Anthropic one and drops thinking

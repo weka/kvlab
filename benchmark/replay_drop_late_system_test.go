@@ -52,8 +52,8 @@ func TestDropLateSystemNoOp(t *testing.T) {
 		if n != 0 || msgHashes(got.Messages) != msgHashes(msgs) {
 			t.Fatalf("not a no-op for %s: dropped %d", msgHashes(msgs), n)
 		}
-		a, ca, _ := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
-		b, cb, _ := buildOpenAIChatCompletionsBody(got, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
+		a, ca, _ := buildOpenAIChatCompletionsBody(req, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
+		b, cb, _ := buildOpenAIChatCompletionsBody(got, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
 		if !bytes.Equal(a, b) || ca != cb {
 			t.Fatal("body changed for a request with no late system message")
 		}
@@ -91,7 +91,7 @@ func TestDropLateSystemSessionPrefixConsistent(t *testing.T) {
 		if !strings.HasPrefix(msgHashes(got.Messages), msgHashes(prevMsgs)) {
 			t.Fatalf("turn ending %d: %s does not extend %s", e, msgHashes(got.Messages), msgHashes(prevMsgs))
 		}
-		body, _, err := buildOpenAIChatCompletionsBody(got, sysFirstDocs, "m", "run", 0, 0, false, 0, nil, "", "", false)
+		body, _, err := buildOpenAIChatCompletionsBody(got, sysFirstDocs, "m", "run", 0, 0, false, replaySizing{}, nil, "", "", false)
 		if err != nil {
 			t.Fatal(err)
 		}

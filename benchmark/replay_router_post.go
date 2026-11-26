@@ -97,6 +97,9 @@ type replayPoster struct {
 	// count, so the serving tokenizer's counts land near the original
 	// capture's. 0 = byte-faithful sizing (default).
 	replayCharsPerToken float64
+	// replayTokenScale: the content scale (--replay-token-scale, or the
+	// value calibration accepted); 0 = none. See replaySizing.
+	replayTokenScale float64
 	// systemFirst: --replay-system-first. Every system/developer message is
 	// moved into the leading system block before the body is built, so no
 	// system message follows a user/assistant/tool turn on the wire.
@@ -626,9 +629,9 @@ func (p *replayPoster) do(
 	var err error
 	switch p.apiType {
 	case "openai", "openai_vllm", "openai_sglang":
-		bodyBytes, canonical, err = buildOpenAIChatCompletionsBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj, p.reasoningEffort, p.thinking, p.apiType == "openai_sglang")
+		bodyBytes, canonical, err = buildOpenAIChatCompletionsBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.sizing(), inj, p.reasoningEffort, p.thinking, p.apiType == "openai_sglang")
 	default:
-		bodyBytes, canonical, err = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj)
+		bodyBytes, canonical, err = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.sizing(), inj)
 	}
 	// --limit-context compares the capture's prompt tokens, not a chars
 	// heuristic: the replay file records the real prompt size of every
@@ -1405,9 +1408,9 @@ func (p *replayPoster) dryDo(
 	var body []byte
 	switch p.apiType {
 	case "openai", "openai_vllm", "openai_sglang":
-		body, canonical, _ = buildOpenAIChatCompletionsBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj, p.reasoningEffort, p.thinking, p.apiType == "openai_sglang")
+		body, canonical, _ = buildOpenAIChatCompletionsBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.sizing(), inj, p.reasoningEffort, p.thinking, p.apiType == "openai_sglang")
 	default:
-		body, canonical, _ = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.replayCharsPerToken, inj)
+		body, canonical, _ = buildAnthropicMessagesBody(req, docs, p.model, stampFor(p, req), p.outputRatio, p.minOutputTokens, p.forceVolume, p.sizing(), inj)
 	}
 	var ratio float64
 	if p.estimator != nil {
@@ -1455,6 +1458,11 @@ func (p *replayPoster) dryDo(
 		CapturedInputBytes:  req.capturedInputBytes(),
 		WireInputBytes:      len(body),
 	}
+}
+
+// sizing is this poster's content sizing (see replaySizing).
+func (p *replayPoster) sizing() replaySizing {
+	return replaySizing{CharsPerToken: p.replayCharsPerToken, Scale: p.replayTokenScale}
 }
 
 // exceedsLimitContext reports whether req is over --limit-context (limit > 0):

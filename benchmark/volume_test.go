@@ -117,14 +117,14 @@ func TestWireBytesNearCaptured(t *testing.T) {
 		},
 	}
 	captured := req.capturedInputBytes()
-	anth, _, _ := buildAnthropicMessagesBody(req, volumeDocs, "m", "run1", 0, 0, false, 0, nil)
-	oa, _, _ := buildOpenAIChatCompletionsBody(req, volumeDocs, "m", "run1", 0, 0, false, 0, nil, "", "", false)
+	anth, _, _ := buildAnthropicMessagesBody(req, volumeDocs, "m", "run1", 0, 0, false, replaySizing{}, nil)
+	oa, _, _ := buildOpenAIChatCompletionsBody(req, volumeDocs, "m", "run1", 0, 0, false, replaySizing{}, nil, "", "", false)
 	// The <200B header system block is not sent (effectiveSystemBlocks).
 	if d := len(anth) - (captured - 120); d < 0 || d > 600 {
 		t.Errorf("anthropic body %d bytes vs captured %d (less 120B header): off by %d", len(anth), captured-120, d)
 	}
 	// OpenAI has no place for a thinking signature, so it is not sent.
-	sig := len(buildMessageContent(req.Messages[1], volumeDocs, 0, nil)[0]["signature"].(string))
+	sig := len(buildMessageContent(req.Messages[1], volumeDocs, replaySizing{}, nil)[0]["signature"].(string))
 	if d := len(oa) - (captured - 120 - sig); d > 1500 || d < -1500 {
 		t.Errorf("openai body %d bytes vs captured %d: off by %d", len(oa), captured-120, d)
 	}

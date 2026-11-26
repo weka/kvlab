@@ -1108,6 +1108,7 @@ func runRouterReplayInstance(
 		poster.dumper = cfg.dumper
 		poster.limitContext = cfg.LimitContext
 		poster.replayCharsPerToken = cfg.ReplayCharsPerToken
+		poster.replayTokenScale = cfg.replayScale.Scale
 		poster.systemFirst = cfg.ReplaySystemFirst
 		// UUID cache-coherency injection (--verify, router
 		// path). Everything set here is global and read-only — the same seed

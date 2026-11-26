@@ -833,15 +833,15 @@ func TestMaxRequestsPerSessionRendersOnlyWhenSet(t *testing.T) {
 // predates the flag.
 func TestLimitContextAndDropLateSystemRenderOnlyWhenSet(t *testing.T) {
 	out := render(t, "--set", "replay.enabled=true")
-	for _, flag := range []string{"--limit-context", "--replay-drop-late-system"} {
+	for _, flag := range []string{"--limit-context", "--replay-drop-late-system", "--replay-token-scale"} {
 		if strings.Contains(out, flag) {
 			t.Errorf("the default render carries %s", flag)
 		}
 	}
 	for _, mode := range []string{"replay.realtime=false", "replay.realtime=true"} {
 		out := render(t, "--set", "replay.enabled=true", "--set", mode,
-			"--set", "replay.limitContext=131072", "--set", "replay.dropLateSystem=true")
-		for _, want := range []string{"--limit-context=131072", "--replay-drop-late-system"} {
+			"--set", "replay.limitContext=131072", "--set", "replay.dropLateSystem=true", "--set", "replay.tokenScale=1.3125")
+		for _, want := range []string{"--limit-context=131072", "--replay-drop-late-system", "--replay-token-scale=1.3125"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: %s did not render", mode, want)
 			}
