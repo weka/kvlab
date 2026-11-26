@@ -580,13 +580,18 @@ func appendTailMessageAnthropic(msgs []map[string]interface{}, text string) []ma
 // JSON of the whole message, role and content array included — and nothing
 // per block. The message is first built as its skeleton (every block with
 // empty content, ids and names in place), and the captured bytes minus the
-// skeleton's canonical JSON size are split evenly over EVERY block: text,
+// skeleton's canonical JSON size are split over EVERY block: text,
 // tool_result content, thinking, tool_use input (a "_padding" string inside
-// the input object), image and any other kind. So the synthesized message,
-// marshaled in the capture's (Anthropic) shape, is as long as the captured
-// one, and its content bytes are the capture's less only the JSON structure
-// both carry. An even split is the one deterministic rule the capture
-// supports: it does not keep per-block sizes.
+// the input object), image and any other kind, in proportion to its type's
+// weight (blockWeight). So the synthesized message, marshaled in the
+// capture's (Anthropic) shape, is as long as the captured one, and its
+// content bytes are the capture's less only the JSON structure both carry.
+//
+// A thinking block's share is mostly its signature, as in the capture: the
+// thinking text gets thinkingTextPermille of it and a synthesized
+// "signature" the rest. A server does not tokenize a signature, so the
+// prompt carries the thinking text the original did, not its signature's
+// bytes as text.
 //
 // Images become text blocks of their share, never image data: the capture
 // sized an image by its base64 payload, which is what the share reproduces
@@ -604,7 +609,11 @@ func appendTailMessageAnthropic(msgs []map[string]interface{}, text string) []ma
 // perturbed.
 func buildMessageContent(m RouterReplayMessage, docs string, charsPerToken float64, stampByHash map[string]turnStamp) []map[string]interface{} {
 	out := messageSkeleton(m)
-	shares := evenShares(sizeBudget(m.Bytes, m.Tokens, charsPerToken)-messageSkeletonBytes(m, out), len(out))
+	weights := make([]int, len(out))
+	for i, t := range m.BlockTypes {
+		weights[i] = blockWeight(t)
+	}
+	shares := weightedShares(sizeBudget(m.Bytes, m.Tokens, charsPerToken)-messageSkeletonBytes(m, out), weights)
 	for i, blk := range out {
 		blockSeed := fmt.Sprintf("%s:block:%d", m.Hash, i)
 		switch m.BlockTypes[i] {
@@ -615,7 +624,9 @@ func buildMessageContent(m RouterReplayMessage, docs string, charsPerToken float
 		case "tool_result":
 			blk["content"] = synthText(blockSeed+":result", shares[i], docs)
 		case "thinking":
-			blk["thinking"] = synthText(blockSeed+":thinking", shares[i], docs)
+			text := shares[i] * thinkingTextPermille / 1000
+			blk["thinking"] = synthText(blockSeed+":thinking", text, docs)
+			blk["signature"] = synthText(blockSeed+":signature", shares[i]-text, docs)
 		case "image":
 			blk["text"] = synthText(blockSeed+":image", shares[i], docs)
 		default:
@@ -667,7 +678,7 @@ func messageSkeleton(m RouterReplayMessage) []map[string]interface{} {
 				"content":     "",
 			})
 		case "thinking":
-			out = append(out, map[string]interface{}{"type": "thinking", "thinking": ""})
+			out = append(out, map[string]interface{}{"type": "thinking", "thinking": "", "signature": ""})
 		default:
 			// text, and every kind replay sends as text (image, document,
 			// redacted_thinking, ...).
@@ -701,6 +712,63 @@ func messageSkeletonBytes(m RouterReplayMessage, skeleton []map[string]interface
 	}
 	b, _ := json.Marshal(map[string]interface{}{"role": role, "content": content})
 	return len(b)
+}
+
+// blockWeight is a block type's relative share of its message's content
+// bytes. The capture keeps no per-block sizes, so these come from raw
+// captures that still had content (Claude Code traffic, 70k distinct
+// messages, April-July 2026), fitted so that each type's synthesized bytes
+// summed over those messages match its real bytes: an even split gave
+// thinking 4.2x its text and starved its signature, and inflated short
+// assistant text 1.7x. Weights matter only between blocks of different
+// types in one message. Kinds without enough data (image, document, ...)
+// weigh as text.
+func blockWeight(blockType string) int {
+	switch blockType {
+	case "tool_result":
+		return 2364
+	case "tool_use":
+		return 1736
+	case "thinking":
+		return 6394
+	}
+	return 1000
+}
+
+// thinkingTextPermille is the thinking text's share of a thinking block, the
+// rest being its signature (measured on the same raw captures: 235 bytes of
+// thinking to 1700 of signature on average).
+const thinkingTextPermille = 122
+
+// weightedShares splits budget over len(weights) blocks in proportion to
+// weights, by cumulative rounding so the shares sum to budget exactly, each
+// at least minBlockBytes (when budget does not cover that floor, every block
+// gets the floor).
+func weightedShares(budget int, weights []int) []int {
+	n := len(weights)
+	shares := make([]int, n)
+	if n == 0 {
+		return shares
+	}
+	if budget < n*minBlockBytes {
+		for i := range shares {
+			shares[i] = minBlockBytes
+		}
+		return shares
+	}
+	total := 0
+	for _, w := range weights {
+		total += w
+	}
+	free := budget - n*minBlockBytes
+	cum, prev := 0, 0
+	for i, w := range weights {
+		cum += w
+		at := int(int64(free) * int64(cum) / int64(total))
+		shares[i] = minBlockBytes + at - prev
+		prev = at
+	}
+	return shares
 }
 
 // minBlockBytes floors each block's share when a message's captured bytes do

@@ -42,7 +42,7 @@ func canonicalLen(t *testing.T, raw json.RawMessage) int {
 func contentBytes(blocks []map[string]interface{}) int {
 	n := 0
 	for _, b := range blocks {
-		for _, k := range []string{"text", "content", "thinking"} {
+		for _, k := range []string{"text", "content", "thinking", "signature"} {
 			if v, ok := b[k].(string); ok {
 				n += len(v)
 			}
@@ -91,15 +91,17 @@ func TestMixedMessageDoesNotOvershoot(t *testing.T) {
 	if skel > 250 {
 		t.Fatalf("skeleton %d bytes: structure should be small", skel)
 	}
-	// Even split, remainder to the first blocks.
+	// Split by type weight: each tool_result gets 2.364x the text.
 	a, b, c := len(blocks[0]["text"].(string)), len(blocks[1]["content"].(string)), len(blocks[2]["content"].(string))
-	if a < b || b < c || a-c > 1 {
-		t.Fatalf("shares %d/%d/%d are not an even split", a, b, c)
+	if b-c > 1 || c-b > 1 || float64(b)/float64(a) < 2.3 || float64(b)/float64(a) > 2.43 {
+		t.Fatalf("shares %d/%d/%d: want text:tool_result:tool_result = 1000:2364:2364", a, b, c)
 	}
 }
 
 // tool_use input is sized to its share: thinking + tool_use, no text block,
-// marshals to the captured size in the Anthropic body.
+// marshals to the captured size in the Anthropic body, the tool_use input
+// taking its type's weight and the thinking block's share going mostly to
+// its signature.
 func TestToolUseInputSizedToShare(t *testing.T) {
 	m := RouterReplayMessage{Role: "assistant", Hash: "tu", BlockTypes: []string{"thinking", "tool_use"},
 		Bytes: 4000, ToolUseIDs: []string{"toolu_x"}}
@@ -116,8 +118,14 @@ func TestToolUseInputSizedToShare(t *testing.T) {
 	}
 	blocks := buildMessageContent(m, volumeDocs, 0, nil)
 	pad := blocks[1]["input"].(map[string]interface{})["_padding"].(string)
-	if think := blocks[0]["thinking"].(string); len(pad) < 1900 || len(think)-len(pad) > 1 {
-		t.Fatalf("tool_use padding %d bytes, thinking %d: want an even ~1950 each", len(pad), len(think))
+	think, sig := blocks[0]["thinking"].(string), blocks[0]["signature"].(string)
+	budget := 4000 - messageSkeletonBytes(m, messageSkeleton(m))
+	shares := weightedShares(budget, []int{blockWeight("thinking"), blockWeight("tool_use")})
+	if len(pad) != shares[1] || len(think)+len(sig) != shares[0] {
+		t.Fatalf("tool_use padding %d, thinking %d + signature %d; want %v", len(pad), len(think), len(sig), shares)
+	}
+	if len(pad) < 700 || len(pad) > 900 || len(think) > len(sig)/5 {
+		t.Fatalf("tool_use padding %d (want ~21%% of %d), thinking %d vs signature %d", len(pad), budget, len(think), len(sig))
 	}
 }
 
@@ -190,8 +198,11 @@ func TestOpenAIPathCarriesFullContent(t *testing.T) {
 		if toolContent != wantTR || toolContent < 5900 {
 			t.Errorf("sglang=%v: tool message %d bytes, want %d (~6000)", sglang, toolContent, wantTR)
 		}
-		if args < 1900 || thinking < 1900 {
-			t.Errorf("sglang=%v: tool_call arguments %d, thinking %d bytes: want ~1950 each", sglang, args, thinking)
+		tb := buildMessageContent(tu, volumeDocs, 0, nil)
+		wantArgs := len(`{"_padding":""}`) + len(tb[1]["input"].(map[string]interface{})["_padding"].(string))
+		if args != wantArgs || thinking != len(tb[0]["thinking"].(string)) {
+			t.Errorf("sglang=%v: tool_call arguments %d, thinking %d bytes: want %d and %d (the signature is not sent)",
+				sglang, args, thinking, wantArgs, len(tb[0]["thinking"].(string)))
 		}
 	}
 }

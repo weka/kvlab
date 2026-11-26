@@ -74,11 +74,17 @@ captured text.
 The capture keeps one byte count per system block, per tools array and per
 message (the canonical JSON of each), not per content block. Replay sends each
 of them at that size: a message's bytes, less the JSON structure of the message
-it rebuilds (roles, block types, tool ids and names), are split evenly over all
-its content blocks: text, `tool_result` content, thinking, `tool_use` input
-(a `_padding` string), and images and documents, which are sent as text of
-their share. The tools array's bytes go to the tool descriptions the same way.
-Both wire formats carry the same content. Token counts then follow from the
+it rebuilds (roles, block types, tool ids and names), are split over all its
+content blocks by block-type weight: text 1000, `tool_use` input (a `_padding`
+string) 1736, `tool_result` content 2364, thinking 6394, anything else (images,
+documents, sent as text of their share) as text. The weights are fitted on raw
+captures that still had content, so each type's bytes summed over those
+messages match the real ones (`tool_use` 0.99, `tool_result` 1.05, text 1.00,
+thinking 0.99). A thinking block's share is 12% thinking text and 88%
+`signature`, as measured; a server does not tokenize the signature, and the
+OpenAI format has no place for it, so it is not sent there. The tools array's
+bytes go to the tool descriptions evenly. Both wire formats carry the same
+content otherwise. Token counts then follow from the
 serving tokenizer's density on the synthesized text (`--replay-chars-per-token`
 sizes from captured tokens instead).
 
@@ -103,7 +109,8 @@ and as `vol=in:..,bytes:..,out:..` on the progress line:
   (system blocks + tools + messages). About 100%: slightly above from the run
   stamp, output instruction and length ask; below when
   `--replay-drop-late-system` leaves messages out, and on the OpenAI format,
-  whose message structure is lighter than the capture's Anthropic one.
+  whose message structure is lighter than the capture's Anthropic one and
+  which drops thinking signatures.
 - **output**: completion tokens over the `max_tokens` each request carried;
   ~100% under `ignore_eos`, ~90% under `--verify`.
 

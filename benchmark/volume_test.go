@@ -102,7 +102,8 @@ func TestCapturedInputBytes(t *testing.T) {
 // The posted body is held to the captured bytes: an Anthropic body for a
 // replay request lands within its fixed extras (stamp, instruction, length
 // ask, model/max_tokens keys) of the capture; the OpenAI body differs by its
-// lighter message structure and its heavier tool wrapper.
+// lighter message structure, its heavier tool wrapper and the thinking
+// signatures it cannot carry.
 func TestWireBytesNearCaptured(t *testing.T) {
 	req := RouterReplayRequest{
 		MaxTokens: 8,
@@ -122,7 +123,9 @@ func TestWireBytesNearCaptured(t *testing.T) {
 	if d := len(anth) - (captured - 120); d < 0 || d > 600 {
 		t.Errorf("anthropic body %d bytes vs captured %d (less 120B header): off by %d", len(anth), captured-120, d)
 	}
-	if d := len(oa) - (captured - 120); d > 1500 || d < -1500 {
+	// OpenAI has no place for a thinking signature, so it is not sent.
+	sig := len(buildMessageContent(req.Messages[1], volumeDocs, 0, nil)[0]["signature"].(string))
+	if d := len(oa) - (captured - 120 - sig); d > 1500 || d < -1500 {
 		t.Errorf("openai body %d bytes vs captured %d: off by %d", len(oa), captured-120, d)
 	}
 }

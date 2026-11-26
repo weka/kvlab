@@ -19,7 +19,8 @@ import (
 //     this sits at ~100%: a little above from the run stamp, the output
 //     instruction and the length ask, below where --replay-drop-late-system
 //     leaves messages out or where the OpenAI shape spends fewer bytes on
-//     structure than the capture's Anthropic one.
+//     structure than the capture's Anthropic one and drops thinking
+//     signatures.
 //   - output: completion tokens over the max_tokens each request carried.
 //     ~100% under ignore_eos by construction; under --verify it scores how
 //     well the per-request length ask alone reproduces the captured output.
