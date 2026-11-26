@@ -215,6 +215,10 @@ type RouterReplayMessage struct {
 	ToolUseIDs    []string `json:"tool_use_ids,omitempty"`
 	ToolResultIDs []string `json:"tool_result_ids,omitempty"`
 	SeedHash      string   `json:"seed_hash,omitempty"`
+
+	// carry is the content this message is synthesized from (see
+	// carryContentSeeds); zero means the message's own.
+	carry contentCarry
 }
 
 // ---- Streaming reader + queue ----
@@ -942,6 +946,7 @@ func runRouterReplaySession(
 	// session runs: the registry's refcount is what makes a block shared by
 	// two concurrent sessions visible, and what bounds the set that
 	// cross-contamination is scored against. See replay_uuid_registry.go.
+	carryContentSeeds(&sess)
 	var su *sessionUUIDs
 	if cfg.Verify {
 		if su = buildSessionUUIDs(sess, passStamp); su != nil {

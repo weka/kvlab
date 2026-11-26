@@ -154,11 +154,11 @@ func (p *replayPoster) buildInjection(req RouterReplayRequest, su *sessionUUIDs)
 	var visible []int // turn indices visible in this request, in first-appearance order
 	seenTurn := map[int]bool{}
 	for _, m := range req.Messages {
-		t, ok := su.hashToTurn[m.Hash]
+		t, ok := su.hashToTurn[m.contentSeed()]
 		if !ok || t < 0 || t >= len(su.uuids) {
 			continue
 		}
-		stampByHash[m.Hash] = turnStamp{Idx: t, UUID: su.uuids[t], Label: fmt.Sprintf("turn-%d", t+1)}
+		stampByHash[m.contentSeed()] = turnStamp{Idx: t, UUID: su.uuids[t], Label: fmt.Sprintf("turn-%d", t+1)}
 		if !seenTurn[t] {
 			seenTurn[t] = true
 			visible = append(visible, t)

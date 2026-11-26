@@ -58,7 +58,7 @@ type turnStamp struct {
 // must behave identically to before this feature existed.
 type uuidInjection struct {
 	// StampByHash carries one turnStamp per user-turn message VISIBLE in
-	// this request (keyed by RouterReplayMessage.Hash) — every qualifying
+	// this request (keyed by its content seed, contentSeed) — every qualifying
 	// turn gets its UUID marker embedded inline in its own synthesized
 	// content (see buildMessageContent), keeping every turn's stamp warm in
 	// KV as later requests repeat that history in full, not just the turns

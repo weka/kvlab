@@ -597,11 +597,16 @@ func appendTailMessageAnthropic(msgs []map[string]interface{}, text string) []ma
 // sized an image by its base64 payload, which is what the share reproduces
 // in bytes, though a real image tokenizes far below its payload.
 //
+// Content seed and size come from m.contentSource(): the message's own hash
+// and captured size, or, for a message that repeats an earlier one but for
+// its cache_control marker, that earlier message's (carryContentSeeds), so
+// both are sent with the same content bytes.
+//
 // stampByHash is inj.StampByHash (nil when --verify is off, or
-// when this message isn't a qualifying turn). When m.Hash is a key in
-// stampByHash, the labeled marker "\n\n[turn-N id: <uuid>]" is appended to
+// when this message isn't a qualifying turn). When m's content seed is a key
+// in stampByHash, the labeled marker "\n\n[turn-N id: <uuid>]" is appended to
 // the LAST "text"-type block's synthesized content, at a position wholly
-// determined by m.Hash (same seed synthText already keys on) — so two
+// determined by that seed (the one synthText keys on) — so two
 // requests carrying the same turn emit byte-identical content for it,
 // preserving the within-session cache-hit property. Only count==1
 // (genuinely per-session) messages are ever present in stampByHash — see
@@ -613,9 +618,12 @@ func buildMessageContent(m RouterReplayMessage, docs string, sz replaySizing, st
 	for i, t := range m.BlockTypes {
 		weights[i] = blockWeight(t)
 	}
-	shares := weightedShares(sz.budget(m.Bytes, m.Tokens)-messageSkeletonBytes(m, out), weights)
+	src := m.contentSource()
+	sized := m
+	sized.Bytes, sized.Tokens, sized.CacheControl = src.Bytes, src.Tokens, src.CacheControl
+	shares := weightedShares(sz.budget(sized.Bytes, sized.Tokens)-messageSkeletonBytes(sized, out), weights)
 	for i, blk := range out {
-		blockSeed := fmt.Sprintf("%s:block:%d", m.Hash, i)
+		blockSeed := fmt.Sprintf("%s:block:%d", src.Seed, i)
 		// sz.scaled applies a calibrated content scale to what the server
 		// tokenizes; a signature is not tokenized and keeps its share.
 		switch m.BlockTypes[i] {
@@ -635,7 +643,7 @@ func buildMessageContent(m RouterReplayMessage, docs string, sz replaySizing, st
 			blk["text"] = synthText(blockSeed+":fallback", sz.scaled(shares[i]), docs)
 		}
 	}
-	if stamp, ok := stampByHash[m.Hash]; ok {
+	if stamp, ok := stampByHash[src.Seed]; ok {
 		marker := "\n\n[" + stamp.Label + " id: " + stamp.UUID + "]"
 		for i := len(out) - 1; i >= 0; i-- {
 			if out[i]["type"] == "text" {
@@ -654,7 +662,7 @@ func messageSkeleton(m RouterReplayMessage) []map[string]interface{} {
 	tuIdx, trIdx := 0, 0
 	out := make([]map[string]interface{}, 0, len(m.BlockTypes))
 	for i, t := range m.BlockTypes {
-		blockSeed := fmt.Sprintf("%s:block:%d", m.Hash, i)
+		blockSeed := fmt.Sprintf("%s:block:%d", m.contentSeed(), i)
 		switch t {
 		case "tool_use":
 			id := ""

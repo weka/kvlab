@@ -209,7 +209,8 @@ func uuidForHash(hash, stamp string) string {
 // of that session sees, because a request carries the whole growing history
 // and only a turn's first appearance defines its index.
 type sessionUUIDs struct {
-	// hashToTurn maps a qualifying turn's block hash to its 0-based index
+	// hashToTurn maps a qualifying turn's content seed (its block hash, or
+	// the one it carries — see carryContentSeeds) to its 0-based index
 	// within the session.
 	hashToTurn map[string]int
 	// uuids is indexed by turn, parallel to hashToTurn's values.
@@ -238,11 +239,12 @@ func buildSessionUUIDs(sess RouterReplaySession, stamp string) *sessionUUIDs {
 				if !isQualifyingUserTurn(m) {
 					continue
 				}
-				if _, dup := su.hashToTurn[m.Hash]; dup {
+				key := m.contentSeed()
+				if _, dup := su.hashToTurn[key]; dup {
 					continue
 				}
-				su.hashToTurn[m.Hash] = len(su.uuids)
-				su.uuids = append(su.uuids, uuidForHash(m.Hash, stamp))
+				su.hashToTurn[key] = len(su.uuids)
+				su.uuids = append(su.uuids, uuidForHash(key, stamp))
 			}
 		}
 	}
