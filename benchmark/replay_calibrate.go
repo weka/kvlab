@@ -5,13 +5,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
+
+	"github.com/weka/kvlab/config"
 )
 
 // Replay content is synthesized text sized to the captured bytes, and the
@@ -47,6 +53,13 @@ const (
 	calibrateScanSessions = 2000
 	calibrateProbeTimeout = 5 * time.Minute
 )
+
+// calibrateTotalTimeout bounds one model's whole calibration (probe pick and
+// every probe). Calibration runs before --timeout starts counting, so it
+// needs a bound of its own: a server that answers probes but never
+// converges is already bounded by calibrateMaxProbes, and this catches the
+// one that is merely slow. A var so tests can shorten it.
+var calibrateTotalTimeout = 20 * time.Minute
 
 // Where a run's replay sizing came from, for the startup line, summary and
 // run params.
@@ -252,6 +265,88 @@ type replaySizingResolution struct {
 	Source string
 	Probe  calibrationProbe
 	Steps  []calibrationStep
+	// Elapsed is the wall time calibration took (0 when it did not run):
+	// setup time, outside the run's --timeout.
+	Elapsed time.Duration
+}
+
+// calibrateModels resolves every model's replay sizing, concurrently (each
+// model probes its own server), before any model's run starts. The error is
+// the first model whose calibration failed; each failure is also printed.
+func calibrateModels(ctx context.Context, cfg AutoBenchmarkConfig, models []string, docs string) ([]replaySizingResolution, error) {
+	// SIGINT during calibration stops it; the run's own handler is not
+	// installed yet.
+	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	out := make([]replaySizingResolution, len(models))
+	errs := make([]error, len(models))
+	var wg sync.WaitGroup
+	for i, m := range models {
+		mcfg := cfg
+		mcfg.Model = m
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i], errs[i] = calibrateModel(ctx, mcfg, docs)
+		}()
+	}
+	wg.Wait()
+	for i, m := range models {
+		name := shortModelName(m)
+		if errs[i] != nil {
+			fmt.Fprintf(os.Stderr, "\n[calibrate][%s] FAILED: %v\n"+
+				"[calibrate] the run is not started: its prompts would not carry the captured token volume. "+
+				"Pass --replay-token-scale=X to size explicitly (1 = byte-faithful, uncalibrated).\n\n",
+				name, errs[i])
+			continue
+		}
+		r := out[i]
+		fmt.Printf("Replay sizing [%s]: %s\n", name, sizingLine(cfg.Seed, r))
+		if r.Source == scaleSourceCalibrated {
+			fmt.Printf("  reproduce these exact bytes with --seed=%d --replay-token-scale=%.4f (--seed alone reproduces content, not sizes)\n",
+				cfg.Seed, r.Scale)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("replay calibration: %w", err)
+	}
+	return out, nil
+}
+
+// calibrateModel resolves one model's sizing under calibrateTotalTimeout and
+// logs the probes and the time taken.
+func calibrateModel(ctx context.Context, cfg AutoBenchmarkConfig, docs string) (replaySizingResolution, error) {
+	name := shortModelName(cfg.Model)
+	var poster *replayPoster
+	if !cfg.DryRun && cfg.ReplayTokenScale <= 0 && cfg.ReplayCharsPerToken <= 0 {
+		p, err := newReplayPoster(cfg.Model, config.GetAPIKeys(), "", "", false, 0, 0, 0, nil, nil)
+		if err != nil {
+			return replaySizingResolution{}, err
+		}
+		p.systemFirst = cfg.ReplaySystemFirst
+		poster = p
+		fmt.Fprintf(os.Stderr, "[calibrate][%s] sizing replay content to the server's tokenizer "+
+			"(bound %s; not counted in --timeout)...\n", name, calibrateTotalTimeout)
+	}
+	start := time.Now()
+	cctx, cancel := context.WithTimeout(ctx, calibrateTotalTimeout)
+	defer cancel()
+	res, err := resolveReplayScale(cctx, cfg, poster, docs)
+	if poster != nil {
+		res.Elapsed = time.Since(start)
+	}
+	if len(res.Steps) > 0 {
+		fmt.Fprintf(os.Stderr, "[calibrate][%s] %s\n", name, res.describe())
+	}
+	if err != nil && ctx.Err() == nil && errors.Is(cctx.Err(), context.DeadlineExceeded) {
+		return res, fmt.Errorf("calibration exceeded its %s bound after %d probe(s): %w",
+			calibrateTotalTimeout, len(res.Steps), err)
+	}
+	if err == nil && poster != nil {
+		fmt.Fprintf(os.Stderr, "[calibrate][%s] done in %s (setup, outside --timeout)\n",
+			name, res.Elapsed.Round(100*time.Millisecond))
+	}
+	return res, err
 }
 
 // resolveReplayScale decides a run's content scale: the explicit one when

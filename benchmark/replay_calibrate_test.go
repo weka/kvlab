@@ -25,7 +25,9 @@ import (
 type fakeTokenizer struct {
 	charsPerToken float64
 	fixed         int
-	constant      int // > 0: report this whatever the body (a server calibration cannot move)
+	constant      int           // > 0: report this whatever the body (a server calibration cannot move)
+	probeDelay    time.Duration // each calibration probe is answered this late
+	lastProbe     atomic.Int64  // UnixNano at which the last probe was answered
 	mu            sync.Mutex
 	bodies        []string
 	probes        atomic.Int32
@@ -65,6 +67,14 @@ func (f *fakeTokenizer) server(t *testing.T, anthropic bool) *httptest.Server {
 		f.mu.Unlock()
 		if strings.Contains(string(raw), "calib-") {
 			f.probes.Add(1)
+			if f.probeDelay > 0 {
+				select {
+				case <-time.After(f.probeDelay):
+				case <-r.Context().Done():
+					return
+				}
+			}
+			defer func() { f.lastProbe.Store(time.Now().UnixNano()) }()
 		}
 		n := f.fixed + int(float64(countContent(body, ""))/f.charsPerToken)
 		if f.constant > 0 {
@@ -281,5 +291,83 @@ func TestScaleLeavesSignaturesAndStructure(t *testing.T) {
 	spec := &RouterReplayToolsSpec{Count: 3, Bytes: 3000, Hash: "t"}
 	if a, b := len(toolDescriptions(spec, calibrationDocs, replaySizing{})[0]), len(toolDescriptions(spec, calibrationDocs, replaySizing{Scale: 2})[0]); b != 2*a {
 		t.Errorf("tool description %d -> %d at scale 2", a, b)
+	}
+}
+
+// calibrationRunCfg is a whole router-replay run against ts: one slot, the
+// calibration corpus, request data saved to dir.
+func calibrationRunCfg(t *testing.T, ts *httptest.Server, dir string, timeout time.Duration) AutoBenchmarkConfig {
+	cfg := calibrationCfg(t, ts, "openai")
+	cfg.DocsContent = calibrationDocs
+	cfg.SaveRequestDataDir = dir
+	cfg.Timeout = timeout
+	cfg.RequestTimeout = 10 * time.Second
+	cfg.Concurrency, cfg.StartSeries, cfg.MaxSeries = 1, 1, 1
+	return cfg
+}
+
+// --timeout is the duration of the load, counted from after calibration:
+// probes slower than the whole --timeout still calibrate, and the run then
+// starts and sends its requests (the one-pass corpus drains well inside the
+// --timeout). Before, calibration ran under the
+// --timeout deadline, so the probes ate the run's duration (here: all of it,
+// and the run never started).
+func TestTimeoutCountsFromAfterCalibration(t *testing.T) {
+	f := &fakeTokenizer{charsPerToken: 4.6, fixed: 60, probeDelay: time.Second}
+	ts := f.server(t, false)
+	dir := t.TempDir()
+	const timeout = 1500 * time.Millisecond
+	cfg := calibrationRunCfg(t, ts, dir, timeout)
+
+	if err := RunAutoBenchmark(context.Background(), cfg); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	probes := int(f.probes.Load())
+	calib := time.Duration(probes) * f.probeDelay
+	if probes < 2 || calib <= timeout {
+		t.Fatalf("premise: %d probes (%s) must outlast --timeout %s", probes, calib, timeout)
+	}
+
+	files, _ := filepath.Glob(filepath.Join(dir, "*", "*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("request data files: %v", files)
+	}
+	c, err := readJSONLContents(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.records) == 0 {
+		t.Fatal("no run requests: calibration consumed the --timeout")
+	}
+	// The run's time-zero (run_params ts) is after the last probe answered,
+	// and every request was sent after it.
+	if !c.hasParams {
+		t.Fatal("no run_params header")
+	}
+	last := time.Unix(0, f.lastProbe.Load())
+	if c.params.WrittenAt.Before(last) {
+		t.Errorf("run params ts %s precedes the last probe %s", c.params.WrittenAt, last)
+	}
+	if got := time.Duration(c.params.CalibrationSec * float64(time.Second)); got < calib {
+		t.Errorf("calibration_sec %.2f, want >= %s", c.params.CalibrationSec, calib)
+	}
+}
+
+// Calibration has its own bound and fails the run clearly when it is
+// exceeded, rather than hanging on a slow server.
+func TestCalibrationTotalTimeoutFailsClearly(t *testing.T) {
+	old := calibrateTotalTimeout
+	calibrateTotalTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { calibrateTotalTimeout = old })
+	f := &fakeTokenizer{charsPerToken: 4.6, fixed: 60, probeDelay: 5 * time.Second}
+	cfg := calibrationRunCfg(t, f.server(t, false), t.TempDir(), time.Hour)
+
+	start := time.Now()
+	err := RunAutoBenchmark(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "calibration exceeded its 300ms bound") {
+		t.Fatalf("want a calibration-bound error, got %v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("took %s to fail; the bound is 300ms", d)
 	}
 }

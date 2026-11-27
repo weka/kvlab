@@ -128,6 +128,24 @@ longer reproduces a calibrated replay's bytes**: pass both. An explicit
 `--replay-token-scale` (1 = byte-faithful) or `--replay-chars-per-token` skips
 calibration; dry runs do not calibrate.
 
+Calibration is setup, not load: every model calibrates (concurrently, each
+against its own server) before any model's run starts, and **`--timeout`
+counts from after calibration**, so a 30-minute run measures 30 minutes of load
+however long the probes took. Elapsed time, the run-params `ts`, the live view
+and the realtime session clocks all start there too. Calibration has its own
+bound instead: 20 minutes per model (each probe at most 5); past it the run
+fails with `calibration exceeded its 20m0s bound` rather than starting. The log
+shows the split:
+
+```
+[calibrate][model] sizing replay content to the server's tokenizer (bound 20m0s; not counted in --timeout)...
+[calibrate][model] probe session ... scale 1.0000 -> 6116 (59.2%); scale 1.6895 -> 10235 (99.1%)
+[calibrate][model] done in 41.3s (setup, outside --timeout)
+[auto] load starts now; --timeout=30m0s counts from here
+```
+
+and the run params record it as `calibration_sec`.
+
 ## Volume conformity
 
 Every replay run reports how much of the captured volume it put through the

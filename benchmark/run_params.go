@@ -77,6 +77,9 @@ type runParamsRecord struct {
 	Seed                   int64   `json:"seed,omitempty"`
 	ReplayTokenScale       float64 `json:"replay_token_scale,omitempty"`
 	ReplayTokenScaleSource string  `json:"replay_token_scale_source,omitempty"`
+	// CalibrationSec is how long replay calibration took before the run's
+	// clock (ts, --timeout) started; it is not part of the measured run.
+	CalibrationSec float64 `json:"calibration_sec,omitempty"`
 
 	// Synthetic-prompt shaping (ignored in replay modes).
 	Step                  int `json:"step,omitempty"`
@@ -128,6 +131,7 @@ func buildRunParams(cfg AutoBenchmarkConfig, now time.Time) runParamsRecord {
 		Seed:                   cfg.Seed,
 		ReplayTokenScale:       cfg.replayScale.Scale,
 		ReplayTokenScaleSource: cfg.replayScale.Source,
+		CalibrationSec:         cfg.replayScale.Elapsed.Seconds(),
 
 		Step:                  cfg.Step,
 		StepStartingTokens:    cfg.StepStartingTokens,

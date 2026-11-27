@@ -106,7 +106,7 @@ type AutoBenchmarkConfig struct {
 	// (replay_calibrate.go). 1 is byte-faithful sizing, uncalibrated.
 	ReplayTokenScale float64
 	// replayScale is the scale this model's run resolved, set by
-	// runSingleModelBenchmark before any poster is built.
+	// RunAutoBenchmark (calibrateModels) before the model's run starts.
 	replayScale replaySizingResolution
 	// ReplaySystemFirst: --replay-system-first. Router replay moves every
 	// system/developer message into the leading system block (see
@@ -2171,39 +2171,6 @@ func runSingleModelBenchmark(
 		cfg.HotSeriesConcurrency = cfg.StartSeries
 	}
 
-	// Replay content sizing: calibrated against this model's server unless a
-	// scale was given. Before the run-params header, which records it, and
-	// before any poster is built, since every poster carries it.
-	if cfg.RouterReplayFile != "" {
-		var cp *replayPoster
-		var err error
-		if !cfg.DryRun && cfg.ReplayTokenScale <= 0 && cfg.ReplayCharsPerToken <= 0 {
-			cp, err = newReplayPoster(cfg.Model, config.GetAPIKeys(), "", "", false, 0, 0, 0, nil, nil)
-			if err == nil {
-				cp.systemFirst = cfg.ReplaySystemFirst
-			}
-		}
-		if err == nil {
-			fmt.Fprintf(os.Stderr, "[calibrate][%s] sizing replay content to the server's tokenizer...\n", shortModelName(cfg.Model))
-			cfg.replayScale, err = resolveReplayScale(benchCtx, cfg, cp, fullDocs)
-		}
-		if len(cfg.replayScale.Steps) > 0 {
-			fmt.Fprintf(os.Stderr, "[calibrate][%s] %s\n", shortModelName(cfg.Model), cfg.replayScale.describe())
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n[calibrate][%s] FAILED: %v\n"+
-				"[calibrate] the run is not started: its prompts would not carry the captured token volume. "+
-				"Pass --replay-token-scale=X to size explicitly (1 = byte-faithful, uncalibrated).\n\n",
-				shortModelName(cfg.Model), err)
-			return autoBenchmarkResult{termReason: termReasonError, elapsed: time.Since(startTime)}
-		}
-		fmt.Printf("Replay sizing [%s]: %s\n", shortModelName(cfg.Model), sizingLine(cfg.Seed, cfg.replayScale))
-		if cfg.replayScale.Source == scaleSourceCalibrated {
-			fmt.Printf("  reproduce these exact bytes with --seed=%d --replay-token-scale=%.4f (--seed alone reproduces content, not sizes)\n",
-				cfg.Seed, cfg.replayScale.Scale)
-		}
-	}
-
 	// Header row describing the run, written once ahead of the request rows.
 	// Deliberately emitted HERE rather than where the writer is opened: the
 	// block above clamps and defaults cfg, and the file must record what the
@@ -3673,13 +3640,6 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 		cfg.MaxConsecutiveFailures = 512
 	}
 
-	// Apply optional timeout.
-	if cfg.Timeout > 0 {
-		var cancelTimeout context.CancelFunc
-		ctx, cancelTimeout = context.WithTimeout(ctx, cfg.Timeout)
-		defer cancelTimeout()
-	}
-
 	// Load documentation once. Used by synthetic mode for prefix-growth and
 	// by tree-aware router replay for sizing per-request input. Hermes-style
 	// replay (cfg.FromDataset != "") doesn't need it — conversations carry
@@ -3838,6 +3798,33 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 		}
 	}
 
+	// Replay content sizing, every model against its own server, before the
+	// run's clock starts: calibration is setup, not load. Its probes are no
+	// part of the run's results or stats (nothing they do reaches a model's
+	// autoState, which does not exist yet), and --timeout is the duration of
+	// the load itself, so a 30-minute run measures 30 minutes however long
+	// calibration took. Calibration has its own bound instead
+	// (calibrateTotalTimeout).
+	scales := make([]replaySizingResolution, len(models))
+	if cfg.RouterReplayFile != "" {
+		var err error
+		scales, err = calibrateModels(ctx, cfg, models, fullDocs)
+		if err != nil {
+			return err
+		}
+	}
+
+	// --timeout counts from here: the moment the first model starts its
+	// load. Everything before (docs, dataset, header, calibration) is setup.
+	// Each model's elapsed time, run-params timestamp, live-view origin and
+	// realtime session clocks all start after this point too.
+	if cfg.Timeout > 0 {
+		var cancelTimeout context.CancelFunc
+		ctx, cancelTimeout = context.WithTimeout(ctx, cfg.Timeout)
+		defer cancelTimeout()
+		fmt.Fprintf(os.Stderr, "[auto] load starts now; --timeout=%s counts from here\n", cfg.Timeout)
+	}
+
 	// Cancellable context for all benchmark goroutines.
 	benchCtx, benchCancel := context.WithCancel(ctx)
 	defer benchCancel()
@@ -3884,6 +3871,7 @@ func RunAutoBenchmark(ctx context.Context, cfg AutoBenchmarkConfig) error {
 	for i, model := range models {
 		modelCfg := cfg
 		modelCfg.Model = model
+		modelCfg.replayScale = scales[i]
 		if liveSrv != nil {
 			modelCfg.liveArm = liveSrv.arms[i]
 		}
